@@ -1,0 +1,49 @@
+{
+  "id": "obs-assistant",
+  "name": "OBS Assistant",
+  "version": "0.1.0",
+  "author": "Toolkit",
+  "description": "Auto-start OBS and sync stream settings via OBS WebSocket",
+  "test": true,
+  "icon": "icon.svg",
+  "main": "index.js",
+  "ui": {
+    "name": "OBS助手",
+    "description": "自动启动 OBS 并同步推流服务器与密钥到 OBS（支持端口/密码配置）",
+    "spa": false,
+    "html": "ui.html"
+  },
+  "config": {
+    "obsPath": {
+      "type": "text",
+      "label": "OBS可执行文件路径",
+      "description": "例如 C:\\Program Files\\obs-studio\\bin\\64bit\\obs64.exe",
+      "placeholder": "C:\\Program Files\\obs-studio\\bin\\64bit\\obs64.exe",
+      "default": ""
+    },
+    "autoStartObs": {
+      "type": "boolean",
+      "label": "启动时自动检测并启动 OBS",
+      "description": "应用启动后若未检测到 OBS 进程则自动启动",
+      "default": true
+    },
+    "syncStreaming": {
+      "type": "boolean",
+      "label": "进入创建直播页面时同步推流到 OBS",
+      "description": "自动将服务器地址与串流密钥配置到 OBS",
+      "default": true
+    },
+    "wsPort": {
+      "type": "number",
+      "label": "OBS WebSocket 端口",
+      "description": "默认 4455",
+      "default": 4455
+    },
+    "wsPassword": {
+      "type": "text",
+      "label": "OBS WebSocket 密码",
+      "description": "若启用了 OBS WebSocket 密码请填写",
+      "default": ""
+    }
+  }
+}

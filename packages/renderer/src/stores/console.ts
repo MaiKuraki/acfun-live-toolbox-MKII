@@ -1,5 +1,6 @@
 import { defineStore } from 'pinia';
-import { ref } from 'vue';
+import { ref, watch } from 'vue';
+import { reportReadonlyUpdate } from '../utils/readonlyReporter';
 
 export interface ConsoleCommand {
   name: string;
@@ -397,6 +398,25 @@ export const useConsoleStore = defineStore('console', () => {
     availableCommands.value = [];
     commandHistory.value = [];
   }
+
+  // 变更订阅：控制台状态变化统一上报
+  watch(
+    () => [isConnected.value, currentSession.value, availableCommands.value, commandHistory.value, isExecuting.value],
+    () => {
+      try {
+        reportReadonlyUpdate({
+          console: {
+            isConnected: isConnected.value,
+            currentSession: currentSession.value,
+            availableCommands: availableCommands.value,
+            commandHistory: commandHistory.value,
+            isExecuting: isExecuting.value,
+          }
+        });
+      } catch {}
+    },
+    { deep: true }
+  );
 
   return {
     // 状态

@@ -4,7 +4,8 @@
     <div class="main-nav">
       <t-menu 
         v-model="activeMenu"
-        :collapsed="collapsed"
+        :collapsed="false"
+        :default-expanded="['live','plugins','system']"
         theme="light"
         width="100%"
         @change="handleMenuChange"
@@ -46,6 +47,15 @@
             </template>
             弹幕管理
           </t-menu-item>
+          <t-menu-item
+            value="live-create"
+            @click="navigateTo('/live/create')"
+          >
+            <template #icon>
+              <t-icon name="edit-1" />
+            </template>
+            创建直播
+          </t-menu-item>
         </t-submenu>
         
         <!-- 插件管理 -->
@@ -72,6 +82,8 @@
             :key="plugin.id"
             :value="`plugin-${plugin.id}`"
             @click="openPlugin(plugin)"
+            :class="{ disabled: plugin.status !== 'active' || !plugin.enabled }"
+            :disabled="plugin.status !== 'active' || !plugin.enabled"
           >
             <template #icon>
               <img
@@ -123,7 +135,7 @@
             <template #icon>
               <t-icon name="bug" />
             </template>
-            开发工具
+            开发文档
           </t-menu-item>
         </t-submenu>
       </t-menu>
@@ -185,6 +197,9 @@ function updateActiveMenu(path: string) {
   } else if (path.startsWith('/live/danmu')) {
     activeMenu.value = 'live-danmu';
     activePlugin.value = null;
+  } else if (path.startsWith('/live/create')) {
+    activeMenu.value = 'live-create';
+    activePlugin.value = null;
   } else if (path.startsWith('/plugins/management')) {
     activeMenu.value = 'plugin-management';
     activePlugin.value = null;
@@ -217,6 +232,7 @@ function navigateTo(path: string) {
 }
 
 async function openPlugin(plugin: DynamicPlugin) {
+  if (plugin.status !== 'active' || !plugin.enabled) return;
   // 若存在自定义路由，优先使用
   if (plugin.route) {
     router.push(plugin.route);
@@ -231,8 +247,8 @@ async function openPlugin(plugin: DynamicPlugin) {
       return;
     }
     if (primary.type === 'window') {
-      // 弹窗能力不再实现：回退到 UI 路由
-      router.push(`/plugins/${plugin.id}`);
+      // 打开插件独立窗口（单实例），无需切换主窗口路由
+      await window.electronApi.plugin.window.open(plugin.id);
       return;
     }
   } catch (err) {
@@ -251,35 +267,6 @@ function handleIconError(plugin: DynamicPlugin) {
   }
 }
 
-function getPluginStatusColor(status: string): string {
-  switch (status) {
-    case 'active':
-      return 'success';
-    case 'inactive':
-      return 'default';
-    case 'error':
-      return 'error';
-    case 'loading':
-      return 'warning';
-    default:
-      return 'default';
-  }
-}
-
-function getPluginStatusText(status: string): string {
-  switch (status) {
-    case 'active':
-      return '运行中';
-    case 'inactive':
-      return '已停止';
-    case 'error':
-      return '错误';
-    case 'loading':
-      return '加载中';
-    default:
-      return '未知';
-  }
-}
 
 
 
@@ -474,3 +461,8 @@ onMounted(() => {
   background-color: var(--td-scrollbar-hover-color);
 }
 </style>
+.plugin-item.disabled,
+:deep(.t-menu-item.disabled) {
+  opacity: 0.5;
+  pointer-events: none;
+}

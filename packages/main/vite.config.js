@@ -113,7 +113,7 @@ function handleHotReload() {
     },
 
     writeBundle() {
-      if (process.env.NODE_ENV !== 'development') {
+      if (process.env.NODE_ENV !== 'development' && process.env.MODE !== 'development') {
         return;
       }
 
@@ -124,10 +124,16 @@ function handleHotReload() {
         electronApp = null;
       }
 
-      /** Spawn a new electron process */
-      // Drop inspector flag to avoid potential crashes in some Windows environments
-      electronApp = spawn(String(electronPath), ['.'], {
+      const electronExec = typeof electronPath === 'string' ? electronPath : String(electronPath);
+      if (!electronExec) {
+        throw new Error('Electron binary path not resolved');
+      }
+      electronApp = spawn(electronExec, ['.'], {
         stdio: 'inherit',
+        env: { ...process.env },
+      });
+      electronApp.on('error', (err) => {
+        console.error('[Electron] spawn error:', err);
       });
 
       /** Stops the watch script when the application has been quit */

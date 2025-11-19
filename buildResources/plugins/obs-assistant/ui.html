@@ -1,0 +1,27 @@
+<!DOCTYPE html>
+<html lang="zh">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>OBS 助手说明</title>
+  <style>
+    body { font-family: system-ui, -apple-system, Segoe UI, Roboto, Helvetica, Arial, sans-serif; margin: 0; padding: 16px; }
+    h1 { font-size: 20px; margin: 0 0 12px; }
+    .card { background: #fff; border: 1px solid #eee; border-radius: 10px; box-shadow: 0 6px 24px rgba(0,0,0,.06); padding: 14px; }
+    ul { margin: 8px 0 0 18px; }
+    li { line-height: 1.6; }
+  </style>
+  </head>
+<body>
+  <div class="card">
+    <h1>OBS 助手</h1>
+    <p>本插件用于：</p>
+    <ul>
+      <li>应用启动时自动检测并启动 OBS（需要配置 OBS 可执行路径）</li>
+      <li>进入“创建直播”页面后自动同步推流服务器与串流密钥到 OBS</li>
+      <li>支持配置 OBS WebSocket 服务端口与密码</li>
+    </ul>
+    <p>在插件管理页的配置项中设置：<code>obsPath</code>、<code>autoStartObs</code>、<code>syncStreaming</code>、<code>wsPort</code>、<code>wsPassword</code>。</p>
+  </div>
+</body>
+</html>

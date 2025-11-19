@@ -355,13 +355,6 @@ interface LogEntry {
   context?: Record<string, any>;
 }
 
-interface ErrorEntry {
-  type: string;
-  message: string;
-  timestamp: number;
-  context?: Record<string, any>;
-  recoveryAction?: string;
-}
 
 interface Props {
   pluginId: string;
@@ -469,8 +462,8 @@ async function loadLogs() {
   logsLoading.value = true;
   try {
     const result = await window.electronApi.plugin.logs(props.pluginId, 100);
-    if (result && result.success) {
-      logs.value = (result.data as any[]) || [];
+    if (result && 'success' in result && (result as any).success) {
+      logs.value = (((result as any).data) as any[]) || [];
       filterLogs();
     } else {
       console.error('Failed to load logs:', result && (result as any).error);

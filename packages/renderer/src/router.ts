@@ -22,9 +22,24 @@ const routes = [
     meta: { title: '房间管理' }
   },
   {
-    path: '/live/danmu',
+    path: '/live/manage/:id',
+    component: () => import('./pages/LiveManagePage.vue'),
+    meta: { title: '直播管理' }
+  },
+  {
+    path: '/live/manage',
+    component: () => import('./pages/LiveManagePage.vue'),
+    meta: { title: '直播管理' }
+  },
+  {
+    path: '/live/danmu/:roomId?',
     component: () => import('./pages/LiveDanmuPage.vue'),
     meta: { title: '弹幕管理' }
+  },
+  {
+    path: '/live/create',
+    component: () => import('./pages/LiveCreatePage.vue'),
+    meta: { title: '创建直播' }
   },
   // 插件管理路由
   {
@@ -39,7 +54,7 @@ const routes = [
   {
     path: '/plugins/:plugname',
     component: () => import('./pages/PluginFramePage.vue'),
-    meta: { title: '插件' }
+    meta: { title: '插件', keepAlive: false }
   },
   // 系统功能路由
   {
@@ -59,7 +74,7 @@ const routes = [
   {
     path: '/system/develop',
     component: () => import('./pages/ApiDocs.vue'),
-    meta: { title: '开发工具' }
+    meta: { title: '开发文档' }
   },
   // 其他页面
   {
@@ -73,9 +88,9 @@ const routes = [
     meta: { title: '统计' }
   },
   {
-    path: '/overlay/:overlayId',
-    component: () => import('./pages/Overlay.vue'),
-    meta: { title: 'Overlay' }
+    path: '/plugins/:plugname/window',
+    component: () => import('./pages/WindowFramePluginPage.vue'),
+    meta: { title: '插件窗口', keepAlive: false, layout: 'window' }
   },
   {
     path: '/error',

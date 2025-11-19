@@ -38,3 +38,23 @@ export interface RoomStatusPayload {
   reason?: string;
   retryInMs?: number;
 }
+
+export interface IPluginManager {
+  getInstalledPlugins(): any[];
+  getPlugin(id: string): any | undefined;
+  getPluginStats(): { total: number; enabled: number; disabled: number; error: number };
+  enablePlugin(id: string): Promise<void>;
+  disablePlugin(id: string): Promise<void>;
+  installPlugin(options: { filePath: string; overwrite?: boolean; enable?: boolean }): Promise<any>;
+  uninstallPlugin(id: string): Promise<void>;
+  getPluginLogs(pluginId?: string, limit?: number): any[];
+}
+
+export interface IConsoleManager {
+  getCommands(): any[];
+  getActiveSessions(): any[];
+  createSession(name?: string): string;
+  endSession(sessionId: string): void;
+  executeCommand(sessionId: string, command: string): Promise<any>;
+  getSession(sessionId: string): any | undefined;
+}

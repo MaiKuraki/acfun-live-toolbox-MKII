@@ -1,4 +1,4 @@
-import { connectionPool } from '../ConnectionPoolManager';
+import { acfunApiConnectionPool } from '../ConnectionPoolManager';
 import { performanceMonitor } from '../PerformanceMonitor';
 import { AcfunDanmuModule } from '../AcfunDanmuModule';
 
@@ -71,21 +71,21 @@ export class ConnectionPoolIntegrationTest {
    */
   private async testConnectionPoolBasics(): Promise<void> {
     // 测试连接获取
-    const connection1 = await connectionPool.acquire('live');
+    const connection1 = await acfunApiConnectionPool.acquire('live');
     if (!connection1 || !connection1.api) {
       throw new Error('无法获取连接池连接');
     }
 
     // 测试连接释放
-    await connectionPool.release(connection1.id);
+    await acfunApiConnectionPool.release(connection1.id);
 
     // 测试连接重新获取
-    const connection2 = await connectionPool.acquire('live');
+    const connection2 = await acfunApiConnectionPool.acquire('live');
     if (!connection2 || !connection2.api) {
       throw new Error('无法重新获取连接池连接');
     }
 
-    await connectionPool.release(connection2.id);
+    await acfunApiConnectionPool.release(connection2.id);
     console.log('  ✓ 连接获取和释放功能正常');
   }
 
@@ -99,7 +99,7 @@ export class ConnectionPoolIntegrationTest {
     // 创建多个并发连接请求
     for (let i = 0; i < concurrentRequests; i++) {
       promises.push(
-        connectionPool.acquire('live').then(async (connection) => {
+        acfunApiConnectionPool.acquire('live').then(async (connection) => {
           if (!connection) {
             throw new Error(`并发请求 ${i + 1} 获取连接失败`);
           }
@@ -107,7 +107,7 @@ export class ConnectionPoolIntegrationTest {
           // 模拟一些工作
           await new Promise(resolve => setTimeout(resolve, 100));
           
-          await connectionPool.release(connection.id);
+          await acfunApiConnectionPool.release(connection.id);
           return connection.id;
         })
       );
@@ -127,7 +127,7 @@ export class ConnectionPoolIntegrationTest {
   private async testConnectionPoolErrorHandling(): Promise<void> {
     // 测试无效连接ID的处理
     try {
-      await connectionPool.release('invalid-connection-id');
+      await acfunApiConnectionPool.release('invalid-connection-id');
       console.log('  ✓ 无效连接ID处理正常');
     } catch (error) {
       // 预期会有错误，这是正常的
@@ -135,11 +135,11 @@ export class ConnectionPoolIntegrationTest {
     }
 
     // 测试重复释放连接
-    const connection = await connectionPool.acquire('live');
-    await connectionPool.release(connection.id);
+    const connection = await acfunApiConnectionPool.acquire('live');
+    await acfunApiConnectionPool.release(connection.id);
     
     try {
-      await connectionPool.release(connection.id);
+      await acfunApiConnectionPool.release(connection.id);
       console.log('  ✓ 重复释放连接处理正常');
     } catch (error) {
       // 预期会有错误，这是正常的
@@ -224,7 +224,7 @@ export class ConnectionPoolIntegrationTest {
    */
   private async testConnectionPoolHealthCheck(): Promise<void> {
     // 获取连接池性能指标
-    const metrics = connectionPool.getPerformanceMetrics();
+    const metrics = acfunApiConnectionPool.getPerformanceMetrics();
     
     if (!metrics) {
       throw new Error('无法获取连接池性能指标');
@@ -245,7 +245,7 @@ export class ConnectionPoolIntegrationTest {
    * 测试熔断器功能
    */
   private async testCircuitBreakerFunctionality(): Promise<void> {
-    const metrics = connectionPool.getPerformanceMetrics();
+    const metrics = acfunApiConnectionPool.getPerformanceMetrics();
     
     if (!metrics) {
       throw new Error('无法获取连接池性能指标');

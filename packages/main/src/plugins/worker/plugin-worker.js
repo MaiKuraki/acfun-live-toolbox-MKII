@@ -22,12 +22,43 @@ async function loadPlugin(pluginPath) {
       // Try ESM dynamic import first
       mod = await import(url);
     } catch (esmErr) {
-      // Fallback to CJS require
-      mod = require(path.resolve(pluginPath));
+      try {
+        // Fallback to CJS require
+        mod = require(path.resolve(pluginPath));
+      } catch (reqErr) {
+        try {
+          // VM fallback: evaluate CommonJS in sandbox when project treats .js as ESM
+          const fs = require('fs');
+          const vm = require('vm');
+          const Module = require('module');
+          const pluginAbs = path.resolve(pluginPath);
+          const code = fs.readFileSync(pluginAbs, 'utf-8');
+          const createReq = Module.createRequire(pluginAbs);
+          const sandbox = {
+            module: { exports: {} },
+            exports: {},
+            require: createReq,
+            __dirname: path.dirname(pluginAbs),
+            __filename: pluginAbs,
+            global: {},
+          };
+          sandbox.globalThis = sandbox;
+          vm.createContext(sandbox);
+          vm.runInContext(code, sandbox, { filename: pluginAbs, displayErrors: true });
+          mod = sandbox.module && sandbox.module.exports ? sandbox.module.exports : sandbox;
+        } catch (vmErr) {
+          throw vmErr;
+        }
+      }
     }
     plugin = mod && mod.default ? mod.default : mod;
   } catch (error) {
-    parentPort.postMessage({ type: 'result', error: `Failed to load plugin: ${error && error.message ? error.message : String(error)}` });
+    let msg = error && error.message ? error.message : String(error);
+    const hintNeeded = (typeof msg === 'string') && (msg.includes('ERR_REQUIRE_ESM') || msg.includes('module is not defined'));
+    if (hintNeeded) {
+      msg = `Failed to load plugin due to ESM/CommonJS mismatch: ${msg}. Use .cjs for CommonJS or switch to ESM exports when package.json has \"type\": \"module\".`;
+    }
+    parentPort.postMessage({ type: 'result', error: msg });
   }
 }
 

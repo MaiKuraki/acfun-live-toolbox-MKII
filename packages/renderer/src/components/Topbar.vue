@@ -210,9 +210,6 @@ const roomStatusText = computed(() => {
   return `${liveRoomCount.value}个直播中`;
 });
 
-function toggleAccountCard() {
-  showAccountCard.value = !showAccountCard.value;
-}
 
 function toggleRoomDrawer() {
   showRoomDrawer.value = !showRoomDrawer.value;

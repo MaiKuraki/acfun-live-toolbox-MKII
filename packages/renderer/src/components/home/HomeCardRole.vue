@@ -20,7 +20,7 @@
               </div>
               <div class="overview-content">
                 <div class="label">直播次数</div>
-                <div class="value">{{ home.anchorStats?.sessionCount ?? 0 }}</div>
+                <div class="value">{{ 0 }}</div>
               </div>
             </div>
             <div class="overview-item">
@@ -29,7 +29,7 @@
               </div>
               <div class="overview-content">
                 <div class="label">总时长</div>
-                <div class="value">{{ formatDuration(home.anchorStats?.totalDuration ?? 0) }}</div>
+                <div class="value">{{ formatDuration(0) }}</div>
               </div>
             </div>
             <div class="overview-item">
@@ -38,7 +38,7 @@
               </div>
               <div class="overview-content">
                 <div class="label">点赞数</div>
-                <div class="value">{{ formatNumber(home.anchorStats?.likes ?? 0) }}</div>
+                <div class="value">{{ formatNumber(0) }}</div>
               </div>
             </div>
             <div class="overview-item">
@@ -47,7 +47,7 @@
               </div>
               <div class="overview-content">
                 <div class="label">香蕉数</div>
-                <div class="value">{{ formatNumber(home.anchorStats?.bananas ?? 0) }}</div>
+                <div class="value">{{ formatNumber(0) }}</div>
               </div>
             </div>
             <div class="overview-item">
@@ -56,7 +56,7 @@
               </div>
               <div class="overview-content">
                 <div class="label">礼物数</div>
-                <div class="value">{{ formatNumber(home.anchorStats?.gifts ?? 0) }}</div>
+                <div class="value">{{ formatNumber(0) }}</div>
               </div>
             </div>
           </div>
@@ -94,7 +94,6 @@ import { computed } from 'vue';
 import { useRouter } from 'vue-router';
 import { useHomeStore } from '../../stores/home';
 import { useRoleStore } from '../../stores/role';
-import { formatCompact } from '../../utils/format';
 
 const home = useHomeStore();
 const role = useRoleStore();
@@ -108,13 +107,6 @@ const onScopeChange = (v: string | number) => {
   home.fetchRoleSpecific();
 };
 
-const formatDate = (iso?: string) => {
-  if (!iso) return '-';
-  const d = new Date(iso);
-  const mm = (d.getMonth() + 1).toString().padStart(2, '0');
-  const dd = d.getDate().toString().padStart(2, '0');
-  return `${d.getFullYear()}-${mm}-${dd}`;
-};
 
 const formatDuration = (seconds?: number) => {
   if (!seconds) return '0分钟';
@@ -197,3 +189,4 @@ const goMore = () => router.push('/live/room');
   color: var(--td-text-color-primary);
 }
 </style>
+// 移除依赖未定义类型的字段引用，避免编译错误

@@ -1,15 +1,17 @@
-import { ipcMain, app, dialog, shell } from 'electron';
+import { ipcMain, app, dialog, shell, BrowserWindow } from 'electron';
 import { acfunDanmuModule } from '../adapter/AcfunDanmuModule';
 import { RoomManager } from '../rooms/RoomManager';
 import { TokenManager } from '../server/TokenManager';
 import { PluginManager } from '../plugins/PluginManager';
 import { OverlayManager } from '../plugins/OverlayManager';
+import { PluginWindowManager } from '../plugins/PluginWindowManager';
 import { ConsoleManager } from '../console/ConsoleManager';
 import { WindowManager } from '../bootstrap/WindowManager';
 import { ConfigManager } from '../config/ConfigManager'; // Import ConfigManager
 import { LogManager } from '../logging/LogManager';
 import { DiagnosticsService } from '../logging/DiagnosticsService';
 import * as fs from 'fs';
+import path from 'path';
 import { pluginLifecycleManager } from '../plugins/PluginLifecycle';
 import { DataManager } from '../persistence/DataManager';
 import PluginPageStatusManager from '../persistence/PluginPageStatusManager';
@@ -25,6 +27,7 @@ export function initializeIpcHandlers(
   overlayManager: OverlayManager,
   consoleManager: ConsoleManager,
   windowManager: WindowManager,
+  pluginWindowManager: PluginWindowManager,
   configManager: ConfigManager, // Add ConfigManager to parameters
   logManager: LogManager,
   diagnosticsService: DiagnosticsService
@@ -137,6 +140,18 @@ export function initializeIpcHandlers(
       return { success: true };
     } catch (error: any) {
       return { success: false, error: error?.message || String(error) };
+    }
+  });
+
+  ipcMain.handle('system.publishLog', async (_event, payload: { source?: string; message?: string; level?: 'info' | 'error' | 'warn' | 'debug'; correlationId?: string }) => {
+    try {
+      const src = String(payload?.source || 'renderer');
+      const msg = String(payload?.message || '');
+      const lvl = (payload?.level || 'info') as any;
+      logManager.addLog(src, msg, lvl, payload?.correlationId);
+      return { success: true };
+    } catch (err: any) {
+      return { success: false, error: err?.message || String(err) };
     }
   });
 
@@ -412,10 +427,24 @@ export function initializeIpcHandlers(
           startTime: data.liveStartTime ? Number(new Date(data.liveStartTime)) : undefined,
           viewerCount,
           likeCount,
-          coverUrl: typeof data.coverUrl === 'string' ? data.coverUrl : '',
+          coverUrl: (() => {
+            const clean = (u: any) => {
+              if (!u || typeof u !== 'string') return '';
+              const s = String(u).trim().replace(/[`'\"]/g, '');
+              return /^https?:\/\//i.test(s) ? s : '';
+            };
+            const fromLive = clean((data as any).liveCover);
+            if (fromLive) return fromLive;
+            const fromData = clean((data as any).coverUrl);
+            if (fromData) return fromData;
+            const fromAvatar = clean(streamerAvatar || profile.avatar);
+            return fromAvatar || '';
+          })(),
           streamer: {
             userId: profile.userID ? String(profile.userID) : roomId,
-            userName: ownerUserName || (typeof profile.userName === 'string' ? profile.userName : `主播${roomId}`),
+            userName: (typeof profile.nickname === 'string' && profile.nickname.trim().length > 0)
+              ? profile.nickname
+              : (ownerUserName || (typeof profile.userName === 'string' ? profile.userName : `主播${roomId}`)),
             avatar: streamerAvatar || (typeof profile.avatar === 'string' ? profile.avatar : ''),
             level: typeof profile.level === 'number' ? profile.level : 0
           }
@@ -521,6 +550,125 @@ export function initializeIpcHandlers(
     }
   });
 
+  // --- Plugin Window Management ---
+  ipcMain.handle('plugin.window.open', async (_event, pluginId: string) => {
+    return pluginWindowManager.open(String(pluginId));
+  });
+
+  ipcMain.handle('plugin.window.focus', async (_event, pluginId: string) => {
+    return pluginWindowManager.focus(String(pluginId));
+  });
+
+  ipcMain.handle('plugin.window.close', async (_event, pluginId: string) => {
+    return pluginWindowManager.close(String(pluginId));
+  });
+
+  ipcMain.handle('plugin.window.isOpen', async (_event, pluginId: string) => {
+    return pluginWindowManager.isOpen(String(pluginId));
+  });
+
+  ipcMain.handle('plugin.window.list', async () => {
+    return pluginWindowManager.list();
+  });
+
+  // --- Plugin Process Execution ---
+  const pluginToastTicker = new Map<string, NodeJS.Timeout>();
+  const startTicker = (pluginId: string, message: string, options?: any) => {
+    if (pluginToastTicker.has(pluginId)) return;
+    const interval = setInterval(() => {
+      try {
+        const win = windowManager.getMainWindow();
+        win?.webContents.send('renderer-global-popup', { action: 'toast', payload: { message, options } });
+      } catch (e) {}
+    }, 3000);
+    pluginToastTicker.set(pluginId, interval);
+  };
+  const stopTicker = (pluginId: string) => {
+    const h = pluginToastTicker.get(pluginId);
+    if (h) { try { clearInterval(h); } catch {} pluginToastTicker.delete(pluginId); }
+  };
+
+  ipcMain.handle('plugin.process.execute', async (_event, pluginId: string, method: string, args?: any[]) => {
+    try {
+      const pm = (pluginManager as any).processManager as any;
+      if (!pm) return { success: false, error: 'process_manager_not_available' };
+      // 按需启动插件进程
+      try {
+        const info = (pluginManager as any).getPlugin?.(String(pluginId));
+        const proc = pm.getProcessInfo?.(String(pluginId));
+        if (!proc && info && info.manifest && typeof info.manifest.main === 'string' && info.manifest.main.trim().length > 0) {
+          const isDev = process.env.NODE_ENV === 'development' || !app.isPackaged;
+          const bundledRootCandidates = [
+            path.join(process.cwd(), 'buildResources', 'plugins', String(info.id)),
+            path.join(((process as any).resourcesPath || process.cwd()), 'plugins', String(info.id))
+          ];
+          const bundledRoot = bundledRootCandidates.find(p => { try { return fs.existsSync(p); } catch { return false; } });
+          const preferBundled = !!bundledRoot && isDev && (info.manifest as any)?.test === true;
+          const mainPath = preferBundled ? path.join(bundledRoot!, info.manifest.main) : path.join(info.installPath, info.manifest.main);
+          await pm.startPluginProcess?.(String(pluginId), mainPath);
+        }
+      } catch {}
+      // 避免在插件初始化执行期间立即调用导致 BUSY 错误：必要时稍候并重试
+      const execArgs = Array.isArray(args) ? args : [];
+      const maxAttempts = 5;
+      let attempt = 0;
+      let lastErr: any = null;
+      // 若刚启动过进程，给一个短暂缓冲时间
+      try { await new Promise(r => setTimeout(r, 200)); } catch {}
+      while (attempt < maxAttempts) {
+        try {
+          const result = await pm.executeInPlugin(String(pluginId), String(method), execArgs);
+          lastErr = null;
+          var res = result;
+          break;
+        } catch (e: any) {
+          const msg = String(e?.message || e);
+          lastErr = e;
+          if (msg.includes('status: busy')) {
+            await new Promise(r => setTimeout(r, 200));
+            attempt++;
+            continue;
+          }
+          break;
+        }
+      }
+      if (lastErr && !String(lastErr?.message || lastErr).includes('status: busy')) {
+        throw lastErr;
+      }
+      // 辅助：根据方法名控制ticker（保持跨窗口持续）
+      try {
+        if (String(method) === 'enableTicker') {
+          const msg = (args && args[0]) || 'Ticker: toast';
+          const opts = (args && args[1]) || { durationMs: 2500 };
+          startTicker(String(pluginId), String(msg), opts);
+        }
+        if (String(method) === 'disableTicker') {
+          stopTicker(String(pluginId));
+        }
+      } catch {}
+      return { success: true, data: res };
+    } catch (err: any) {
+      return { success: false, error: err?.message || String(err) };
+    }
+  });
+
+  ipcMain.handle('plugin.process.message', async (_event, pluginId: string, type: string, payload?: any) => {
+    try {
+      const pm = (pluginManager as any).processManager as any;
+      if (!pm) return { success: false, error: 'process_manager_not_available' };
+      const res = await pm.sendMessageToPlugin(String(pluginId), String(type), payload, true);
+      return { success: true, data: res };
+    } catch (err: any) {
+      return { success: false, error: err?.message || String(err) };
+    }
+  });
+
+  // 清理：插件禁用或卸载时停止ticker
+  try {
+    (pluginManager as any).on?.('plugin.disabled', ({ id }: any) => stopTicker(String(id)));
+    (pluginManager as any).on?.('plugin.uninstalled', ({ id }: any) => stopTicker(String(id)));
+  } catch {}
+
   // 获取插件配置
   ipcMain.handle('plugin.getConfig', async (_event, pluginId: string) => {
     try {
@@ -576,6 +724,35 @@ export function initializeIpcHandlers(
       } catch (pubErr) {
         console.warn('[IPC] plugin.updateConfig lifecycle publish failed:', pubErr);
       }
+
+      // 通知插件窗口：配置已更新（供 window frame 转发到子页）
+      try {
+        pluginWindowManager.send(id, 'plugin-config-updated', { pluginId: id, config: merged });
+      } catch {}
+
+      // 同步 tickerEnabled 到主进程的全局ticker
+      try {
+        const enabled = !!merged.tickerEnabled;
+        if (enabled) startTicker(id, 'Ticker: toast', { durationMs: 2500 }); else stopTicker(id);
+      } catch {}
+
+      try {
+        const pm = (pluginManager as any).processManager as any;
+        const info = (pluginManager as any).getPlugin?.(String(id));
+        const proc = pm?.getProcessInfo?.(String(id));
+        if (!proc && info && info.manifest && typeof info.manifest.main === 'string' && info.manifest.main.trim().length > 0) {
+          const isDev = process.env.NODE_ENV === 'development' || !app.isPackaged;
+          const bundledRootCandidates = [
+            path.join(process.cwd(), 'buildResources', 'plugins', String(info.id)),
+            path.join(((process as any).resourcesPath || process.cwd()), 'plugins', String(info.id))
+          ];
+          const bundledRoot = bundledRootCandidates.find(p => { try { return fs.existsSync(p); } catch { return false; } });
+          const preferBundled = !!bundledRoot && isDev && (info.manifest as any)?.test === true;
+          const mainPath = preferBundled ? path.join(bundledRoot!, info.manifest.main) : path.join(info.installPath, info.manifest.main);
+          await pm.startPluginProcess?.(String(id), mainPath);
+        }
+        try { await pm.executeInPlugin?.(String(id), 'onConfigUpdated', [merged]); } catch {}
+      } catch {}
 
       return { success: true };
     } catch (err: any) {
@@ -647,6 +824,32 @@ export function initializeIpcHandlers(
     try {
       const result = await pluginManager.executePluginRecovery(pluginId, action as any, context);
       return { success: true, data: result };
+    } catch (err: any) {
+      return { success: false, error: err?.message || String(err) };
+    }
+  });
+
+  // 执行插件方法
+  ipcMain.handle('plugin.execute', async (_event, pluginId: string, method: string, args?: any[]) => {
+    try {
+      const pm = (pluginManager as any).processManager as any;
+      const info = (pluginManager as any).getPlugin?.(String(pluginId));
+      const proc = pm?.getProcessInfo?.(String(pluginId));
+      if (!proc) {
+        if (info && info.manifest && typeof info.manifest.main === 'string' && info.manifest.main.trim().length > 0) {
+          const isDev = process.env.NODE_ENV === 'development' || !app.isPackaged;
+          const bundledRootCandidates = [
+            path.join(process.cwd(), 'buildResources', 'plugins', String(info.id)),
+            path.join(((process as any).resourcesPath || process.cwd()), 'plugins', String(info.id))
+          ];
+          const bundledRoot = bundledRootCandidates.find(p => { try { return fs.existsSync(p); } catch { return false; } });
+          const preferBundled = !!bundledRoot && isDev && (info.manifest as any)?.test === true;
+          const mainPath = preferBundled ? path.join(bundledRoot!, info.manifest.main) : path.join(info.installPath, info.manifest.main);
+          await pm.startPluginProcess?.(String(pluginId), mainPath);
+        }
+      }
+      const res = await pm.executeInPlugin?.(String(pluginId), String(method), Array.isArray(args) ? args : []);
+      return { success: true, data: res };
     } catch (err: any) {
       return { success: false, error: err?.message || String(err) };
     }
@@ -863,10 +1066,15 @@ export function initializeIpcHandlers(
     }
   });
 
-  // 获取可用命令列表
+  // 获取可用命令列表（返回可克隆 DTO，移除不可序列化的 handler 等属性）
   ipcMain.handle('console:getCommands', async () => {
     try {
-      const commands = consoleManager.getCommands();
+      const commands = consoleManager.getCommands().map((c: any) => ({
+        name: String(c?.name || ''),
+        description: String(c?.description || ''),
+        usage: typeof c?.usage === 'string' ? c.usage : '',
+        category: String(c?.category || 'system')
+      }));
       return { success: true, data: commands };
     } catch (err: any) {
       return { success: false, error: err?.message || String(err) };
@@ -1032,35 +1240,35 @@ export function initializeIpcHandlers(
   });
 
   // 窗口控制处理程序
-  ipcMain.handle('window.minimize', async () => {
-    const mainWindow = windowManager.getMainWindow();
-    if (mainWindow) {
-      mainWindow.minimize();
+  ipcMain.handle('window.minimize', async (event) => {
+    const win = BrowserWindow.fromWebContents(event.sender);
+    if (win) {
+      win.minimize();
     }
   });
 
-  ipcMain.handle('window.close', async () => {
-    const mainWindow = windowManager.getMainWindow();
-    if (mainWindow) {
-      mainWindow.close();
+  ipcMain.handle('window.close', async (event) => {
+    const win = BrowserWindow.fromWebContents(event.sender);
+    if (win) {
+      win.close();
     }
   });
 
-  ipcMain.handle('window.maximize', async () => {
-    const mainWindow = windowManager.getMainWindow();
-    if (mainWindow) {
-      if (mainWindow.isMaximized()) {
-        mainWindow.restore();
+  ipcMain.handle('window.maximize', async (event) => {
+    const win = BrowserWindow.fromWebContents(event.sender);
+    if (win) {
+      if (win.isMaximized()) {
+        win.restore();
       } else {
-        mainWindow.maximize();
+        win.maximize();
       }
     }
   });
 
-  ipcMain.handle('window.restore', async () => {
-    const mainWindow = windowManager.getMainWindow();
-    if (mainWindow) {
-      mainWindow.restore();
+  ipcMain.handle('window.restore', async (event) => {
+    const win = BrowserWindow.fromWebContents(event.sender);
+    if (win) {
+      win.restore();
     }
   });
 
@@ -1077,19 +1285,346 @@ export function initializeIpcHandlers(
         throw new Error('Invalid configuration format.');
       }
       configManager.setAll(newConfig);
+      try {
+        // 即时应用：保持登录关闭时清理磁盘令牌
+        if (Object.prototype.hasOwnProperty.call(newConfig, 'auth.keepLogin')) {
+          const keep = !!newConfig['auth.keepLogin'];
+          if (!keep) {
+            try { (tokenManager as any).clearStoredTokenInfo?.(); } catch {}
+          }
+        }
+        // 即时应用：托盘隐藏行为
+        if (Object.prototype.hasOwnProperty.call(newConfig, 'ui.minimizeToTray')) {
+          const enabled = !!newConfig['ui.minimizeToTray'];
+          try { windowManager.setMinimizeToTray(enabled); } catch {}
+        }
+        // 即时应用：开机自启动
+        if (Object.prototype.hasOwnProperty.call(newConfig, 'app.autoStart')) {
+          const enabled = !!newConfig['app.autoStart'];
+          try { app.setLoginItemSettings({ openAtLogin: enabled }); } catch {}
+        }
+        // 配置目录：复制当前配置到新目录（完整切换需重启）
+        if (Object.prototype.hasOwnProperty.call(newConfig, 'config.dir')) {
+          const dir = String(newConfig['config.dir'] || '');
+          if (dir && dir.length > 0) {
+            try {
+              const userData = app.getPath('userData');
+              const srcConfig = path.join(userData, 'config.json');
+              const srcSecrets = path.join(userData, 'secrets.json');
+              try { if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true }); } catch {}
+              try { if (fs.existsSync(srcConfig)) fs.copyFileSync(srcConfig, path.join(dir, 'config.json')); } catch {}
+              try { if (fs.existsSync(srcSecrets)) fs.copyFileSync(srcSecrets, path.join(dir, 'secrets.json')); } catch {}
+            } catch {}
+          }
+        }
+      } catch {}
       return { success: true };
     } catch (error: any) {
       return { success: false, error: error.message };
     }
   });
 
-  // （重复块已移除）
+  ipcMain.handle('system.getUserDataDir', async () => {
+    try { return { success: true, path: app.getPath('userData') }; } catch (err: any) { return { success: false, error: err?.message || String(err) }; }
+  });
 
+  ipcMain.handle('system.getBuildInfo', async () => {
+    try {
+      let version = app.getVersion();
+      let buildTime = Date.now();
+      const tryParsePkg = (pkgPath: string) => {
+        try {
+          if (!fs.existsSync(pkgPath)) return false;
+          const raw = fs.readFileSync(pkgPath, 'utf8');
+          const parsed = JSON.parse(raw);
+          if (parsed && typeof parsed.version === 'string' && parsed.version.trim().length > 0) {
+            if (typeof parsed.name === 'string' && parsed.name.trim().length > 0) {
+              version = String(parsed.version).trim();
+              const st = fs.statSync(pkgPath);
+              buildTime = (st as any).mtimeMs || st.mtime.getTime();
+              return true;
+            }
+          }
+          return false;
+        } catch { return false; }
+      };
+
+      // 1) 从 app.getAppPath() 向上递归查找，命中根 package.json
+      try {
+        let cur = app.getAppPath();
+        for (let i = 0; i < 5; i++) { // 向上最多 5 层
+          const candidate = path.join(cur, 'package.json');
+          if (tryParsePkg(candidate)) break;
+          const parent = path.dirname(cur);
+          if (!parent || parent === cur) break;
+          cur = parent;
+        }
+      } catch {}
+
+      // 2) 回退：process.cwd()/package.json
+      if (!version || version === app.getVersion()) {
+        tryParsePkg(path.join(path.resolve(process.cwd()), 'package.json'));
+      }
+
+      return { success: true, version, buildTime };
+    } catch (err: any) {
+      return { success: false, error: err?.message || String(err) };
+    }
+  });
+
+  // Database path helpers
+  const resolveDbPath = (): string => {
+    try {
+      const envPath = process.env.ACFUN_TEST_DB_PATH;
+      if (envPath && envPath.trim().length > 0) return envPath;
+    } catch {}
+    try {
+      const configured = configManager.get<string>('database.path', '');
+      if (configured && configured.trim().length > 0) return configured;
+    } catch {}
+    try {
+      return path.join(app.getPath('userData'), 'events.db');
+    } catch {
+      return path.join(require('os').tmpdir(), 'acfun-events.db');
+    }
+  };
+
+  ipcMain.handle('db.getPath', async () => {
+    try { return { success: true, path: resolveDbPath() }; } catch (err: any) { return { success: false, error: err?.message || String(err) }; }
+  });
+
+  ipcMain.handle('db.setPath', async (_event, targetPath: string) => {
+    try {
+      if (!targetPath || typeof targetPath !== 'string') return { success: false, error: 'invalid_path' };
+      const dir = path.dirname(targetPath);
+      try { if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true }); } catch {}
+      configManager.set('database.path', targetPath);
+      return { success: true };
+    } catch (err: any) {
+      return { success: false, error: err?.message || String(err) };
+    }
+  });
+
+  // Storage stats
+  ipcMain.handle('system.getStorageStats', async () => {
+    try {
+      const userData = app.getPath('userData');
+      const dbPath = resolveDbPath();
+      const safeSizeOf = (p: string): number => { try { const st = fs.statSync(p); return st.isFile() ? st.size : 0; } catch { return 0; } };
+      const sumDir = (p: string): number => {
+        let total = 0;
+        try {
+          if (!fs.existsSync(p)) return 0;
+          const st = fs.statSync(p);
+          if (st.isFile()) return st.size;
+          const entries = fs.readdirSync(p);
+          for (const name of entries) {
+            if (name.startsWith('.') && (name.includes('cache') || name.includes('temp') || name.includes('backup'))) continue;
+            const child = path.join(p, name);
+            try { const cst = fs.statSync(child); total += cst.isFile() ? cst.size : sumDir(child); } catch {}
+          }
+        } catch {}
+        return total;
+      };
+      const dbBytes = safeSizeOf(dbPath);
+      const configBytes = safeSizeOf(path.join(userData, 'config.json')) + safeSizeOf(path.join(userData, 'secrets.json'));
+      const pluginsBytes = sumDir(path.join(userData, 'plugins'));
+      const totalBytes = dbBytes + configBytes + pluginsBytes;
+      return { success: true, dbBytes, configBytes, pluginsBytes, totalBytes };
+    } catch (err: any) {
+      return { success: false, error: err?.message || String(err) };
+    }
+  });
+
+  // 简易文件状态查询：返回 mtimeMs
+  ipcMain.handle('system.statPath', async (_event, targetPath: string) => {
+    try {
+      if (!targetPath || typeof targetPath !== 'string') {
+        return { success: false, error: 'invalid_path' };
+      }
+      const st = fs.statSync(targetPath);
+      const mtimeMs = (st as any).mtimeMs || st.mtime.getTime();
+      return { success: true, mtimeMs };
+    } catch (err: any) {
+      return { success: false, error: err?.message || String(err) };
+    }
+  });
+
+  ipcMain.handle('system.getReadmeSummary', async () => {
+    try {
+      const root = path.resolve(process.cwd());
+      const file = path.join(root, 'README.md');
+      if (!fs.existsSync(file)) return { success: false, error: 'README_NOT_FOUND' };
+      const content = fs.readFileSync(file, 'utf8');
+      let summary = '';
+      try {
+        const h3Match = content.match(/<h3>([^<]+)<\/h3>/i);
+        const pMatch = content.match(/<p>([^<]+)<\/p>/i);
+        const title = h3Match ? h3Match[1].trim() : '';
+        const intro = pMatch ? pMatch[1].trim() : '';
+        summary = [title, intro].filter(Boolean).join(' - ');
+      } catch {}
+      if (!summary) {
+        const lines = content.split(/\r?\n/).map(s => s.trim()).filter(Boolean);
+        const titleLine = lines.find(l => l && !l.startsWith('#') && !l.startsWith('[') && l.length > 0) || '';
+        summary = titleLine || '适用于ACFUN的开放式直播框架工具 - 一个功能强大、可扩展的 AcFun 直播工具框架，提供弹幕收集、数据分析、插件系统等功能';
+      }
+      return { success: true, summary };
+    } catch (err: any) {
+      return { success: false, error: err?.message || String(err) };
+    }
+  });
+
+  ipcMain.handle('config.exportZip', async (_event, targetPath?: string) => {
+    try {
+      let filepath = '';
+      if (typeof targetPath === 'string' && targetPath.trim().length > 0) {
+        filepath = targetPath.trim();
+        const dir = path.dirname(filepath);
+        try { if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true }); } catch {}
+      } else {
+        const outDir = path.join(app.getPath('userData'), 'config-exports');
+        try { if (!fs.existsSync(outDir)) fs.mkdirSync(outDir, { recursive: true }); } catch {}
+        const filename = `config-${Date.now()}.zip`;
+        filepath = path.join(outDir, filename);
+      }
+      const output = fs.createWriteStream(filepath);
+      const archiver = (await import('archiver')).default('zip', { zlib: { level: 9 } });
+      await new Promise<void>((resolve, reject) => {
+        output.on('close', () => resolve());
+        output.on('error', (e) => reject(e));
+        archiver.on('error', (e: any) => reject(e));
+        archiver.pipe(output);
+        const userData = app.getPath('userData');
+        const configFile = path.join(userData, 'config.json');
+        const secretsFile = path.join(userData, 'secrets.json');
+        try { if (fs.existsSync(configFile)) archiver.file(configFile, { name: 'config.json' }); } catch {}
+        try { if (fs.existsSync(secretsFile)) archiver.file(secretsFile, { name: 'secrets.json' }); } catch {}
+        archiver.finalize();
+      });
+      return { success: true, filepath };
+    } catch (err: any) {
+      return { success: false, error: err?.message || String(err) };
+    }
+  });
+
+  ipcMain.handle('config.importZip', async (_event, zipPath: string) => {
+    try {
+      if (!zipPath || typeof zipPath !== 'string' || !fs.existsSync(zipPath)) {
+        return { success: false, error: 'zip_not_found' };
+      }
+      const unzipper = await import('unzipper');
+      const userData = app.getPath('userData');
+      await fs.createReadStream(zipPath).pipe(unzipper.Extract({ path: userData })).promise();
+      return { success: true };
+    } catch (err: any) {
+      return { success: false, error: err?.message || String(err) };
+    }
+  });
+
+  // （重复块已移除）
+  
   // 窗口控制处理程序
   // 重复的 window.* 处理器已移除（已在上文定义）
 
+  const pendingConfirms = new Map<string, (result: boolean) => void>();
+  ipcMain.handle('popup.toast', async (event, payload: { message: string; options?: any }) => {
+    try {
+      let win = windowManager.getMainWindow();
+      if (!win || win.isDestroyed()) {
+        const current = BrowserWindow.fromWebContents(event.sender);
+        win = BrowserWindow.getAllWindows().find(w => w && !w.isDestroyed() && w !== current) || null;
+      }
+      win?.webContents.send('renderer-global-popup', { action: 'toast', payload });
+      return { success: !!win };
+    } catch (err: any) {
+      return { success: false, error: err?.message || String(err) };
+    }
+  });
+
+  ipcMain.handle('popup.alert', async (event, payload: { title: string; message: string; options?: any }) => {
+    try {
+      let win = windowManager.getMainWindow();
+      if (!win || win.isDestroyed()) {
+        const current = BrowserWindow.fromWebContents(event.sender);
+        win = BrowserWindow.getAllWindows().find(w => w && !w.isDestroyed() && w !== current) || null;
+      }
+      win?.webContents.send('renderer-global-popup', { action: 'alert', payload });
+      return { success: !!win };
+    } catch (err: any) {
+      return { success: false, error: err?.message || String(err) };
+    }
+  });
+
+  ipcMain.handle('popup.confirm', async (event, payload: { title: string; message: string; options?: any }) => {
+    try {
+      let win = windowManager.getMainWindow();
+      if (!win || win.isDestroyed()) {
+        const current = BrowserWindow.fromWebContents(event.sender);
+        win = BrowserWindow.getAllWindows().find(w => w && !w.isDestroyed() && w !== current) || null;
+      }
+      if (!win) return { success: false, error: 'main_window_not_available' };
+      const requestId = String(Date.now()) + '-' + Math.random().toString(16).slice(2);
+      const resultPromise = new Promise<boolean>((resolve) => {
+        pendingConfirms.set(requestId, resolve);
+        setTimeout(() => {
+          if (pendingConfirms.has(requestId)) {
+            pendingConfirms.delete(requestId);
+            resolve(false);
+          }
+        }, 30000);
+      });
+      win.webContents.send('renderer-global-popup', { action: 'confirm', payload, requestId });
+      const ok = await resultPromise;
+      return { success: true, result: ok };
+    } catch (err: any) {
+      return { success: false, error: err?.message || String(err) };
+    }
+  });
+
+  ipcMain.handle('popup.confirm.respond', async (_event, requestId: string, result: boolean) => {
+    try {
+      const resolver = pendingConfirms.get(requestId);
+      if (resolver) {
+        pendingConfirms.delete(requestId);
+        resolver(!!result);
+        return { success: true };
+      }
+      return { success: false, error: 'request_not_found' };
+    } catch (err: any) {
+      return { success: false, error: err?.message || String(err) };
+    }
+  });
+
 console.log('[IPC] All IPC handlers initialized successfully');
 }
+  ipcMain.handle('config.setDir', async (_event, dir: string) => {
+    try {
+      const target = String(dir || '').trim();
+      if (!target) return { success: false, error: 'invalid_dir' };
+      try { if (!fs.existsSync(target)) fs.mkdirSync(target, { recursive: true }); } catch {}
+      // 保存设置
+      configManager.set('config.dir', target);
+      // 复制现有配置文件
+      const userData = app.getPath('userData');
+      const srcConfig = path.join(userData, 'config.json');
+      const srcSecrets = path.join(userData, 'secrets.json');
+      try { if (fs.existsSync(srcConfig)) fs.copyFileSync(srcConfig, path.join(target, 'config.json')); } catch {}
+      try { if (fs.existsSync(srcSecrets)) fs.copyFileSync(srcSecrets, path.join(target, 'secrets.json')); } catch {}
+      return { success: true };
+    } catch (err: any) {
+      return { success: false, error: err?.message || String(err) };
+    }
+  });
 
-// Login: QR check
-// 重复的登录相关处理器已移除（上文已定义）
+  ipcMain.handle('system.setAutoStart', async (_event, enabled: boolean) => {
+    try { app.setLoginItemSettings({ openAtLogin: !!enabled }); return { success: true }; } catch (err: any) {
+      return { success: false, error: err?.message || String(err) };
+    }
+  });
+
+  ipcMain.handle('system.setMinimizeToTray', async (_event, enabled: boolean) => {
+    try { windowManager.setMinimizeToTray(!!enabled); return { success: true }; } catch (err: any) {
+      return { success: false, error: err?.message || String(err) };
+    }
+  });

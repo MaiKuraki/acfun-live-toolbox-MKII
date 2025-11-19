@@ -67,7 +67,7 @@ export interface ConnectionPoolEvents {
   'pool-exhausted': { maxConnections: number; pendingRequests: number };
 }
 
-export class ConnectionPoolManager extends TypedEventEmitter<ConnectionPoolEvents> {
+export class PluginConnectionPoolManager extends TypedEventEmitter<ConnectionPoolEvents> {
   private config: ConnectionPoolConfig;
   private connections: Map<string, Connection> = new Map();
   private connectionsByTarget: Map<string, Set<string>> = new Map();
@@ -89,7 +89,7 @@ export class ConnectionPoolManager extends TypedEventEmitter<ConnectionPoolEvent
     };
 
     this.startHealthCheck();
-    pluginLogger.info('ConnectionPoolManager initialized', undefined, { config: this.config });
+    pluginLogger.info('PluginConnectionPoolManager initialized', undefined, { config: this.config });
   }
 
   /**
@@ -399,9 +399,9 @@ export class ConnectionPoolManager extends TypedEventEmitter<ConnectionPoolEvent
     }
 
     if (closedConnections.length > 0) {
-      pluginLogger.info('Idle connections cleaned up', undefined, { 
-        count: closedConnections.length 
-      });
+    pluginLogger.info('Idle connections cleaned up', undefined, { 
+      count: closedConnections.length 
+    });
     }
   }
 
@@ -455,9 +455,9 @@ export class ConnectionPoolManager extends TypedEventEmitter<ConnectionPoolEvent
     }
 
     if (closedConnections.length > 0) {
-      pluginLogger.info('Plugin connections closed', pluginId, { 
-        count: closedConnections.length 
-      });
+    pluginLogger.info('Plugin connections closed', pluginId, { 
+      count: closedConnections.length 
+    });
     }
   }
 
@@ -488,9 +488,9 @@ export class ConnectionPoolManager extends TypedEventEmitter<ConnectionPoolEvent
     }
 
     if (unhealthyConnections.length > 0) {
-      pluginLogger.info('Unhealthy connections removed', undefined, { 
-        count: unhealthyConnections.length 
-      });
+    pluginLogger.info('Unhealthy connections removed', undefined, { 
+      count: unhealthyConnections.length 
+    });
     }
   }
 
@@ -561,9 +561,9 @@ export class ConnectionPoolManager extends TypedEventEmitter<ConnectionPoolEvent
     }
     this.pendingRequests.clear();
     
-    pluginLogger.info('ConnectionPoolManager destroyed');
-  }
+    pluginLogger.info('PluginConnectionPoolManager destroyed');
+}
 }
 
 // 全局连接池实例
-export const connectionPoolManager = new ConnectionPoolManager();
+export const pluginConnectionPoolManager = new PluginConnectionPoolManager();

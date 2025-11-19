@@ -2,7 +2,7 @@ import type { AppModule } from '../AppModule';
 import { ModuleContext } from '../ModuleContext';
 import { getLogManager } from '../logging/LogManager';
 import { AcFunLiveApi, ApiConfig } from 'acfunlive-http-api';
-import { connectionPool, PooledConnection } from './ConnectionPoolManager';
+import { acfunApiConnectionPool, PooledConnection } from './ConnectionPoolManager';
 import { performanceMonitor } from './PerformanceMonitor';
 import { TokenManager } from '../server/TokenManager';
 
@@ -106,7 +106,7 @@ export class AcfunDanmuModule implements AppModule {
     
     // 如果有活跃连接，释放并重新获取以应用新配置
     if (this.pooledConnection) {
-      connectionPool.release(this.pooledConnection.id);
+      acfunApiConnectionPool.release(this.pooledConnection.id);
       this.pooledConnection = null;
     }
     
@@ -149,7 +149,7 @@ export class AcfunDanmuModule implements AppModule {
       performanceMonitor.stop();
       
       if (this.pooledConnection) {
-        connectionPool.destroy(this.pooledConnection.id);
+        acfunApiConnectionPool.destroy(this.pooledConnection.id);
         this.pooledConnection = null;
       }
       
@@ -443,7 +443,7 @@ export class AcfunDanmuModule implements AppModule {
   // 获取API实例（用于其他模块直接访问）
   async getApiInstance(): Promise<AcFunLiveApi> {
     if (!this.pooledConnection) {
-      this.pooledConnection = await connectionPool.acquire('auth');
+      this.pooledConnection = await acfunApiConnectionPool.acquire('auth');
     }
     return this.pooledConnection.api;
   }
@@ -497,7 +497,7 @@ export class AcfunDanmuModule implements AppModule {
       
       // 获取连接池中的API实例
       if (!this.pooledConnection) {
-        this.pooledConnection = await connectionPool.acquire('live');
+        this.pooledConnection = await acfunApiConnectionPool.acquire('live');
       }
       
       // 确保身份验证

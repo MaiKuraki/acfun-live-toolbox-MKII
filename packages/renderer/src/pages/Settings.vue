@@ -1,662 +1,1210 @@
 <template>
   <div class="settings-page">
+    <!-- 顶部标题区域 -->
     <div class="page-header">
-      <h2>系统设置</h2>
+      <h1 class="page-title">系统设置</h1>
     </div>
 
-    <div class="settings-content">
-      <t-tabs
-        v-model="activeTab"
-        placement="left"
-      >
-        <t-tab-panel
-          value="general"
-          label="通用设置"
+    <!-- 主要内容区域 -->
+    <div class="settings-container">
+      <!-- 左侧导航 -->
+      <div class="settings-nav">
+        <div 
+          v-for="tab in tabItems" 
+          :key="tab.value"
+          class="nav-item"
+          :class="{ active: activeTab === tab.value }"
+          @click="activeTab = tab.value"
         >
-          <div class="settings-section">
-            <h3>应用设置</h3>
-            <t-form
-              :data="generalSettings"
-              layout="vertical"
-            >
-              <t-form-item label="启动时自动连接房间">
-                <t-switch v-model="generalSettings.autoConnect" />
-              </t-form-item>
-              <t-form-item label="最小化到系统托盘">
-                <t-switch v-model="generalSettings.minimizeToTray" />
-              </t-form-item>
-              <t-form-item label="开机自启动">
-                <t-switch v-model="generalSettings.autoStart" />
-              </t-form-item>
-              <t-form-item label="检查更新">
-                <t-switch v-model="generalSettings.checkUpdates" />
-              </t-form-item>
-            </t-form>
-          </div>
-        </t-tab-panel>
+          <div class="nav-indicator"></div>
+          <span class="nav-text">{{ tab.label }}</span>
+        </div>
+      </div>
 
-        <t-tab-panel
-          value="danmu"
-          label="弹幕设置"
-        >
-          <div class="settings-section">
-            <h3>弹幕显示</h3>
-            <t-form
-              :data="danmuSettings"
-              layout="vertical"
-            >
-              <t-form-item label="显示弹幕">
-                <t-switch v-model="danmuSettings.enabled" />
-              </t-form-item>
-              <t-form-item label="弹幕滚动速度">
-                <t-slider 
-                  v-model="danmuSettings.scrollSpeed" 
+      <!-- 右侧内容 -->
+      <div class="settings-content">
+        <!-- 通用设置 -->
+        <div v-if="activeTab === 'general'" class="settings-panel">
+          <div class="panel-section">
+            <h3 class="section-title">通用设置</h3>
+            <div class="form-group">
+              <div class="form-item switch-item">
+                <div class="switch-content">
+                  <div class="switch-info">
+                    <label class="form-label">保持登录</label>
+                    <span class="form-description">下次启动时自动登录账号</span>
+                  </div>
+                  <t-switch v-model="generalSettings.keepLogin" size="large" />
+                </div>
+              </div>
+              <div class="form-item switch-item">
+                <div class="switch-content">
+                  <div class="switch-info">
+                    <label class="form-label">最小化到系统托盘</label>
+                    <span class="form-description">关闭窗口时最小化到系统托盘</span>
+                  </div>
+                  <t-switch v-model="generalSettings.minimizeToTray" size="large" />
+                </div>
+              </div>
+              <div class="form-item switch-item">
+                <div class="switch-content">
+                  <div class="switch-info">
+                    <label class="form-label">开机自启动</label>
+                    <span class="form-description">系统启动时自动运行本程序</span>
+                  </div>
+                  <t-switch v-model="generalSettings.autoStart" size="large" />
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <!-- 网络设置 -->
+        <div v-if="activeTab === 'network'" class="settings-panel">
+          <div class="panel-section">
+            <h3 class="section-title">网络配置</h3>
+            <div class="form-group">
+              <div class="form-item">
+                <div class="input-info-group">
+                  <label class="form-label">后端服务端口</label>
+                  <span class="form-description">用于插件通信和API服务的端口号</span>
+                </div>
+                <t-input-number 
+                  v-model="networkSettings.serverPort" 
                   :min="1" 
-                  :max="10" 
+                  :max="65535" 
                   :step="1"
-                  :marks="{ 1: '慢', 5: '中', 10: '快' }"
+                  theme="row"
+                  placeholder="请输入端口号"
+                  class="port-input"
+                  size="medium"
+                  :allow-input-over-limit="false"
                 />
-              </t-form-item>
-              <t-form-item label="最大显示数量">
-                <t-input-number 
-                  v-model="danmuSettings.maxCount" 
-                  :min="10" 
-                  :max="100" 
-                  :step="10"
-                />
-              </t-form-item>
-              <t-form-item label="过滤重复弹幕">
-                <t-switch v-model="danmuSettings.filterDuplicate" />
-              </t-form-item>
-            </t-form>
+                <div class="input-hint">
+                  <t-icon name="info-circle" />
+                  <span>修改端口后需要重启应用才能生效</span>
+                </div>
+              </div>
+            </div>
           </div>
-        </t-tab-panel>
+        </div>
 
-        <t-tab-panel
-          value="plugins"
-          label="插件设置"
-        >
-          <div class="settings-section">
-            <h3>插件管理</h3>
-            <t-form
-              :data="pluginSettings"
-              layout="vertical"
-            >
-              <t-form-item label="启用插件系统">
-                <t-switch v-model="pluginSettings.enabled" />
-              </t-form-item>
-              <t-form-item label="插件安装目录">
-                <t-input 
-                  v-model="pluginSettings.installPath" 
-                  readonly
-                  suffix-icon="folder"
-                  @suffix-click="selectPluginPath"
-                />
-              </t-form-item>
-              <t-form-item label="允许开发者模式">
-                <t-switch v-model="pluginSettings.devMode" />
-              </t-form-item>
-              <t-form-item label="插件更新检查">
-                <t-switch v-model="pluginSettings.autoUpdate" />
-              </t-form-item>
-            </t-form>
-          </div>
-        </t-tab-panel>
-
-        <t-tab-panel
-          value="network"
-          label="网络设置"
-        >
-          <div class="settings-section">
-            <h3>网络配置</h3>
-            <t-form
-              :data="networkSettings"
-              layout="vertical"
-            >
-              <t-form-item label="使用代理">
-                <t-switch v-model="networkSettings.useProxy" />
-              </t-form-item>
-              <t-form-item
-                v-if="networkSettings.useProxy"
-                label="代理地址"
-              >
-                <t-input 
-                  v-model="networkSettings.proxyUrl" 
-                  placeholder="http://127.0.0.1:8080"
-                />
-              </t-form-item>
-              <t-form-item label="连接超时 (秒)">
-                <t-input-number 
-                  v-model="networkSettings.timeout" 
-                  :min="5" 
-                  :max="60" 
-                  :step="5"
-                />
-              </t-form-item>
-              <t-form-item label="重连间隔 (秒)">
-                <t-input-number 
-                  v-model="networkSettings.reconnectInterval" 
-                  :min="1" 
-                  :max="30" 
-                  :step="1"
-                />
-              </t-form-item>
-            </t-form>
-          </div>
-        </t-tab-panel>
-
-        <t-tab-panel
-          value="data"
-          label="数据管理"
-        >
-          <div class="settings-section">
-            <h3>配置导出</h3>
-            <t-form
-              :data="exportOptions"
-              layout="vertical"
-            >
-              <t-form-item label="导出格式">
-                <t-radio-group v-model="exportOptions.format">
-                  <t-radio value="json">
-                    JSON
-                  </t-radio>
-                  <t-radio value="csv">
-                    CSV
-                  </t-radio>
-                  <t-radio value="xlsx">
-                    Excel
-                  </t-radio>
-                </t-radio-group>
-              </t-form-item>
-              <t-form-item label="包含数据">
-                <t-checkbox-group v-model="exportOptions.includeData">
-                  <t-checkbox value="settings">
-                    应用设置
-                  </t-checkbox>
-                  <t-checkbox value="plugins">
-                    插件配置
-                  </t-checkbox>
-                  <t-checkbox value="rooms">
-                    房间信息
-                  </t-checkbox>
-                  <t-checkbox value="logs">
-                    系统日志
-                  </t-checkbox>
-                </t-checkbox-group>
-              </t-form-item>
-              <t-form-item>
-                <t-button 
-                  theme="primary" 
-                  :loading="exportingData"
-                  :disabled="!canExportData"
-                  @click="exportData"
-                >
+        <!-- 数据管理 -->
+        <div v-if="activeTab === 'data'" class="settings-panel">
+          <div class="panel-section">
+            <h3 class="section-title">配置管理</h3>
+            <div class="form-group">
+              <div class="form-item">
+                <label class="form-label">配置保存路径</label>
+                <div class="path-input-group">
+                  <t-input 
+                    v-model="configDir" 
+                    readonly 
+                    class="path-input"
+                    placeholder="配置保存路径"
+                  />
+                  <t-button 
+                    variant="outline" 
+                    @click="chooseConfigDir"
+                    class="path-select-btn"
+                  >
+                    浏览
+                  </t-button>
+                </div>
+              </div>
+              <div class="button-group">
+                <t-button variant="outline" @click="openConfigDir" class="action-btn">
+                  <template #icon>
+                    <t-icon name="folder-open" />
+                  </template>
+                  打开配置目录
+                </t-button>
+                <t-button theme="primary" :loading="exportingData" @click="exportConfigZip" class="action-btn">
                   <template #icon>
                     <t-icon name="download" />
                   </template>
-                  导出数据
+                  导出配置
                 </t-button>
-              </t-form-item>
-            </t-form>
-
-            <h3 style="margin-top: 32px;">
-              配置导入
-            </h3>
-            <t-form layout="vertical">
-              <t-form-item label="选择配置文件">
-                <t-upload
-                  v-model="importFiles"
-                  :auto-upload="false"
-                  accept=".json,.csv,.xlsx"
-                  :max="1"
-                  theme="file-input"
-                  placeholder="选择配置文件"
-                />
-              </t-form-item>
-              <t-form-item>
-                <t-button 
-                  variant="outline"
-                  :loading="importingData"
-                  :disabled="importFiles.length === 0"
-                  @click="importData"
-                >
+                <t-button variant="outline" :loading="importingData" @click="importConfigDirect" class="action-btn">
                   <template #icon>
                     <t-icon name="upload" />
                   </template>
                   导入配置
                 </t-button>
-              </t-form-item>
-            </t-form>
+              </div>
+            </div>
           </div>
-        </t-tab-panel>
 
-        <t-tab-panel
-          value="diagnostics"
-          label="系统诊断"
-        >
-          <div class="settings-section">
-            <h3>诊断工具</h3>
-            <p class="section-desc">
-              生成系统诊断包，包含日志、配置和系统信息，用于问题排查和技术支持。
-            </p>
-            
-            <t-form
-              :data="diagnosticOptions"
-              layout="vertical"
-            >
-              <t-form-item label="包含内容">
-                <t-checkbox-group v-model="diagnosticOptions.includeItems">
-                  <t-checkbox value="logs">
-                    系统日志
-                  </t-checkbox>
-                  <t-checkbox value="config">
-                    应用配置
-                  </t-checkbox>
-                  <t-checkbox value="plugins">
-                    插件信息
-                  </t-checkbox>
-                  <t-checkbox value="system">
-                    系统信息
-                  </t-checkbox>
-                  <t-checkbox value="network">
-                    网络状态
-                  </t-checkbox>
-                </t-checkbox-group>
-              </t-form-item>
-              <t-form-item label="日志时间范围">
-                <t-date-range-picker 
-                  v-model="diagnosticOptions.logTimeRange"
-                  format="YYYY-MM-DD HH:mm:ss"
-                  :presets="logTimePresets"
-                />
-              </t-form-item>
-              <t-form-item>
-                <t-space>
+          <div class="panel-section">
+            <h3 class="section-title">数据库路径</h3>
+            <div class="form-group">
+              <div class="form-item">
+                <label class="form-label">数据库文件路径</label>
+                <div class="path-input-group">
+                  <t-input 
+                    v-model="dbPath" 
+                    readonly 
+                    class="path-input"
+                    placeholder="数据库文件路径"
+                  />
+                </div>
+                <div class="button-group">
                   <t-button 
-                    theme="primary"
-                    :loading="generatingDiagnostic"
-                    @click="generateDiagnostic"
+                    variant="outline" 
+                    @click="chooseDbFile"
+                    class="action-btn"
                   >
-                    <template #icon>
-                      <t-icon name="tools" />
-                    </template>
-                    生成诊断包
+                   <template #icon>
+                     <t-icon name="browse" />
+                  </template>
+                    选择数据文件
                   </t-button>
                   <t-button 
-                    v-if="lastDiagnosticPath"
-                    variant="outline"
-                    @click="openDiagnosticFolder"
+                    variant="outline" 
+                    @click="openDbFolder"
+                    class="action-btn"
                   >
                     <template #icon>
                       <t-icon name="folder-open" />
-                    </template>
-                    打开文件夹
+                  </template>
+                    打开所在目录
                   </t-button>
-                </t-space>
-              </t-form-item>
-            </t-form>
-
-            <div
-              v-if="lastDiagnosticPath"
-              class="diagnostic-result"
-            >
-              <t-alert
-                theme="success"
-                :message="`诊断包已生成：${lastDiagnosticPath}`"
-              />
+                </div>
+              </div>
             </div>
           </div>
-        </t-tab-panel>
 
-        <t-tab-panel
-          value="about"
-          label="关于"
-        >
-          <div class="settings-section">
-            <div class="about-content">
-              <div class="app-info">
-                <h3>AcFun 直播工具箱 MKII</h3>
-                <p>版本：{{ appVersion }}</p>
-                <p>构建时间：{{ buildTime }}</p>
+          <div class="panel-section">
+            <h3 class="section-title">存储占用</h3>
+            <div class="storage-stats">
+              <div class="storage-overview">
+                <div class="storage-total">
+                  <span class="total-label">总占用空间</span>
+                  <span class="total-value">{{ formatBytes(totalBytes) }}</span>
+                </div>
               </div>
-              
-              <div class="links">
+              <div class="storage-bar-container">
+                <div class="storage-bar">
+                  <div class="seg seg-db" :style="{ width: dbPercent + '%' }"></div>
+                  <div class="seg seg-config" :style="{ width: configPercent + '%' }"></div>
+                  <div class="seg seg-plugins" :style="{ width: pluginsPercent + '%' }"></div>
+                </div>
+              </div>
+              <div class="storage-details">
+                <div class="storage-item">
+                  <div class="storage-indicator" style="background: var(--td-brand-color)"></div>
+                  <span class="storage-label">数据库</span>
+                  <span class="storage-value">{{ formatBytes(dbBytes) }}&nbsp;{{ dbPercent }}%</span>
+                </div>
+                <div class="storage-item">
+                  <div class="storage-indicator" style="background: var(--td-success-color)"></div>
+                  <span class="storage-label">配置文件</span>
+                  <span class="storage-value">{{ formatBytes(configBytes) }}&nbsp;{{ configPercent }}%</span>
+                </div>
+                <div class="storage-item">
+                  <div class="storage-indicator" style="background: var(--td-brand-color-5)"></div>
+                  <span class="storage-label">插件文件</span>
+                  <span class="storage-value">{{ formatBytes(pluginsBytes) }}&nbsp;{{ pluginsPercent }}%</span>
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <!-- 关于 -->
+        <div v-if="activeTab === 'about'" class="settings-panel">
+          <div class="panel-section">
+            <div class="about-info">
+              <h3 class="app-name">ACFUN直播框架</h3>
+              <div class="app-meta">
+                <p class="meta-item">
+                  <span class="meta-label">版本：</span>
+                  <span class="meta-value">{{ appVersion }}</span>
+                </p>
+                <p class="meta-item">
+                  <span class="meta-label">构建时间：</span>
+                  <span class="meta-value">{{ buildTime }}</span>
+                </p>
+              </div>
+              <p class="app-description">{{ toolIntro || '适用于ACFUN的开放式直播框架工具 - 一个功能强大、可扩展的 ACFUN直播框架，提供弹幕收集、数据分析、插件系统等功能' }}</p>
+              <div class="app-links">
                 <t-button
                   variant="outline"
-                  @click="openLink('https://github.com/your-repo')"
+                  @click="openLink(repoUrl)"
+                  class="github-btn"
                 >
                   <template #icon>
                     <t-icon name="logo-github" />
                   </template>
                   GitHub
                 </t-button>
-                <t-button
-                  variant="outline"
-                  @click="checkForUpdates"
-                >
-                  <template #icon>
-                    <t-icon name="refresh" />
-                  </template>
-                  检查更新
-                </t-button>
-              </div>
-
-              <div class="system-info">
-                <h4>系统信息</h4>
-                <div class="info-grid">
-                  <div class="info-item">
-                    <span class="label">操作系统：</span>
-                    <span class="value">{{ systemInfo.platform }}</span>
-                  </div>
-                  <div class="info-item">
-                    <span class="label">Node.js：</span>
-                    <span class="value">{{ systemInfo.nodeVersion }}</span>
-                  </div>
-                  <div class="info-item">
-                    <span class="label">Electron：</span>
-                    <span class="value">{{ systemInfo.electronVersion }}</span>
-                  </div>
-                </div>
               </div>
             </div>
           </div>
-        </t-tab-panel>
-      </t-tabs>
-    </div>
+        </div>
 
-    <div class="settings-footer">
-      <t-button
-        variant="outline"
-        @click="resetSettings"
-      >
-        重置设置
-      </t-button>
-      <t-button
-        theme="primary"
-        @click="saveSettings"
-      >
-        保存设置
-      </t-button>
+        
+      </div>
     </div>
   </div>
 </template>
 
 <script setup lang="ts">
-import { ref, computed, onMounted } from 'vue';
+import { ref, computed, onMounted, watch } from 'vue';
 import { MessagePlugin } from 'tdesign-vue-next';
 
 const activeTab = ref('general');
 
+const tabItems = [
+  { value: 'general', label: '通用设置' },
+  { value: 'network', label: '网络设置' },
+  { value: 'data', label: '数据管理' },
+  { value: 'about', label: '关于' }
+];
+
+const isLoadingConfig = ref(false);
+let saveTimer: any = null;
+const originalPort = ref(18299);
+const portChanged = ref(false);
+
+function dotGet<T>(obj: any, path: string, def?: T): T {
+  try {
+    const parts = String(path).split('.');
+    let cur = obj;
+    for (const p of parts) {
+      if (cur == null) return def as T;
+      cur = cur[p];
+    }
+    return (cur === undefined ? def : cur) as T;
+  } catch {
+    return def as T;
+  }
+}
+
+const dotBool = (o: any, p: string, d = false) => Boolean(dotGet(o, p, d));
+const dotNum = (o: any, p: string, d = 0) => {
+  const v = dotGet(o, p, d);
+  const n = parseInt(String(v));
+  return Number.isNaN(n) ? d : n;
+};
+const dotStr = (o: any, p: string, d = '') => String(dotGet(o, p, d) ?? d);
+
 const generalSettings = ref({
-  autoConnect: true,
+  keepLogin: true,
   minimizeToTray: false,
   autoStart: false,
-  checkUpdates: true
+  checkUpdates: false
 });
 
-const danmuSettings = ref({
-  enabled: true,
-  scrollSpeed: 5,
-  maxCount: 50,
-  filterDuplicate: true
-});
 
-const pluginSettings = ref({
-  enabled: true,
-  installPath: '',
-  devMode: false,
-  autoUpdate: true
-});
+
+
 
 const networkSettings = ref({
-  useProxy: false,
-  proxyUrl: '',
-  timeout: 10,
-  reconnectInterval: 5
+  serverPort: 18299
 });
 
 // 数据导出相关
 const exportOptions = ref({
-  format: 'json',
-  includeData: ['settings', 'plugins']
+  format: 'zip',
+  includeData: []
 });
 
-const importFiles = ref([]);
+const configDir = ref('');
 const exportingData = ref(false);
 const importingData = ref(false);
 
-const canExportData = computed(() => {
-  return exportOptions.value.includeData.length > 0 && exportOptions.value.format;
-});
+const canExportData = computed(() => true);
 
-// 系统诊断相关
-const diagnosticOptions = ref({
-  includeItems: ['logs', 'config', 'system'],
-  logTimeRange: []
-});
-
-const generatingDiagnostic = ref(false);
-const lastDiagnosticPath = ref('');
-
-const logTimePresets = {
-  '最近1小时': () => {
-    const end = new Date();
-    const start = new Date(end.getTime() - 60 * 60 * 1000);
-    return [start, end];
-  },
-  '最近24小时': () => {
-    const end = new Date();
-    const start = new Date(end.getTime() - 24 * 60 * 60 * 1000);
-    return [start, end];
-  },
-  '最近7天': () => {
-    const end = new Date();
-    const start = new Date(end.getTime() - 7 * 24 * 60 * 60 * 1000);
-    return [start, end];
-  }
-};
+ 
 
 const appVersion = ref('2.0.0');
-const buildTime = ref('2024-01-01 12:00:00');
+const buildTime = ref('');
+const repoUrl = ref('https://github.com/ACFUN-FOSS/acfun-live-toolbox-MKII');
+const toolIntro = ref('');
+const dbPath = ref('');
+const dbBytes = ref(0);
+const configBytes = ref(0);
+const pluginsBytes = ref(0);
+const totalBytes = ref(0);
 
-const systemInfo = ref({
-  platform: 'Windows 11',
-  nodeVersion: '18.0.0',
-  electronVersion: '25.0.0'
+const percent = (part: number, total: number) => {
+  if (!total || total <= 0) return 0;
+  return Math.max(0, Math.min(100, Math.round(part * 1000 / total) / 10));
+};
+const dbPercent = computed(() => percent(dbBytes.value, totalBytes.value));
+const configPercent = computed(() => percent(configBytes.value, totalBytes.value));
+const pluginsPercent = computed(() => percent(pluginsBytes.value, totalBytes.value));
+
+const formatBytes = (n: number) => {
+  try {
+    if (n < 1024) return `${n} B`;
+    if (n < 1024 * 1024) return `${(n / 1024).toFixed(1)} KB`;
+    if (n < 1024 * 1024 * 1024) return `${(n / 1024 / 1024).toFixed(1)} MB`;
+    return `${(n / 1024 / 1024 / 1024).toFixed(2)} GB`;
+  } catch { return String(n); }
+};
+
+ 
+
+async function openLink(url: string) {
+  try {
+    const result = await window.electronApi.system.openExternal(url);
+    if (!result.success) {
+      console.error('打开链接失败:', result.error);
+      MessagePlugin.error('打开链接失败: ' + (result.error || '未知错误'));
+    }
+  } catch (error) {
+    console.error('打开链接异常:', error);
+    MessagePlugin.error('打开链接失败: ' + (error instanceof Error ? error.message : String(error)));
+  }
+}
+
+watch(() => generalSettings.value.keepLogin, () => {
+  if (isLoadingConfig.value) return;
+  saveSettings({ silent: false });
 });
 
-function selectPluginPath() {
-  // TODO: 打开文件夹选择对话框
-}
+watch(() => generalSettings.value.minimizeToTray, () => {
+  if (isLoadingConfig.value) return;
+  saveSettings({ silent: false });
+});
 
-function openLink(url: string) {
-  window.open(url, '_blank');
-}
+watch(() => generalSettings.value.autoStart, () => {
+  if (isLoadingConfig.value) return;
+  saveSettings({ silent: false });
+});
 
-function checkForUpdates() {
-  // TODO: 检查应用更新
-}
+watch(() => networkSettings.value.serverPort, (newPort) => {
+  if (isLoadingConfig.value) return;
+  portChanged.value = newPort !== originalPort.value;
+  saveSettings({ silent: false });
+});
 
-function resetSettings() {
-  // TODO: 重置所有设置到默认值
-}
-
-function saveSettings() {
-  // TODO: 保存设置到主进程
+function saveSettings(opts: { silent?: boolean } = {}) {
+  const { silent = false } = opts;
+  if (saveTimer) clearTimeout(saveTimer);
+  saveTimer = setTimeout(() => {
+    const port = Math.max(1, Math.min(65535, parseInt(String(networkSettings.value.serverPort)) || 18299));
+    const payload = {
+      'auth.keepLogin': !!generalSettings.value.keepLogin,
+      'ui.minimizeToTray': !!generalSettings.value.minimizeToTray,
+      'app.autoStart': !!generalSettings.value.autoStart,
+      'server.port': port,
+      'config.dir': String(configDir.value || ''),
+      'meta.repoUrl': String(repoUrl.value || '')
+    };
+    window.electronApi.system.updateConfig(payload).then((res: any) => {
+      if (res && res.success) {
+        if (!silent) {
+          if (portChanged.value) {
+            MessagePlugin.info('网络设置已保存，重启应用后生效');
+          } else {
+            MessagePlugin.success('设置已自动保存');
+          }
+        }
+      } else {
+        MessagePlugin.error(res?.error || '设置保存失败');
+      }
+    });
+    if (!isLoadingConfig.value) {
+      try { window.electronApi.systemExt.setMinimizeToTray(!!generalSettings.value.minimizeToTray); } catch {}
+      try { window.electronApi.systemExt.setAutoStart(!!generalSettings.value.autoStart); } catch {}
+    }
+  }, 300);
 }
 
 function loadSettings() {
-  // TODO: 从主进程加载设置
+  isLoadingConfig.value = true;
+  window.electronApi.system.getConfig().then((cfg: Record<string, any>) => {
+    try {
+      const keep = dotBool(cfg, 'auth.keepLogin', true);
+      const port = dotNum(cfg, 'server.port', networkSettings.value.serverPort);
+      let dir = dotStr(cfg, 'config.dir', '');
+      const minimizeToTray = dotBool(cfg, 'ui.minimizeToTray', false);
+      const autoStart = dotBool(cfg, 'app.autoStart', false);
+      const repo = dotStr(cfg, 'meta.repoUrl', repoUrl.value);
+      generalSettings.value.keepLogin = keep;
+      generalSettings.value.minimizeToTray = minimizeToTray;
+      generalSettings.value.autoStart = autoStart;
+      networkSettings.value.serverPort = Number.isNaN(port) ? 18299 : port;
+      originalPort.value = networkSettings.value.serverPort; // 保存原始端口值
+      if (!dir) {
+        try {
+          window.electronApi.system.getUserDataDir().then((res) => {
+            if (res && res.success && res.path) {
+              configDir.value = res.path;
+              window.electronApi.system.updateConfig({ 'config.dir': res.path });
+            }
+          });
+        } catch {}
+      } else {
+        configDir.value = dir;
+      }
+      repoUrl.value = repo;
+    } catch {}
+  }).finally(() => {
+    isLoadingConfig.value = false;
+  });
 }
 
-// 数据导出方法
-async function exportData() {
+async function chooseConfigDir() {
+  const res = await window.electronApi.dialog.showOpenDialog({ properties: ['openDirectory'] });
+  if (res && !res.canceled && Array.isArray(res.filePaths) && res.filePaths.length > 0) {
+    configDir.value = res.filePaths[0];
+    try { await window.electronApi.config.setDir(configDir.value); } catch {}
+    MessagePlugin.info('已保存配置目录，重启后完全生效');
+  }
+}
+
+function openConfigDir() {
+  if (!configDir.value) return;
+  window.electronApi.system.showItemInFolder(configDir.value);
+}
+
+async function chooseDbFile() {
+  try {
+    const res = await window.electronApi.dialog.showOpenDialog({ properties: ['openFile'], filters: [{ name: '数据库文件', extensions: ['db'] }] });
+    const fp = Array.isArray(res?.filePaths) && res.filePaths[0] ? String(res.filePaths[0]) : '';
+    if (!fp) return;
+    const r = await (window as any).electronApi.db.setPath(fp);
+    if (r && r.success) {
+      dbPath.value = fp;
+      MessagePlugin.info('数据库路径已更新，重启后完全生效');
+    } else {
+      MessagePlugin.error(r?.error || '更新数据库路径失败');
+    }
+  } catch {}
+}
+
+function openDbFolder() {
+  if (!dbPath.value) return;
+  window.electronApi.system.showItemInFolder(dbPath.value);
+}
+
+async function exportConfigZip() {
   exportingData.value = true;
   try {
-    // 模拟数据导出
-    await new Promise(resolve => setTimeout(resolve, 2000));
-    MessagePlugin.success(`数据导出成功 (${exportOptions.value.format.toUpperCase()} 格式)`);
-  } catch (error) {
-    MessagePlugin.error('数据导出失败');
+    const suggested = `config-${new Date().toISOString().replace(/[:T]/g, '-').slice(0, 16)}.zip`;
+    const save = await window.electronApi.dialog.showSaveDialog({ title: '导出配置', defaultPath: suggested, filters: [{ name: 'ZIP', extensions: ['zip'] }] });
+    const filePath = (save as any)?.filePath || (save as any)?.path;
+    if (!filePath) { exportingData.value = false; return; }
+    const api: any = (window as any).electronApi;
+    const out = await api.config?.exportZip(String(filePath));
+    if (out && out.success) MessagePlugin.success('配置导出成功'); else MessagePlugin.error(out?.error || '配置导出失败');
+  } catch {
+    MessagePlugin.error('配置导出失败');
   } finally {
     exportingData.value = false;
   }
 }
 
-async function importData() {
+async function importConfigDirect() {
   importingData.value = true;
   try {
-    // 模拟数据导入
-    await new Promise(resolve => setTimeout(resolve, 1500));
-    MessagePlugin.success('配置导入成功');
-    importFiles.value = [];
-  } catch (error) {
+    const res = await window.electronApi.dialog.showOpenDialog({ properties: ['openFile'], filters: [{ name: '配置包', extensions: ['zip'] }] });
+    const fp = Array.isArray(res?.filePaths) && res.filePaths[0] ? String(res.filePaths[0]) : '';
+    if (!fp) { importingData.value = false; return; }
+    const api: any = (window as any).electronApi;
+    const r = await api.config?.importZip(fp);
+    if (r && r.success) {
+      MessagePlugin.success('配置导入成功');
+    } else {
+      MessagePlugin.error(r?.error || '配置导入失败');
+    }
+  } catch {
     MessagePlugin.error('配置导入失败');
   } finally {
     importingData.value = false;
   }
 }
 
-// 系统诊断方法
-async function generateDiagnostic() {
-  generatingDiagnostic.value = true;
-  try {
-    // 模拟生成诊断包
-    await new Promise(resolve => setTimeout(resolve, 3000));
-    
-    const timestamp = new Date().toISOString().replace(/[:.]/g, '-');
-    lastDiagnosticPath.value = `C:\\Users\\用户\\Desktop\\diagnostic-${timestamp}.zip`;
-    
-    MessagePlugin.success('诊断包生成成功');
-  } catch (error) {
-    MessagePlugin.error('诊断包生成失败');
-  } finally {
-    generatingDiagnostic.value = false;
-  }
-}
 
-function openDiagnosticFolder() {
-  // 模拟打开文件夹
-  MessagePlugin.info('正在打开文件夹...');
-}
 
 onMounted(() => {
   loadSettings();
+  try {
+    window.electronApi.system.getBuildInfo().then((info: any) => {
+      try {
+        if (info && info.success) {
+          const ts = typeof info.buildTime === 'number' ? info.buildTime : Date.now();
+          buildTime.value = new Date(ts).toLocaleString();
+          if (info.version) appVersion.value = String(info.version);
+        } else {
+          buildTime.value = '未知';
+        }
+      } catch {}
+    });
+  } catch {}
+  try {
+    (window as any).electronApi.db.getPath().then((res: any) => { if (res && res.success) dbPath.value = String(res.path || ''); });
+  } catch {}
+  try {
+    (window as any).electronApi.system.getStorageStats().then((res: any) => {
+      if (res && res.success) {
+        dbBytes.value = Number(res.dbBytes || 0);
+        configBytes.value = Number(res.configBytes || 0);
+        pluginsBytes.value = Number(res.pluginsBytes || 0);
+        totalBytes.value = Number(res.totalBytes || 0);
+      }
+    });
+  } catch {}
+  try {
+    window.electronApi.system.getReadmeSummary().then((res) => {
+      if (res && res.success && res.summary) {
+        toolIntro.value = res.summary;
+      } else {
+        toolIntro.value = '适用于ACFUN的开放式直播框架工具 - 一个功能强大、可扩展的 AcFun 直播工具框架，提供弹幕收集、数据分析、插件系统等功能';
+      }
+    });
+  } catch {
+    toolIntro.value = '适用于ACFUN的开放式直播框架工具 - 一个功能强大、可扩展的 AcFun 直播工具框架，提供弹幕收集、数据分析、插件系统等功能';
+  }
 });
 </script>
 
 <style scoped>
-.settings-page {
-  padding: 24px;
-  height: 100%;
-  display: flex;
-  flex-direction: column;
-}
+/* Professional Settings Page Design */
+.settings-page { height: calc(100vh - 100px); display: flex; flex-direction: column; padding: 16px; background: var(--td-bg-color-page); overflow: hidden; }
 
+/* Page Header */
 .page-header {
   margin-bottom: 24px;
 }
 
-.page-header h2 {
-  margin: 0;
+.page-title {
+  margin: 0 0 8px 0;
   font-size: 24px;
   font-weight: 600;
   color: var(--td-text-color-primary);
+  line-height: 1.3;
 }
 
-.settings-content {
+.page-subtitle {
+  margin: 0;
+  font-size: 14px;
+  color: var(--td-text-color-secondary);
+  font-weight: 400;
+}
+
+/* Settings Container */
+.settings-container { flex: 1; display: flex; gap: 16px; min-height: 0; }
+
+/* Left Navigation */
+.settings-nav {
+  width: 200px;
+  background: var(--td-bg-color-container);
+  border-radius: 8px;
+  padding: 8px;
+  border: 1px solid var(--td-border-level-1-color);
+}
+
+.nav-item {
+  position: relative;
+  display: flex;
+  align-items: center;
+  padding: 12px 16px;
+  margin-bottom: 4px;
+  border-radius: 6px;
+  cursor: pointer;
+  transition: all 0.2s ease;
+  user-select: none;
+}
+
+.nav-item:hover {
+  background: var(--td-bg-color-container-hover);
+}
+
+.nav-item.active {
+  background: var(--td-brand-color-1);
+}
+
+.nav-indicator {
+  position: absolute;
+  left: 0;
+  top: 50%;
+  transform: translateY(-50%);
+  width: 3px;
+  height: 16px;
+  background: var(--td-brand-color);
+  border-radius: 0 2px 2px 0;
+  opacity: 0;
+  transition: opacity 0.2s ease;
+}
+
+.nav-item.active .nav-indicator {
+  opacity: 1;
+}
+
+.nav-text {
+  font-size: 14px;
+  color: var(--td-text-color-primary);
+  font-weight: 500;
+  margin-left: 8px;
+}
+
+.nav-item.active .nav-text {
+  color: var(--td-brand-color);
+}
+
+/* Right Content */
+.settings-content { flex: 1; background: var(--td-bg-color-container); border-radius: 8px; border: 1px solid var(--td-border-level-1-color); display: flex; flex-direction: column; min-height: 0; }
+
+.settings-panel { flex: 1; padding: 16px; overflow-y: auto; }
+
+/* Panel Sections */
+.panel-section { margin-bottom: 16px; }
+
+.panel-section:last-child {
+  margin-bottom: 0;
+}
+
+.section-title { margin: 0 0 12px 0; font-size: 16px; font-weight: 600; color: var(--td-text-color-primary); }
+
+/* Form Elements */
+.form-group { display: flex; flex-direction: column; gap: 16px; }
+
+.form-item {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  max-width: 600px;
+}
+
+.form-label {
+  font-size: 14px;
+  color: var(--td-text-color-primary);
+  font-weight: 500;
+  line-height: 1.4;
+}
+
+.form-description {
+  font-size: 12px;
+  color: var(--td-text-color-secondary);
+  line-height: 1.4;
+  margin-top: 2px;
+}
+
+/* Switch Item Layout */
+.switch-item {
+  background: var(--td-bg-color-secondarycontainer);
+  padding: 16px;
+  border-radius: 8px;
+  border: 1px solid var(--td-border-level-1-color);
+  transition: all 0.2s ease;
+}
+
+.switch-item:hover {
+  border-color: var(--td-brand-color);
+  background: var(--td-bg-color-container-hover);
+}
+
+.switch-content {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 16px;
+}
+
+.switch-info {
   flex: 1;
+}
+
+.switch-info .form-label {
+  margin-bottom: 4px;
+  display: block;
+}
+
+/* Input Info Group */
+.input-info-group {
+  margin-bottom: 8px;
+}
+
+.input-hint {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin-top: 8px;
+  font-size: 12px;
+  color: var(--td-text-color-secondary);
+}
+
+.input-hint .t-icon {
+  font-size: 14px;
+  color: var(--td-brand-color);
+}
+
+/* Path Input Group */
+.path-input-group {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+  min-width: 0;
+}
+
+.path-input {
+  flex: 1;
+  font-size: 13px;
+  font-family: 'SF Mono', 'Monaco', 'Menlo', 'Ubuntu Mono', monospace;
+  color: var(--td-text-color-secondary);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  min-width: 0;
+}
+
+/* Text Overflow Utilities */
+.text-ellipsis {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.text-ellipsis-2 {
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
   overflow: hidden;
 }
 
-.settings-section {
-  padding: 0 24px;
+.text-ellipsis-3 {
+  display: -webkit-box;
+  -webkit-line-clamp: 3;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
 }
 
-.settings-section h3 {
-  margin: 0 0 20px 0;
+.path-select-btn {
+  padding: 8px 16px;
+  color: var(--td-brand-color);
+  border: 1px solid var(--td-border-level-1-color);
+  border-radius: 6px;
+  background: var(--td-bg-color-container);
+  transition: all 0.2s ease;
+  font-size: 13px;
+  font-weight: 500;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  height: 36px;
+  white-space: nowrap;
+  line-height: 1;
+}
+
+.path-select-btn:hover {
+  color: var(--td-brand-color-hover);
+  border-color: var(--td-brand-color);
+  background: var(--td-brand-color-1);
+}
+
+/* Button Groups */
+.button-group { 
+  display: flex; 
+  gap: 12px; 
+  margin-top: 12px; 
+  flex-wrap: wrap;
+}
+
+.action-btn {
+  padding: 8px 16px;
+  border-radius: 6px;
+  font-size: 13px;
+  font-weight: 500;
+  transition: all 0.2s ease;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  min-width: 0;
+}
+
+/* Storage Stats - Apple Style Design */
+.storage-stats { 
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+  padding: 0;
+}
+
+.storage-overview {
+  text-align: left;
+  padding: 0;
+  background: transparent;
+  border: none;
+  margin-bottom: 4px;
+}
+
+.storage-total {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.total-label {
+  font-size: 13px;
+  color: var(--td-text-color-secondary);
+  font-weight: 400;
+  margin-bottom: 4px;
+}
+
+.total-value {
+  font-size: 20px;
+  color: var(--td-text-color-primary);
+  font-weight: 600;
+  line-height: 1.1;
+}
+
+.storage-bar-container {
+  padding: 0;
+  margin: 8px 0;
+}
+
+.storage-bar { 
+  height: 8px; 
+  display: flex; 
+  border-radius: 4px; 
+  overflow: hidden; 
+  background: var(--td-bg-color-secondary); 
+  border: none;
+}
+
+.storage-bar .seg { 
+  height: 100%; 
+  transition: width 0.3s ease;
+  position: relative;
+}
+
+.seg-db { background: var(--td-brand-color); }
+.seg-config { background: var(--td-success-color); }
+.seg-plugins { background: var(--td-brand-color-5); }
+
+.storage-details {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  margin-top: 12px;
+}
+
+.storage-item {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 4px 0;
+  background: transparent;
+  border-radius: 0;
+  border: none;
+  transition: all 0.2s ease;
+}
+
+.storage-item:hover {
+  border-color: var(--td-brand-color);
+  background: var(--td-bg-color-container-hover);
+}
+
+.storage-indicator {
+  width: 10px;
+  height: 10px;
+  border-radius: 2px;
+  flex-shrink: 0;
+  margin-right: 8px;
+}
+
+.storage-label {
+  flex: 1;
+  font-size: 13px;
+  color: var(--td-text-color-primary);
+  font-weight: 500;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.storage-value {
+  font-size: 14px;
+  color: var(--td-text-color-secondary);
+  font-weight: 400;
+  text-align: right;
+  white-space: nowrap;
+}
+
+/* Port Input */
+.port-input {
+  width: 200px;
+  font-size: 14px;
+  font-weight: 500;
+}
+
+/* Protect number input from global CSS pollution - Use TDesign default styles */
+.port-input :deep(.t-input-number) {
+  width: 100% !important;
+  font: var(--td-font-body-medium) !important;
+  color: var(--td-text-color-primary) !important;
+}
+
+/* Ensure TDesign input-number controls are visible */
+.port-input :deep(.t-input-number--row) {
+  width: 100% !important;
+}
+
+.port-input :deep(.t-input-number__decrease),
+.port-input :deep(.t-input-number__increase) {
+  display: flex !important;
+  align-items: center !important;
+  justify-content: center !important;
+  cursor: pointer !important;
+}
+
+/* File Upload */
+.file-upload {
+  width: 100%;
+}
+
+/* About Section */
+.about-info {
+  max-width: 600px;
+}
+
+.app-name {
+  margin: 0 0 16px 0;
   font-size: 18px;
   font-weight: 600;
   color: var(--td-text-color-primary);
 }
 
-.about-content {
-  max-width: 600px;
-}
+.app-meta { margin-bottom: 12px; }
 
-.app-info {
-  margin-bottom: 24px;
-}
-
-.app-info h3 {
-  margin: 0 0 12px 0;
-  font-size: 20px;
-  font-weight: 600;
-  color: var(--td-text-color-primary);
-}
-
-.app-info p {
-  margin: 4px 0;
+.meta-item {
+  margin: 8px 0;
+  font-size: 14px;
   color: var(--td-text-color-secondary);
 }
 
-.links {
-  display: flex;
-  gap: 12px;
-  margin-bottom: 32px;
-}
-
-.system-info h4 {
-  margin: 0 0 16px 0;
-  font-size: 16px;
-  font-weight: 600;
-  color: var(--td-text-color-primary);
-}
-
-.info-grid {
-  display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
-  gap: 12px;
-}
-
-.info-item {
-  display: flex;
-  justify-content: space-between;
-  padding: 8px 0;
-  border-bottom: 1px solid var(--td-border-color);
-}
-
-.info-item .label {
+.meta-label {
   color: var(--td-text-color-secondary);
+  margin-right: 8px;
 }
 
-.info-item .value {
+.meta-value {
   color: var(--td-text-color-primary);
   font-weight: 500;
 }
 
-.settings-footer {
-  display: flex;
-  justify-content: flex-end;
-  gap: 12px;
-  padding-top: 24px;
-  border-top: 1px solid var(--td-border-color);
-  margin-top: 24px;
-}
-
-.section-desc {
+.app-description {
+  margin: 0 0 32px 0;
   font-size: 14px;
   color: var(--td-text-color-secondary);
+  line-height: 1.6;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  display: -webkit-box;
+  -webkit-line-clamp: 3;
+  -webkit-box-orient: vertical;
+  max-height: 4.8em;
+}
+
+.app-links {
+  display: flex;
+  gap: 12px;
+}
+
+.github-btn {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+}
+
+
+
+/* Custom Switch Styling */
+:deep(.t-switch) {
+  transform: scale(1.1);
+  align-self: flex-start;
+}
+
+/* Input Enhancements */
+:deep(.t-input),
+:deep(.t-input-number) {
+  border-radius: 6px;
+  border: 1px solid var(--td-border-level-1-color);
+  transition: all 0.2s ease;
+  font-size: 14px;
+}
+
+:deep(.t-input:hover),
+:deep(.t-input-number:hover) {
+  border-color: var(--td-brand-color);
+}
+
+:deep(.t-input:focus),
+:deep(.t-input-number:focus) {
+  border-color: var(--td-brand-color);
+  box-shadow: 0 0 0 2px var(--td-brand-color-focus);
+}
+
+:deep(.t-input--readonly) {
+  background: var(--td-bg-color-secondarycontainer);
+  color: var(--td-text-color-secondary);
+}
+
+/* Enhanced Section Styling */
+.panel-section {
+  background: var(--td-bg-color-container);
+  border: 1px solid var(--td-border-level-1-color);
+  border-radius: 8px;
+  padding: 20px;
+  margin-bottom: 16px;
+  transition: all 0.2s ease;
+}
+
+.panel-section:last-child {
+  margin-bottom: 0;
+}
+
+.panel-section:hover {
+  border-color: var(--td-brand-color-3);
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.04);
+}
+
+.section-title {
   margin: 0 0 16px 0;
-  line-height: 1.5;
+  font-size: 16px;
+  font-weight: 600;
+  color: var(--td-text-color-primary);
+  display: flex;
+  align-items: center;
+  gap: 8px;
 }
 
-.diagnostic-result {
-  margin-top: 16px;
+.section-title::before {
+  content: '';
+  width: 4px;
+  height: 16px;
+  background: var(--td-brand-color);
+  border-radius: 2px;
 }
 
-:deep(.t-tabs__content) {
-  height: 100%;
-  overflow-y: auto;
+
+
+:deep(.t-button-variant-outline) {
+  border: 1px solid var(--td-border-level-1-color);
+  color: var(--td-text-color-primary);
+  background: var(--td-bg-color-container);
+}
+
+:deep(.t-button-variant-outline:hover) {
+  border-color: var(--td-brand-color);
+  color: var(--td-brand-color);
+  background: var(--td-brand-color-1);
+}
+
+:deep(.t-button-variant-outline:active) {
+  background: var(--td-brand-color-2);
+}
+
+:deep(.t-button-theme-primary) {
+  font-weight: 600;
+}
+
+/* Fix TDesign button content alignment */
+:deep(.t-button__content) {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  line-height: 1;
+}
+
+:deep(.t-button__content .t-icon) {
+  flex-shrink: 0;
+  font-size: 14px;
+  line-height: 1;
+}
+
+/* Upload Styling */
+:deep(.t-upload__file-input) {
+  border-radius: 6px;
+  border: 1px solid var(--td-border-level-1-color);
+}
+
+:deep(.t-upload__file-input:hover) {
+  border-color: var(--td-brand-color);
+}
+
+/* Responsive Design */
+@media (max-width: 768px) {
+  .settings-container {
+    flex-direction: column;
+  }
+  
+  .settings-nav {
+    width: 100%;
+    display: flex;
+    overflow-x: auto;
+    padding: 8px;
+  }
+  
+  .nav-item {
+    flex-shrink: 0;
+    margin-right: 8px;
+    margin-bottom: 0;
+  }
+  
+  .button-group {
+    flex-direction: column;
+  }
+  
+  .action-btn {
+    width: 100%;
+    justify-content: center;
+  }
+  
+  .storage-details {
+    gap: 8px;
+  }
+  
+  .storage-item {
+    flex-direction: column;
+    align-items: flex-start;
+    gap: 8px;
+  }
+  
+  .storage-value,
+  .storage-percent {
+    text-align: left;
+    min-width: auto;
+  }
+  
+  .path-input-group {
+    flex-direction: column;
+    align-items: stretch;
+  }
+  
+  .path-input {
+    width: 100%;
+  }
+}
+
+@media (max-width: 480px) {
+  .settings-page {
+    padding: 12px;
+  }
+  
+  .page-title {
+    font-size: 20px;
+  }
+  
+  .panel-section {
+    padding: 16px;
+  }
+  
+  .switch-content {
+    flex-direction: column;
+    align-items: flex-start;
+    gap: 12px;
+  }
+  
+  .switch-info {
+    width: 100%;
+  }
 }
 </style>

@@ -66,6 +66,17 @@ declare global {
         genDiagnosticZip: () => Promise<any>;
         showItemInFolder: (path: string) => Promise<{ success: boolean; error?: string }>;
         openExternal: (url: string) => Promise<{ success: boolean; error?: string }>;
+        getUserDataDir: () => Promise<{ success: boolean; path?: string; error?: string }>;
+        getReadmeSummary: () => Promise<{ success: boolean; summary?: string; error?: string }>;
+      };
+      systemExt: {
+        setAutoStart: (enabled: boolean) => Promise<{ success: boolean; error?: string }>;
+        setMinimizeToTray: (enabled: boolean) => Promise<{ success: boolean; error?: string }>;
+      };
+      config: {
+        exportZip: () => Promise<{ success: boolean; filepath?: string; error?: string }>;
+        importZip: (zipPath: string) => Promise<{ success: boolean; error?: string }>;
+        setDir: (dir: string) => Promise<{ success: boolean; error?: string }>;
       };
       room: {
         connect: (roomId: string) => Promise<{ success: boolean; code?: string; error?: string }>;
@@ -154,7 +165,14 @@ declare global {
         enableHotReload: (pluginId: string) => Promise<{ success: boolean; error?: string }>;
         disableHotReload: (pluginId: string) => Promise<{ success: boolean; error?: string }>;
         testConnection: (config: any) => Promise<{ success: boolean; error?: string }>;
-        // 弹窗能力已移除：不再暴露 plugin.popup
+        // 插件窗口能力：提供打开/关闭/聚焦/查询等接口
+        window: {
+          open: (pluginId: string) => Promise<{ success: boolean; error?: string }>;
+          focus: (pluginId: string) => Promise<{ success: boolean; error?: string }>;
+          close: (pluginId: string) => Promise<{ success: boolean; error?: string }>;
+          isOpen: (pluginId: string) => Promise<{ success: boolean; open: boolean; error?: string }>;
+          list: () => Promise<{ success: boolean; windows: Array<{ pluginId: string; visible: boolean; focused: boolean }> } | { success: false; error: string }>;
+        };
       };
       wujie: {
         getUIConfig: (

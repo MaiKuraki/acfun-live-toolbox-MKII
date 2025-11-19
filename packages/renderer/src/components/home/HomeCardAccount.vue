@@ -69,7 +69,6 @@
     <!-- 二维码登录对话框 -->
     <t-dialog 
       :visible="qrDialogVisible"
-      @update:visible="(v) => (qrDialogVisible = v)"
       title="二维码登录" 
       width="420px"
       :close-on-overlay-click="false"
@@ -377,3 +376,4 @@ const formatCountdown = (expireAt: Date) => {
 .qr-countdown { margin-top: 12px; padding: 8px 12px; background: var(--td-bg-color-container-hover); border-radius: 4px; font-size: 12px; color: var(--td-text-color-secondary); }
 .qr-dialog-footer { display: flex; justify-content: flex-end; gap: 8px; }
 </style>
+const onUpdateVisible = (v: boolean) => { qrDialogVisible.value = v; };

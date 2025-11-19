@@ -1,5 +1,6 @@
 import { defineStore } from 'pinia';
-import { ref, computed } from 'vue';
+import { ref, computed, watch } from 'vue';
+import { reportReadonlyUpdate } from '../utils/readonlyReporter';
 import { registerPluginRoute, unregisterPluginRoute } from '../router/index';
 import { getPluginHostingConfig, buildPluginPageUrl, getApiBase, resolvePrimaryHostingType } from '../utils/hosting';
 
@@ -94,6 +95,23 @@ export const usePluginStore = defineStore('plugin', () => {
     loading: loadingPlugins.value.length,
   }));
 
+  // 变更订阅：插件列表/加载状态变化时，调用统一只读上报
+  watch(
+    () => [plugins.value, isLoading.value],
+    () => {
+      try {
+        reportReadonlyUpdate({
+          plugin: {
+            list: plugins.value,
+            stats: stats.value,
+            loading: isLoading.value,
+          }
+        });
+      } catch {}
+    },
+    { deep: true }
+  );
+
   // 动作
   async function loadPlugins() {
     try {
@@ -183,7 +201,7 @@ export const usePluginStore = defineStore('plugin', () => {
       
       // 使用真实的preload API获取插件列表（统一数据结构）
       const result = await window.electronApi.plugin.list();
-      if (result && 'success' in result && result.success && Array.isArray(result.data)) {
+      if (result && 'success' in result && (result as any).success && Array.isArray((result as any).data)) {
         const mapStatus = (s: string): 'active' | 'inactive' | 'error' | 'loading' => {
           switch ((s || '').toLowerCase()) {
             case 'enabled':
@@ -199,8 +217,8 @@ export const usePluginStore = defineStore('plugin', () => {
               return 'loading';
           }
         };
-        console.log('[plugin] 加载插件列表: count=', (result.data as any[]).length);
-        plugins.value = (result.data as any[]).map((p: any) => {
+        console.log('[plugin] 加载插件列表: count=', ((result as any).data as any[]).length);
+        plugins.value = ((result as any).data as any[]).map((p: any) => {
           const schemaKeys = p?.manifest?.config ? Object.keys(p.manifest.config) : [];
           console.log('[plugin] 映射插件', p.id, 'schemaKeys=', schemaKeys);
           const base = getApiBase();
@@ -278,7 +296,7 @@ export const usePluginStore = defineStore('plugin', () => {
       }
       // 重新拉取插件列表来刷新状态
       const result = await window.electronApi.plugin.list();
-      if (result && 'success' in result && result.success && Array.isArray(result.data)) {
+      if (result && 'success' in result && (result as any).success && Array.isArray((result as any).data)) {
         const mapStatus = (s: string): 'active' | 'inactive' | 'error' | 'loading' => {
           switch ((s || '').toLowerCase()) {
             case 'enabled':
@@ -294,8 +312,8 @@ export const usePluginStore = defineStore('plugin', () => {
               return 'loading';
           }
         };
-        console.log('[plugin] 刷新插件状态: count=', (result.data as any[]).length);
-        plugins.value = (result.data as any[]).map((p: any) => {
+        console.log('[plugin] 刷新插件状态: count=', ((result as any).data as any[]).length);
+        plugins.value = ((result as any).data as any[]).map((p: any) => {
           const schemaKeys = p?.manifest?.config ? Object.keys(p.manifest.config) : [];
           console.log('[plugin] 映射插件', p.id, 'schemaKeys=', schemaKeys);
           const base = getApiBase();
@@ -621,7 +639,8 @@ export const usePluginStore = defineStore('plugin', () => {
   async function getPluginOverlayUrl(pluginId: string): Promise<string | null> {
     try {
       const conf = await getPluginHostingConfig(pluginId);
-      const item = conf.overlay || undefined;
+      const item = conf.overlay || null;
+      if (!item) return null;
       return buildPluginPageUrl(pluginId, 'overlay', item || undefined);
     } catch (err) {
       console.warn('[plugin] 获取Overlay托管URL失败:', err);
@@ -684,15 +703,15 @@ export const usePluginStore = defineStore('plugin', () => {
     try {
       // 使用真实的preload API获取插件日志
       const result = await window.electronApi.plugin.logs(pluginId);
-      if ('success' in result && result.success) {
-        const mapped = (result.data || []).map((log: any) => ({
+      if ('success' in result && (result as any).success) {
+        const mapped = (((result as any).data) || []).map((log: any) => ({
           timestamp: Number(log.timestamp),
           level: log.level as 'error' | 'warn' | 'info' | 'debug',
           source: log.source || 'system',
           message: log.message
         }));
         // 统一按时间倒序
-        return mapped.sort((a, b) => b.timestamp - a.timestamp);
+        return mapped.sort((a: any, b: any) => b.timestamp - a.timestamp);
       }
       if ('error' in result) {
         console.error('Failed to get plugin logs:', result.error);
@@ -883,14 +902,14 @@ export const usePluginStore = defineStore('plugin', () => {
     try {
       // 使用真实的preload API获取系统日志
       const result = await window.electronApi.plugin.logs(undefined, 100);
-      if ('success' in result && result.success) {
-        const mapped = (result.data || []).map((log: any) => ({
+      if ('success' in result && (result as any).success) {
+        const mapped = (((result as any).data) || []).map((log: any) => ({
           timestamp: Number(log.timestamp),
           level: log.level as 'error' | 'warn' | 'info' | 'debug',
           source: log.source || 'system',
           message: log.message
         }));
-        return mapped.sort((a, b) => b.timestamp - a.timestamp);
+        return mapped.sort((a: any, b: any) => b.timestamp - a.timestamp);
       }
       if ('error' in result) {
         console.error('Failed to get system logs:', result.error);

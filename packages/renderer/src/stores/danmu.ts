@@ -1,5 +1,6 @@
 import { defineStore } from 'pinia';
-import { ref, computed } from 'vue';
+import { ref, computed, watch } from 'vue';
+import { reportReadonlyUpdate } from '../utils/readonlyReporter';
 import type { UserInfo } from 'acfunlive-http-api';
 
 // 为避免在渲染进程打包引入 acfunlive-http-api 的运行时代码（导致动态 require 'crypto'），
@@ -262,6 +263,26 @@ export const useDanmuStore = defineStore('danmu', () => {
   function updateFilter(newFilter: Partial<DanmuFilter>) {
     filter.value = { ...filter.value, ...newFilter };
   }
+
+  // 变更订阅：弹幕相关状态变化统一上报
+  watch(
+    () => [currentRoom.value, isConnected.value, isConnecting.value, error.value, stats.value, danmuList.value],
+    () => {
+      try {
+        reportReadonlyUpdate({
+          danmu: {
+            currentRoom: currentRoom.value,
+            isConnected: isConnected.value,
+            isConnecting: isConnecting.value,
+            error: error.value,
+            stats: stats.value,
+            list: danmuList.value,
+          }
+        });
+      } catch {}
+    },
+    { deep: true }
+  );
   
   return {
     // 状态

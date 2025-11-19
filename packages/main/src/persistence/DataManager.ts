@@ -37,6 +37,8 @@ class MessageCenter {
   private maxQueueSizePerChannel = 1000; // configurable if needed
   private persistDir: string;
   private cleanupTimer?: NodeJS.Timeout;
+  private maxFileSizeBytes = 5 * 1024 * 1024;
+  private maxRotatedFilesPerChannel = 5;
 
   static getInstance(): MessageCenter {
     if (!MessageCenter.instance) {
@@ -95,7 +97,8 @@ class MessageCenter {
     if (options.persist) {
       const file = this.getChannelFile(channel);
       try {
-        fs.appendFileSync(file, JSON.stringify(record) + '\n');
+        this.ensureRotate(channel, file);
+        fs.promises.appendFile(file, JSON.stringify(record) + '\n').catch(() => {});
       } catch {}
     }
     return record;
@@ -153,6 +156,30 @@ class MessageCenter {
   private getChannelFile(channel: string): string {
     const safe = channel.replace(/[^a-zA-Z0-9._-]/g, '_');
     return path.join(this.persistDir, `${safe}.jsonl`);
+  }
+
+  
+  private ensureRotate(channel: string, currentFile: string): void {
+    try {
+      const stat = fs.existsSync(currentFile) ? fs.statSync(currentFile) : null;
+      if (stat && stat.size >= this.maxFileSizeBytes) {
+        const base = path.basename(currentFile, '.jsonl');
+        const dir = path.dirname(currentFile);
+        const ts = Date.now();
+        const rotated = path.join(dir, `${base}.${ts}.jsonl`);
+        try { fs.renameSync(currentFile, rotated); } catch {}
+        try { fs.writeFileSync(currentFile, ''); } catch {}
+        // prune old rotated files
+        const prefix = `${base}.`;
+        const files = fs.readdirSync(dir).filter(f => f.startsWith(prefix) && f.endsWith('.jsonl'))
+          .map(f => ({ f, mtime: fs.statSync(path.join(dir, f)).mtimeMs }))
+          .sort((a, b) => b.mtime - a.mtime);
+        const excess = files.slice(this.maxRotatedFilesPerChannel);
+        for (const ex of excess) {
+          try { fs.unlinkSync(path.join(dir, ex.f)); } catch {}
+        }
+      }
+    } catch {}
   }
 }
 

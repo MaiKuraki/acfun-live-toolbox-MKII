@@ -1,5 +1,7 @@
 import { BrowserWindow } from 'electron';
+import { getLogManager } from '../logging/LogManager';
 import path from 'path';
+import { TrayManager } from './TrayManager';
 
 const VITE_DEV_SERVER_URL = process.env['VITE_DEV_SERVER_URL'];
 
@@ -9,9 +11,10 @@ const VITE_DEV_SERVER_URL = process.env['VITE_DEV_SERVER_URL'];
  */
 export class WindowManager {
   private mainWindow: BrowserWindow | null = null;
+  private trayManager: TrayManager;
 
   constructor() {
-    // The constructor is simplified and no longer requires initConfig.
+    this.trayManager = new TrayManager(() => this.mainWindow);
   }
 
   public createWindow(): void {
@@ -64,9 +67,25 @@ export class WindowManager {
     this.mainWindow.on('closed', () => {
       this.mainWindow = null;
     });
+
+    try {
+      const lm = getLogManager();
+      this.mainWindow.webContents.on('console-message', (_event, level, message, line, sourceId) => {
+        try {
+          const lvl = level === 2 ? 'error' : level === 1 ? 'warn' : 'info';
+          lm.addLog('renderer', `[${sourceId}:${line}] ${String(message)}`, lvl as any);
+        } catch {}
+      });
+    } catch {}
+
+    try { this.trayManager.bindWindowBehavior(this.mainWindow); } catch {}
   }
 
   public getMainWindow(): BrowserWindow | null {
     return this.mainWindow;
+  }
+
+  public setMinimizeToTray(enabled: boolean) {
+    try { this.trayManager.setEnabled(enabled); } catch {}
   }
 }

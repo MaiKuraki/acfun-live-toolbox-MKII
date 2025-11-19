@@ -242,7 +242,7 @@ export class WsHub {
     this.pingInterval = setInterval(() => {
       const pingMessage: WsMessage = { op: 'ping' };
       this.broadcast(pingMessage);
-    }, 30000); // 每30秒发送一次心跳
+    }, WS_HEARTBEAT_MS);
   }
 
   /**
@@ -276,3 +276,4 @@ export class WsHub {
     console.log('[WsHub] WebSocket server closed');
   }
 }
+import { WS_HEARTBEAT_MS } from '../config/config';

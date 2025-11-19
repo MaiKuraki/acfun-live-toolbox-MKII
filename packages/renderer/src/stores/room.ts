@@ -1,5 +1,6 @@
 import { defineStore } from 'pinia';
-import { ref, computed } from 'vue';
+import { ref, computed, watch } from 'vue';
+import { reportReadonlyUpdate } from '../utils/readonlyReporter';
 
 // 定义我们自己的房间状态类型
 export type RoomStatus = 'connected' | 'connecting' | 'disconnected' | 'error' | 'closed';
@@ -67,6 +68,19 @@ export const useRoomStore = defineStore('room', () => {
     lastUpdateTime: new Date(),
   }));
 
+  // 变更订阅：房间列表发生变化时，调用统一只读上报
+  watch(rooms, () => {
+    try {
+      reportReadonlyUpdate({
+        rooms: {
+          list: rooms.value,
+          liveRoomsCount: liveRooms.value.length,
+          totalViewers: totalViewers.value,
+        }
+      });
+    } catch {}
+  }, { deep: true });
+
   // 动作
   async function loadRooms() {
     try {
@@ -74,8 +88,8 @@ export const useRoomStore = defineStore('room', () => {
       error.value = null;
       // 开发环境保护：在纯 Vite 预览中，window.electronApi 可能不存在
       if (!window.electronApi?.room) {
-        console.warn('[room] electronApi.room 未初始化，跳过房间加载（开发预览环境）');
-        rooms.value = [];
+        console.warn('[room] electronApi.room 未初始化，使用本地存储恢复房间列表');
+        rooms.value = readRoomsFromStorage();
         isLoading.value = false;
         return;
       }
@@ -88,8 +102,8 @@ export const useRoomStore = defineStore('room', () => {
       }
       
       if ('rooms' in result) {
-        // 转换API返回的数据格式为我们的Room格式
-        rooms.value = result.rooms.map((apiRoom: any) => ({
+        // 转换API返回的数据格式为我们的Room格式（仅连接中的房间）
+        const connectedRooms: Room[] = result.rooms.map((apiRoom: any) => ({
           id: apiRoom.roomId,
           liveId: apiRoom.roomId,
           liverUID: `uid_${apiRoom.roomId}`,
@@ -120,51 +134,68 @@ export const useRoomStore = defineStore('room', () => {
           label: '',
           autoConnect: false
         }));
-
-        // 拉取房间详情并填充元数据
-        try {
-          const detailPromises = rooms.value.map(async (room) => {
-            try {
-              const detailRes = await window.electronApi.room.details(room.id);
-              if (detailRes && detailRes.success && detailRes.data) {
-                const d = detailRes.data;
-                const mappedStatus = mapToRoomStatus(d.status || room.status);
-              return {
-                ...room,
-                title: typeof d.title === 'string' ? d.title : room.title,
-                coverUrl: typeof d.coverUrl === 'string' ? d.coverUrl : room.coverUrl,
-                status: mappedStatus,
-                isLive: mappedStatus === 'connected',
-                viewerCount: typeof d.viewerCount === 'number' ? d.viewerCount : room.viewerCount,
-                onlineCount: typeof d.viewerCount === 'number' ? d.viewerCount : room.onlineCount,
-                likeCount: typeof d.likeCount === 'number' ? d.likeCount : room.likeCount,
-                startTime: typeof d.startTime === 'number' ? d.startTime : room.startTime,
-                streamer: {
-                  userId: d.streamer?.userId || room.streamer.userId,
-                  userName: d.streamer?.userName || room.streamer.userName,
-                  avatar: d.streamer?.avatar || room.streamer.avatar,
-                  level: typeof d.streamer?.level === 'number' ? d.streamer.level : room.streamer.level
+        // 合并本地存储的房间（未连接的房间也保留在列表）
+        const savedRooms = readRoomsFromStorage();
+        const mergedMap = new Map<string, Room>();
+        for (const r of savedRooms) mergedMap.set(r.id, r);
+        for (const r of connectedRooms) mergedMap.set(r.id, r);
+        rooms.value = Array.from(mergedMap.values());
+        // 先结束加载，随后异步刷新详情和状态，不阻塞首屏
+        isLoading.value = false;
+        (async () => {
+          try {
+            const detailPromises = rooms.value.map(async (room) => {
+              try {
+                const detailRes = await window.electronApi.room.details(room.id);
+                if (detailRes && detailRes.success && detailRes.data) {
+                  const d = detailRes.data;
+                  const mappedStatus = mapToRoomStatus(d.status || room.status);
+                  updateRoomSettings(room.id, {
+                    title: typeof d.title === 'string' ? d.title : room.title,
+                    coverUrl: typeof d.coverUrl === 'string' ? d.coverUrl : room.coverUrl,
+                    status: mappedStatus,
+                    isLive: mappedStatus === 'connected',
+                    viewerCount: typeof d.viewerCount === 'number' ? d.viewerCount : room.viewerCount,
+                    onlineCount: typeof d.viewerCount === 'number' ? d.viewerCount : room.onlineCount,
+                    likeCount: typeof d.likeCount === 'number' ? d.likeCount : room.likeCount,
+                    startTime: typeof d.startTime === 'number' ? d.startTime : room.startTime,
+                    streamer: {
+                      userId: d.streamer?.userId || room.streamer.userId,
+                      userName: d.streamer?.userName || room.streamer.userName,
+                      avatar: d.streamer?.avatar || room.streamer.avatar,
+                      level: typeof d.streamer?.level === 'number' ? d.streamer.level : room.streamer.level
+                    }
+                  });
                 }
-              } as Room;
+              } catch (e) {
+                console.warn(`Failed to fetch details for room ${room.id}:`, e);
               }
-            } catch (e) {
-              console.warn(`Failed to fetch details for room ${room.id}:`, e);
-            }
-            return room;
-          });
-          rooms.value = await Promise.all(detailPromises);
-          saveRoomsToStorage();
-        } catch (e) {
-          console.warn('Populate room details failed:', e);
-        }
+            });
+            await Promise.allSettled(detailPromises);
+            await refreshRoomStatus();
+          } catch (e) {
+            console.warn('Async details/status refresh failed:', e);
+          }
+        })();
       }
       
-      // 刷新房间状态
-      await refreshRoomStatus();
+      // 自动连接：对存储中的房间启用 autoConnect 时尝试连接（后台进行）
+      try {
+        const autoConnectRooms = rooms.value.filter(r => r.autoConnect);
+        (async () => {
+          try {
+            await Promise.allSettled(autoConnectRooms.map(async (r) => {
+              try { await window.electronApi.room.connect(r.id); } catch {}
+            }));
+            await refreshRoomStatus();
+          } catch {}
+        })();
+      } catch {}
     } catch (err) {
       console.error('Failed to load rooms:', err);
       error.value = err instanceof Error ? err.message : '加载房间列表失败';
     } finally {
+      // isLoading 在上文合并后已置为 false；此处保持幂等
       isLoading.value = false;
     }
   }
@@ -265,7 +296,12 @@ export const useRoomStore = defineStore('room', () => {
       const result = await window.electronApi.room.connect(roomId);
       
       if (!result.success) {
-        throw new Error(result.error || '连接房间失败');
+        const code = (result as any).code || '';
+        const msg = String((result as any).error || '连接房间失败');
+        // 已连接视为非致命，继续后续流程；其他失败也以离线状态继续入列
+        if (code !== 'already_connected') {
+          console.warn(`connect room failed(${code}): ${msg}`);
+        }
       }
       
       // 获取房间状态信息
@@ -279,8 +315,8 @@ export const useRoomStore = defineStore('room', () => {
        let isLive = false;
       
       if ('error' in statusResult) {
-        console.warn(`Failed to get status for room ${roomId}:`, statusResult.error);
-        // 使用默认值
+        console.warn(`Failed to get status for room ${roomId}:`, (statusResult as any).error);
+        // 使用默认值（保持离线/连接中状态）
       } else {
          roomStatus = mapToRoomStatus(statusResult.status || 'connecting');
          connectedAt = statusResult.connectedAt || Date.now();
@@ -361,7 +397,8 @@ export const useRoomStore = defineStore('room', () => {
     } catch (err) {
       console.error('Failed to add room:', err);
       error.value = err instanceof Error ? err.message : '添加房间失败';
-      throw err;
+      // 不中断流程：保留错误提示，但不抛出以避免阻止后续交互
+      return undefined as any;
     } finally {
       isLoading.value = false;
     }
@@ -403,6 +440,49 @@ export const useRoomStore = defineStore('room', () => {
       localStorage.setItem('monitoredRooms', JSON.stringify(rooms.value));
     } catch (err) {
       console.error('Failed to save rooms to storage:', err);
+    }
+  }
+
+  function readRoomsFromStorage(): Room[] {
+    try {
+      const raw = localStorage.getItem('monitoredRooms');
+      if (!raw) return [];
+      const list = JSON.parse(raw);
+      if (!Array.isArray(list)) return [];
+      return list.map((r: any) => ({
+        id: String(r.id || r.liveId || ''),
+        liveId: String(r.liveId || r.id || ''),
+        liverUID: String(r.liverUID || `uid_${r.id || r.liveId || ''}`),
+        title: typeof r.title === 'string' ? r.title : `直播间 ${r.id || r.liveId || ''}`,
+        coverUrl: typeof r.coverUrl === 'string' ? r.coverUrl : '',
+        onlineCount: Number(r.onlineCount || 0),
+        status: mapToRoomStatus(String(r.status || 'disconnected')),
+        likeCount: Number(r.likeCount || 0),
+        startTime: Number(r.startTime || Date.now()),
+        connectedAt: typeof r.connectedAt === 'number' ? r.connectedAt : null,
+        lastEventAt: typeof r.lastEventAt === 'number' ? r.lastEventAt : null,
+        streamer: {
+          userId: String(r?.streamer?.userId || `uid_${r.id || r.liveId || ''}`),
+          userName: typeof r?.streamer?.userName === 'string' ? r.streamer.userName : `主播${r.id || r.liveId || ''}`,
+          avatar: typeof r?.streamer?.avatar === 'string' ? r.streamer.avatar : '',
+          level: Number(r?.streamer?.level || 1)
+        },
+        category: typeof r.category === 'string' ? r.category : '游戏',
+        subCategory: typeof r.subCategory === 'string' ? r.subCategory : '其他游戏',
+        name: typeof r.name === 'string' ? r.name : `直播间 ${r.id || r.liveId || ''}`,
+        uperName: typeof r.uperName === 'string' ? r.uperName : `主播${r.id || r.liveId || ''}`,
+        avatar: typeof r.avatar === 'string' ? r.avatar : '',
+        isLive: Boolean(r.isLive),
+        viewerCount: Number(r.viewerCount || 0),
+        lastUpdate: new Date(typeof r.lastUpdate === 'string' ? r.lastUpdate : (r.lastEventAt || Date.now())),
+        url: typeof r.url === 'string' ? r.url : `https://live.acfun.cn/live/${r.id || r.liveId || ''}`,
+        priority: Number(r.priority || 5),
+        label: typeof r.label === 'string' ? r.label : '',
+        autoConnect: Boolean(r.autoConnect)
+      })) as Room[];
+    } catch (e) {
+      console.warn('Failed to read rooms from storage:', e);
+      return [];
     }
   }
 

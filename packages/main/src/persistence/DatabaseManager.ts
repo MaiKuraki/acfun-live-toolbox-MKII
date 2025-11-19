@@ -33,8 +33,10 @@ export class DatabaseManager {
           console.error('Error opening database:', err.message);
           reject(err);
         } else {
-          console.log('Database connected at:', this.dbPath);
-          this.createTables()
+          // Use console.info to avoid interception loops
+          console.info('Database connected at:', this.dbPath);
+          this.applyPragma()
+            .then(() => this.createTables())
             .then(() => resolve())
             .catch(reject);
         }
@@ -162,6 +164,25 @@ export class DatabaseManager {
           resolve();
         }
       });
+    });
+  }
+
+  private async applyPragma(): Promise<void> {
+    return new Promise((resolve) => {
+      if (!this.db) {
+        resolve();
+        return;
+      }
+      try {
+        this.db.run('PRAGMA journal_mode=WAL');
+        this.db.run('PRAGMA synchronous=NORMAL');
+        this.db.run('PRAGMA busy_timeout=3000');
+        this.db.run('PRAGMA temp_store=MEMORY');
+        this.db.run('PRAGMA journal_size_limit=10485760');
+        resolve();
+      } catch (_) {
+        resolve();
+      }
     });
   }
 

@@ -6,69 +6,111 @@
   <title>示例插件 Overlay</title>
   <style>
     html, body { height: 100%; margin: 0; }
-    body { display: flex; align-items: center; justify-content: center; font-family: system-ui, -apple-system, Segoe UI, Roboto, Helvetica, Arial, sans-serif; }
-    .wrapper { color: #111; background: transparent; }
-    .badge { background: rgba(255,255,255,0.85); padding: 10px 14px; border-radius: 10px; box-shadow: 0 6px 24px rgba(0,0,0,.12); font-weight: 600; }
-    .debug { position: fixed; left: 8px; bottom: 8px; background: rgba(0,0,0,0.6); color: #fff; padding: 8px 10px; border-radius: 6px; font-size: 12px; max-width: 40vw; max-height: 30vh; overflow: auto; white-space: pre-wrap; }
+    body { height: 100%; display: flex; flex-direction: column; font-family: system-ui, -apple-system, Segoe UI, Roboto, Helvetica, Arial, sans-serif; }
+    .app { display: flex; flex-direction: column; gap: 12px; padding: 12px; box-sizing: border-box; height: 100%; }
+    .row { background: rgba(255,255,255,0.85); border-radius: 10px; box-shadow: 0 6px 24px rgba(0,0,0,.12); padding: 12px 14px; }
+    .row .title { font-size: 18px; font-weight: 600; margin-bottom: 8px; }
+    .store pre { margin: 0; padding: 0; font-size: 12px; line-height: 1.5; white-space: pre-wrap; max-height: 32vh; overflow: auto; }
+    .log .list { height: 40vh; overflow-y: auto; background: rgba(0,0,0,0.03); border-radius: 8px; padding: 8px; }
+    .log .item { font-size: 13px; line-height: 1.6; padding: 4px 6px; border-bottom: 1px dashed #ddd; }
   </style>
   <script>
     (function(){
+      var storeSnap = {};
+      function getBus(){ try { return (window.__WUJIE && window.__WUJIE.bus) || (window.wujie && window.wujie.bus) || null; } catch(e){ return null; } }
       function resolveInitialBg(){
         try {
-          var shared = (window.__WUJIE_PROPS__ && window.__WUJIE_PROPS__.shared) || (window.__WUJIE_SHARED__ || {});
-          var store = shared && shared.readonlyStore || {};
+          var shared = (window.__WUJIE_PROPS__ && window.__WUJIE_PROPS__.shared) || (window.__WUJIE_SHARED || {});
+          var store = (shared && shared.readonlyStore) || {};
           var ov = store.overlay || {};
           var style = ov.style || {};
           return style.backgroundColor || '#eeeeee';
         } catch(e) { return '#eeeeee'; }
       }
       function applyBg(color){ try { document.body.style.background = color || '#eeeeee'; } catch(e){} }
-      function showConfig(cfg){ try { var el = document.getElementById('cfg'); if (el) { el.textContent = JSON.stringify(cfg, null, 2); } } catch(e){} }
-      function onMessage(ev){
-        var data = ev && ev.data || {}; if(!data || typeof data !== 'object') return;
-        // Overlay 事件桥接：可能经由 wrapper 注入
+      function renderStore(){ try { var el = document.getElementById('store'); if (el) el.textContent = JSON.stringify(storeSnap, null, 2); } catch(e){} }
+      function prependLog(text){ try { var list = document.getElementById('logList'); if(!list) return; var item = document.createElement('div'); item.className = 'item'; item.textContent = text; if(list.firstChild) list.insertBefore(item, list.firstChild); else list.appendChild(item); } catch(e){} }
+      function handleEnvelope(data){
+        if(!data || typeof data !== 'object') return;
         if(data.type === 'overlay-event'){
           var evt = data.event;
           if(evt === 'readonly-store-init'){
+            var payload = data.payload || {};
+            storeSnap = payload || {};
+            var ov = storeSnap.overlay || {}; var style = ov.style || {};
+            applyBg(style.backgroundColor || resolveInitialBg());
+            renderStore();
+            try { prependLog('[readonly-store-init] overlayId=' + String(ov && ov.id || '') + ' keys=' + Object.keys(ov||{}).join(',')); } catch(e){}
+          } else if(evt === 'overlay-updated' || evt === 'overlay-update' || evt === 'readonly-store-update'){
             var payload = data.payload || {}; var ov = (payload.overlay||{}); var style = ov.style||{};
-            applyBg(style.backgroundColor||resolveInitialBg());
-            var cfg = { overlayId: ov.id, pluginId: ov.pluginId, updatedAt: ov.updatedAt, style: style };
-            console.log('[overlay.html] readonly-store-init received config:', cfg);
-            showConfig(cfg);
-          } else if(evt === 'overlay-updated' || evt === 'overlay-update'){
-            var payload = data.payload || {}; var ov = (payload.overlay||{}); var style = ov.style||{};
-            // 如果主进程在更新时附带了配置更新时间，可在此使用；否则直接应用只读仓库中的样式
-            var color = style.backgroundColor || resolveInitialBg();
-            applyBg(color);
-            var cfg = { overlayId: ov.id, pluginId: ov.pluginId, updatedAt: ov.updatedAt, style: style };
-            console.log('[overlay.html] overlay-updated received config:', cfg);
-            showConfig(cfg);
+            if(!storeSnap || typeof storeSnap !== 'object') storeSnap = {};
+            storeSnap.overlay = Object.assign({}, storeSnap.overlay||{}, ov||{});
+            applyBg(style.backgroundColor || resolveInitialBg());
+            renderStore();
+            try { prependLog('[readonly-store-update] overlayId=' + String(ov && ov.id || '') + ' keys=' + Object.keys(ov||{}).join(',')); } catch(e){}
           } else {
-            // 其他 overlay 事件也打印，便于排查
-            try { console.log('[overlay.html] overlay-event received:', { event: evt, payload: data.payload }); } catch(e){}
+            // 普通消息：记录到日志列表（最新在上）
+            try {
+              var msgStr = '[event: ' + String(evt) + '] ' + JSON.stringify(data.payload);
+              prependLog(msgStr);
+            } catch(e){}
           }
         } else if (data.type === 'plugin-event' && data.eventType === 'lifecycle') {
-          // 当宿主在生命周期事件中透传了 config-updated 时，优先使用载荷中的配置颜色
           if (data.event === 'config-updated') {
-            var payload = data.payload || {};
-            var cfg = (payload.config || {});
+            var payload = data.payload || {}; var cfg = (payload.config || {});
             var color = typeof cfg.uiBgColor === 'string' && cfg.uiBgColor.trim() ? cfg.uiBgColor.trim() : resolveInitialBg();
             applyBg(color);
-            try { console.log('[overlay.html] lifecycle config-updated', { uiBgColor: cfg.uiBgColor, applied: color }); } catch(e){}
-            // 更新右下角调试信息，包含最新配置值
-            showConfig({ style: { backgroundColor: color }, config: cfg });
+            renderStore();
           }
         }
       }
+      function onMessage(ev){ var data = ev && ev.data || {}; handleEnvelope(data); }
+      function onBusEvent(msg){ handleEnvelope(msg); }
       window.addEventListener('message', onMessage);
-      window.addEventListener('DOMContentLoaded', function(){ applyBg(resolveInitialBg()); showConfig({ style: { backgroundColor: resolveInitialBg() }, note: 'waiting for events...' }); });
+      try { var bus = getBus(); bus && bus.$on && bus.$on('overlay-event', onBusEvent); } catch {}
+      window.addEventListener('DOMContentLoaded', function(){
+        try {
+          var shared = (window.__WUJIE_PROPS__ && window.__WUJIE_PROPS__.shared) || (window.__WUJIE_SHARED || {});
+          var store = (shared && shared.readonlyStore) || {};
+          if (store && typeof store === 'object' && Object.keys(store).length) {
+            storeSnap = store;
+          }
+        } catch(e){}
+        applyBg(resolveInitialBg());
+        renderStore();
+        try { prependLog('[boot] DOMContentLoaded, initial store keys=' + Object.keys(storeSnap||{}).join(',')); } catch(e){}
+      });
     })();
   </script>
 </head>
 <body>
-  <div class="wrapper">
-    <div class="badge">这个是overlay页面</div>
+  <div class="app">
+    <div class="row intro">
+      <div class="title">开发者文档：Overlay 页面（三行布局）</div>
+      <div>
+        用途：用于在 OBS/浏览器源中承载插件的展示层，接收宿主通过 Wujie 总线转发的只读仓库快照与消息。
+      </div>
+      <div>
+        使用方式：
+        1) 首次加载会收到 <code>overlay-event</code> 的 <code>readonly-store-init</code>，其中包含从渲染进程同步的只读仓库快照；
+        2) 样式/配置更新通过 <code>overlay-updated</code>（或 <code>overlay-update</code> 兼容）下发，<code>payload.overlay.style</code> 可用于更新背景等；
+        3) 其他消息统一通过 <code>overlay-event</code> 通道传递（含 <code>{ event, payload, overlayId }</code>），页面可选择记录或渲染。
+      </div>
+      <div>
+        能力：
+        - 读取只读仓库（<code>window.__WUJIE_SHARED.readonlyStore</code>）用于初始渲染；
+        - 监听宿主事件总线（<code>overlay-event</code>）进行增量更新与消息消费；
+        - 可通过注入的 <code>props.api.action/send</code>（若声明）进行状态上报或消息发送（示例插件默认已注入）。
+      </div>
+    </div>
+    <div class="row store">
+      <div class="title">只读仓库快照</div>
+      <pre id="store"></pre>
+    </div>
+    <div class="row log">
+      <div class="title">消息展示区（最新在上）</div>
+      <div id="logList" class="list"></div>
+    </div>
   </div>
-  <div class="debug"><div style="font-weight:600;margin-bottom:4px;">Received config</div><pre id="cfg"></pre></div>
 </body>
 </html>

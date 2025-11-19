@@ -1,5 +1,6 @@
 import { defineStore } from 'pinia';
-import { ref, computed } from 'vue';
+import { ref, computed, watch } from 'vue';
+import { reportReadonlyUpdate } from '../utils/readonlyReporter';
 
 export const useSidebarStore = defineStore('sidebar', () => {
   // 状态 - 固定为展开状态
@@ -80,6 +81,13 @@ export const useSidebarStore = defineStore('sidebar', () => {
     window.addEventListener('resize', handleResize);
     handleResize(); // 初始检查
   }
+
+  // 变更订阅：侧边栏宽度变化时统一上报
+  watch(width, () => {
+    try {
+      reportReadonlyUpdate({ sidebar: { collapsed: false, width: currentWidth.value } });
+    } catch {}
+  });
 
   return {
     // 状态

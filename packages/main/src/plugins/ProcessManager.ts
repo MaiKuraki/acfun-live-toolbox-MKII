@@ -204,8 +204,7 @@ export class ProcessManager extends TypedEventEmitter<ProcessManagerEvents> {
       processInfo.errorCount++;
       pluginLogger.error('Plugin execution error', pluginId, error instanceof Error ? error : new Error(String(error)), { method });
 
-      // Report error to error handler
-      pluginErrorHandler.handleError(
+      await pluginErrorHandler.handleError(
         pluginId,
         ErrorType.RUNTIME_ERROR,
         error instanceof Error ? error.message : String(error),

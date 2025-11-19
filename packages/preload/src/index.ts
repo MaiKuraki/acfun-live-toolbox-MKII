@@ -11,7 +11,7 @@ const _listenerMap = new WeakMap<(...args: any[]) => void, (event: Electron.IpcR
  * An empty object for now.
  * This will be populated with the actual API as we rebuild the features.
  */
-const api = {
+  const api = {
   dialog: {
     showOpenDialog: (options: any) => ipcRenderer.invoke('dialog.showOpenDialog', options),
     showSaveDialog: (options: any) => ipcRenderer.invoke('dialog.showSaveDialog', options)
@@ -42,7 +42,25 @@ const api = {
     getSystemLog: (count?: number) => ipcRenderer.invoke('system.getSystemLog', count),
     genDiagnosticZip: () => ipcRenderer.invoke('system.genDiagnosticZip'),
     showItemInFolder: (targetPath: string) => ipcRenderer.invoke('system.showItemInFolder', targetPath),
-    openExternal: (url: string) => ipcRenderer.invoke('system.openExternal', url)
+    openExternal: (url: string) => ipcRenderer.invoke('system.openExternal', url),
+    getUserDataDir: () => ipcRenderer.invoke('system.getUserDataDir'),
+    getReadmeSummary: () => ipcRenderer.invoke('system.getReadmeSummary'),
+    getBuildInfo: () => ipcRenderer.invoke('system.getBuildInfo'),
+    statPath: (p: string) => ipcRenderer.invoke('system.statPath', p),
+    getStorageStats: () => ipcRenderer.invoke('system.getStorageStats')
+  },
+  systemExt: {
+    setAutoStart: (enabled: boolean) => ipcRenderer.invoke('system.setAutoStart', enabled),
+    setMinimizeToTray: (enabled: boolean) => ipcRenderer.invoke('system.setMinimizeToTray', enabled)
+  },
+  config: {
+    exportZip: (targetPath?: string) => ipcRenderer.invoke('config.exportZip', targetPath),
+    importZip: (zipPath: string) => ipcRenderer.invoke('config.importZip', zipPath),
+    setDir: (dir: string) => ipcRenderer.invoke('config.setDir', dir)
+  },
+  db: {
+    getPath: () => ipcRenderer.invoke('db.getPath'),
+    setPath: (p: string) => ipcRenderer.invoke('db.setPath', p)
   },
   // Overlay API bridging
   overlay: {
@@ -73,7 +91,19 @@ const api = {
     enableHotReload: (pluginId: string) => ipcRenderer.invoke('plugin.devtools.enableHotReload', pluginId),
     disableHotReload: (pluginId: string) => ipcRenderer.invoke('plugin.devtools.disableHotReload', pluginId),
     testConnection: (config: any) => ipcRenderer.invoke('plugin.devtools.testConnection', config),
-    // 弹窗能力已移除：不再暴露 plugin.popup.*
+    // 插件窗口能力
+    window: {
+      open: (pluginId: string) => ipcRenderer.invoke('plugin.window.open', pluginId),
+      focus: (pluginId: string) => ipcRenderer.invoke('plugin.window.focus', pluginId),
+      close: (pluginId: string) => ipcRenderer.invoke('plugin.window.close', pluginId),
+      isOpen: (pluginId: string) => ipcRenderer.invoke('plugin.window.isOpen', pluginId),
+      list: () => ipcRenderer.invoke('plugin.window.list')
+    }
+    ,
+    process: {
+      execute: (pluginId: string, method: string, args?: any[]) => ipcRenderer.invoke('plugin.process.execute', pluginId, method, args),
+      message: (pluginId: string, type: string, payload?: any) => ipcRenderer.invoke('plugin.process.message', pluginId, type, payload)
+    }
   },
   // Wujie helper bridging
   wujie: {
@@ -93,6 +123,13 @@ const api = {
       }
       return { success: false, error: res?.error || 'Failed to fetch plugin' };
     }
+  },
+  // Global popup bridging to main window
+  popup: {
+    toast: (message: string, options?: any) => ipcRenderer.invoke('popup.toast', { message, options }),
+    alert: (title: string, message: string, options?: any) => ipcRenderer.invoke('popup.alert', { title, message, options }),
+    confirm: (title: string, message: string, options?: any) => ipcRenderer.invoke('popup.confirm', { title, message, options }),
+    respondConfirm: (requestId: string, result: boolean) => ipcRenderer.invoke('popup.confirm.respond', requestId, result)
   },
   // Unified hosting manifest bridging
   hosting: {
@@ -209,3 +246,18 @@ try {
 } catch (error) {
   console.error('Failed to expose preload API:', error);
 }
+try {
+  const __orig = { log: console.log, warn: console.warn, error: console.error, debug: console.debug } as const;
+  const __send = (level: 'info' | 'error' | 'warn' | 'debug', args: any[]) => {
+    try {
+      const msg = args.map(a => {
+        try { return typeof a === 'string' ? a : JSON.stringify(a); } catch { return String(a); }
+      }).join(' ');
+      ipcRenderer.invoke('system.publishLog', { source: 'renderer', level, message: msg });
+    } catch {}
+  };
+  console.log = (...args: any[]) => { try { __orig.log.apply(console, args); } catch {} __send('info', args); };
+  console.warn = (...args: any[]) => { try { __orig.warn.apply(console, args); } catch {} __send('warn', args); };
+  console.error = (...args: any[]) => { try { __orig.error.apply(console, args); } catch {} __send('error', args); };
+  console.debug = (...args: any[]) => { try { __orig.debug.apply(console, args); } catch {} __send('debug', args); };
+} catch {}

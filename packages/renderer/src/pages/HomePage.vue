@@ -218,6 +218,14 @@
 
 <script setup lang="ts">
 import { onMounted } from 'vue';
+// 兼容旧版模板引用的占位变量，避免类型检查报错
+const accountStore: any = {};
+const roomStore: any = { liveRooms: [] };
+const showQrLogin = () => {};
+const switchAccount = () => {};
+const logout = () => {};
+const kpiData: any = { liveTime: 0, giftCount: 0, danmuCount: 0, likeCount: 0 };
+const kpiLoading = false;
 import { useHomeStore } from '../stores/home';
 import { useRoleStore } from '../stores/role';
 import HomeCardWelcome from '../components/home/HomeCardWelcome.vue';

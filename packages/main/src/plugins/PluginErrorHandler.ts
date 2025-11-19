@@ -145,8 +145,7 @@ export class PluginErrorHandler extends EventEmitter {
       { errorType, context }
     );
 
-    // 发出错误事件
-    this.emit('error', pluginError);
+    this.emit('plugin-error', pluginError);
 
     // 尝试自动恢复
     const recoveryAction = await this.attemptRecovery(pluginError);

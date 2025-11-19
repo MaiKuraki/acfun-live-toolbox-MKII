@@ -112,11 +112,12 @@ function handleGranularityChange(value: 'day' | 'week' | 'month') {
   granularity.value = value;
   // 重置数据缩放范围
   if (chart) {
-    const option = chart.getOption();
+    const option = chart.getOption() as any;
     if (option && option.dataZoom) {
-      option.dataZoom[0] = { ...option.dataZoom[0], start: 0, end: 100 };
-      option.dataZoom[1] = { ...option.dataZoom[1], start: 0, end: 100 };
-      chart.setOption(option);
+      const dz = option.dataZoom as any[];
+      dz[0] = { ...(dz[0] || {}), start: 0, end: 100 };
+      dz[1] = { ...(dz[1] || {}), start: 0, end: 100 };
+      chart.setOption({ dataZoom: dz } as any);
     }
   }
   renderChart();

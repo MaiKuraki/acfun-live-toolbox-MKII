@@ -1,4 +1,4 @@
-# OpenSpec Change Proposal: Refactor AcFun Live Toolbox based on SRS & DDD
+# OpenSpec Change Proposal: Refactor ACLiveFrame based on SRS & DDD
 
 ## 1. Goal
 

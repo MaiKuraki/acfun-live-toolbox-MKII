@@ -200,6 +200,9 @@ export class RoomManager extends EventEmitter {
       }
 
       this.emit('roomStatusChange', roomId, status);
+      if (process.env.ACFRAME_DEBUG_LOGS === '1') {
+        try { console.log('[Room] status roomId=' + String(roomId) + ' status=' + String(status)); } catch {}
+      }
     });
 
     adapter.on('event', (event: NormalizedEvent) => {
@@ -213,6 +216,9 @@ export class RoomManager extends EventEmitter {
         ts: event.ts || Date.now()
       });
 
+      if (process.env.ACFRAME_DEBUG_LOGS === '1') {
+        try { console.log('[Room] enqueue roomId=' + String(roomId) + ' type=' + String(enriched.event_type) + ' ts=' + String(enriched.ts)); } catch {}
+      }
       this.eventWriter.enqueue(enriched);
       this.emit('event', enriched);
     });

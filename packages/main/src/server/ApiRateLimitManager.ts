@@ -33,16 +33,25 @@ export interface RateLimitResult {
 export class RateLimitManager {
   private records: Map<string, RateLimitRecord> = new Map();
   private configs: Map<string, RateLimitConfig> = new Map();
+  private endpointConfigs: Map<string, Map<string, RateLimitConfig>> = new Map();
   private defaultConfig: RateLimitConfig = {
     requests: 100,
     windowMs: 60 * 1000, // 1分钟
     skipSuccessfulRequests: false,
     skipFailedRequests: false
   };
+  private persistFile?: string;
 
   constructor() {
     // 定期清理过期记录
     setInterval(() => this.cleanup(), 60 * 1000); // 每分钟清理一次
+    try {
+      const electron = require('electron');
+      const base = electron?.app?.getPath('userData');
+      const path = require('path');
+      this.persistFile = base ? path.join(base, 'rate-limit.json') : undefined;
+      this.loadFromFile();
+    } catch {}
   }
 
   /**
@@ -50,6 +59,7 @@ export class RateLimitManager {
    */
   setConfig(pluginId: string, config: RateLimitConfig): void {
     this.configs.set(pluginId, config);
+    this.saveToFile();
   }
 
   /**
@@ -59,12 +69,24 @@ export class RateLimitManager {
     return this.configs.get(pluginId) || this.defaultConfig;
   }
 
+  setEndpointConfig(pluginId: string, endpoint: string, config: RateLimitConfig): void {
+    const map = this.endpointConfigs.get(pluginId) || new Map<string, RateLimitConfig>();
+    map.set(endpoint, config);
+    this.endpointConfigs.set(pluginId, map);
+    this.saveToFile();
+  }
+
+  getEndpointConfig(pluginId: string, endpoint: string): RateLimitConfig | undefined {
+    const map = this.endpointConfigs.get(pluginId);
+    return map ? map.get(endpoint) : undefined;
+  }
+
   /**
    * 检查是否允许请求
    */
   checkLimit(pluginId: string, endpoint?: string): RateLimitResult {
     const key = endpoint ? `${pluginId}:${endpoint}` : pluginId;
-    const config = this.getConfig(pluginId);
+    const config = (endpoint && this.getEndpointConfig(pluginId, endpoint)) || this.getConfig(pluginId);
     const now = Date.now();
     
     let record = this.records.get(key);
@@ -111,7 +133,7 @@ export class RateLimitManager {
    * 记录请求结果（用于跳过成功/失败请求的配置）
    */
   recordRequest(pluginId: string, endpoint: string | undefined, success: boolean): void {
-    const config = this.getConfig(pluginId);
+    const config = (endpoint && this.getEndpointConfig(pluginId, endpoint)) || this.getConfig(pluginId);
     
     // 如果配置了跳过成功请求且请求成功，则减少计数
     if (config.skipSuccessfulRequests && success) {
@@ -184,6 +206,32 @@ export class RateLimitManager {
     this.records.delete(key);
   }
 
+  setDefaultConfig(config: RateLimitConfig): void {
+    this.defaultConfig = { ...config };
+    this.saveToFile();
+  }
+
+  private saveToFile(): void {
+    if (!this.persistFile) return;
+    try {
+      const obj: any = {
+        configs: Array.from(this.configs.entries()),
+        endpointConfigs: Array.from(this.endpointConfigs.entries()).map(([pid, m]) => [pid, Array.from(m.entries())])
+      };
+      require('fs').writeFileSync(this.persistFile, JSON.stringify(obj));
+    } catch {}
+  }
+
+  private loadFromFile(): void {
+    if (!this.persistFile) return;
+    try {
+      const raw = require('fs').readFileSync(this.persistFile, 'utf8');
+      const obj = JSON.parse(raw);
+      this.configs = new Map(obj.configs || []);
+      this.endpointConfigs = new Map((obj.endpointConfigs || []).map((e: any) => [e[0], new Map(e[1] || [])]));
+    } catch {}
+  }
+
   /**
    * 清理过期记录
    */
@@ -208,12 +256,6 @@ export class RateLimitManager {
     return new Map(this.records);
   }
 
-  /**
-   * 设置默认配置
-   */
-  setDefaultConfig(config: RateLimitConfig): void {
-    this.defaultConfig = { ...config };
-  }
 }
 
 // 导出单例实例

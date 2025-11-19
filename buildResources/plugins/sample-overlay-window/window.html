@@ -1,0 +1,451 @@
+<!doctype html>
+<html>
+  <head>
+    <meta charset="utf-8" />
+    <title>Sample Overlay Window</title>
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <style>
+      * {
+        box-sizing: border-box;
+      }
+      html, body {
+        margin: 0;
+        padding: 0;
+        height: 100%;
+        overflow: hidden;
+      }
+      body { 
+        font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Oxygen, Ubuntu, Cantarell, sans-serif;
+        background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+        display: flex;
+        align-items: center;
+        justify-content: center;
+      }
+      .container { 
+        background: rgba(255, 255, 255, 0.95);
+        backdrop-filter: blur(10px);
+        border-radius: 4px;
+        padding: 6px;
+        box-shadow: 0 4px 16px rgba(0, 0, 0, 0.1);
+        width: 100%;
+        height: 100%;
+        max-width: 800px;
+        max-height: 826px;
+        border: 1px solid rgba(255, 255, 255, 0.2);
+        display: flex;
+        flex-direction: column;
+        overflow: hidden;
+      }
+      .header {
+        text-align: center;
+        margin-bottom: 8px;
+        flex-shrink: 0;
+        padding: 8px;
+      }
+      .title {
+        font-size: 18px;
+        font-weight: 600;
+        color: #2d3748;
+        margin: 0 0 4px 0;
+        background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+        -webkit-background-clip: text;
+        -webkit-text-fill-color: transparent;
+        background-clip: text;
+      }
+      .subtitle {
+        font-size: 14px;
+        color: #718096;
+        margin: 0;
+      }
+      .content {
+        flex: 1;
+        overflow-y: auto;
+        padding: 8px;
+      }
+      .content::-webkit-scrollbar {
+        width: 2px;
+      }
+      .content::-webkit-scrollbar-track {
+        background: transparent;
+      }
+      .content::-webkit-scrollbar-thumb {
+        background: rgba(102, 126, 234, 0.3);
+        border-radius: 1px;
+      }
+      .section {
+        background: #f8fafc;
+        border-radius: 6px;
+        padding: 12px;
+        margin-bottom: 8px;
+        border: 1px solid #e2e8f0;
+        transition: all 0.3s ease;
+        min-height: 80px;
+      }
+      .section:hover {
+        box-shadow: 0 1px 4px rgba(0, 0, 0, 0.05);
+        transform: translateY(-1px);
+      }
+      .section-title {
+        font-size: 14px;
+        font-weight: 600;
+        color: #2d3748;
+        margin: 0 0 8px 0;
+        display: flex;
+        align-items: center;
+        gap: 6px;
+      }
+      .section-title::before {
+        content: '';
+        width: 2px;
+        height: 12px;
+        background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+        border-radius: 1px;
+      }
+      .btn { 
+        padding: 8px 16px; 
+        border: none; 
+        border-radius: 6px; 
+        background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+        color: white;
+        cursor: pointer; 
+        font-weight: 500;
+        font-size: 14px;
+        transition: all 0.3s ease;
+        box-shadow: 0 2px 6px rgba(102, 126, 234, 0.3);
+      }
+      .btn:hover {
+        transform: translateY(-1px);
+        box-shadow: 0 2px 6px rgba(102, 126, 234, 0.4);
+      }
+      .btn:active {
+        transform: translateY(0);
+      }
+      .btn-secondary {
+        background: #e2e8f0;
+        color: #4a5568;
+        box-shadow: 0 1px 2px rgba(0, 0, 0, 0.1);
+      }
+      .btn-secondary:hover {
+        background: #cbd5e0;
+        box-shadow: 0 1px 3px rgba(0, 0, 0, 0.15);
+      }
+      .row { 
+        display: flex; 
+        gap: 8px; 
+        align-items: center; 
+        flex-wrap: wrap;
+        margin-bottom: 4px;
+      }
+      .input-group {
+        display: flex;
+        gap: 8px;
+        align-items: center;
+        margin-bottom: 4px;
+      }
+      .input {
+        padding: 8px 12px;
+        border: 1px solid #e2e8f0;
+        border-radius: 6px;
+        font-size: 14px;
+        transition: all 0.3s ease;
+        min-width: 150px;
+      }
+      .input:focus {
+        outline: none;
+        border-color: #667eea;
+        box-shadow: 0 0 0 2px rgba(102, 126, 234, 0.1);
+      }
+      .status-badge {
+        padding: 4px 8px;
+        border-radius: 12px;
+        font-size: 12px;
+        font-weight: 500;
+        background: #e2e8f0;
+        color: #4a5568;
+      }
+      .status-badge.active {
+        background: linear-gradient(135deg, #48bb78 0%, #38a169 100%);
+        color: white;
+      }
+      .store-container {
+        background: #1a202c;
+        color: #e2e8f0;
+        font-family: 'Monaco', 'Menlo', 'Ubuntu Mono', monospace;
+        font-size: 10px;
+        line-height: 1.3;
+        max-height: 200px;
+        overflow-y: auto;
+        border-radius: 3px;
+        padding: 8px;
+        border: 1px solid #2d3748;
+        word-break: break-all;
+      }
+      .logs-container {
+        background: #1a202c;
+        color: #68d391;
+        font-family: 'Monaco', 'Menlo', 'Ubuntu Mono', monospace;
+        font-size: 10px;
+        line-height: 1.3;
+        max-height: 150px;
+        overflow-y: auto;
+        border-radius: 3px;
+        padding: 8px;
+        border: 1px solid #2d3748;
+      }
+      @media (max-width: 640px) {
+        .container {
+          padding: 12px;
+          margin: 8px;
+        }
+        .row {
+          flex-direction: column;
+          align-items: stretch;
+        }
+        .input-group {
+          flex-direction: column;
+        }
+        .title {
+          font-size: 18px;
+        }
+        .subtitle {
+          font-size: 12px;
+        }
+      }
+    </style>
+  </head>
+  <body>
+    <div class="container">
+      <div class="header">
+        <h1 class="title">Sample Overlay Window</h1>
+        <p class="subtitle">现代化的插件界面演示</p>
+      </div>
+      
+      <div class="content">
+        <div class="section">
+          <h3 class="section-title">交互功能</h3>
+          <div class="row">
+            <button class="btn" id="btn-toast">显示提示</button>
+            <button class="btn" id="btn-alert">显示警告</button>
+            <button class="btn" id="btn-confirm">确认对话框</button>
+          </div>
+        </div>
+
+        <div class="section">
+          <h3 class="section-title">只读仓库快照</h3>
+          <div id="store" class="store-container">{}</div>
+        </div>
+
+        <div class="section">
+          <h3 class="section-title">主题设置</h3>
+          <div class="input-group">
+            <input id="bg" type="text" class="input" placeholder="#f4f4f4" />
+            <button class="btn btn-secondary" id="btn-save-bg">保存背景色</button>
+          </div>
+        </div>
+
+        <div class="section">
+          <h3 class="section-title">定时提示功能</h3>
+          <div class="row">
+            <button class="btn" id="btn-ticker-toggle">
+              <span id="ticker-status">定时提示：未启用</span>
+            </button>
+            <span id="ticker-badge" class="status-badge">关闭</span>
+          </div>
+        </div>
+
+        <div class="section">
+          <h3 class="section-title">运行日志</h3>
+          <div id="logs" class="logs-container">等待操作...</div>
+        </div>
+      </div>
+    </div>
+    <script>
+      function getBus() {
+        try {
+          return (window.$wujie && window.$wujie.bus)
+            || (window.__WUJIE && window.__WUJIE.bus)
+            || (window.wujie && window.wujie.bus)
+            || null;
+        } catch (e) { return null; }
+      }
+      function waitForBus(timeoutMs) {
+        return new Promise(function(resolve){
+          var deadline = Date.now() + Number(timeoutMs || 1500);
+          (function loop(){
+            var bus = getBus();
+            if (bus && bus.$emit) { resolve(bus); return; }
+            if (Date.now() >= deadline) { resolve(null); return; }
+            setTimeout(loop, 50);
+          })();
+        });
+      }
+      function bridgeRequest(command, payload) {
+        try {
+          const requestId = String(Date.now()) + '-' + Math.random().toString(16).slice(2);
+          waitForBus(1500).then(function(bus){
+            if (bus && bus.$emit) {
+              bus.$emit('bridge-request', { type: 'bridge-request', requestId, command, payload });
+            } else {
+              console.warn('[sample-overlay-window] wujie bus not available');
+            }
+          });
+        } catch (e) { console.warn('[sample-overlay-window] bridge request failed:', e); }
+      }
+      function applyBg(color){ try { document.body.style.background = color || '#f4f4f4'; } catch(e){} }
+      var _storeSnap = {};
+      function renderStore(data){ 
+        try { 
+          var el = document.getElementById('store'); 
+          if(el) {
+            var formatted = JSON.stringify(data||{}, null, 2);
+            // Limit the display to prevent overflow
+            if (formatted.length > 500) {
+              formatted = formatted.substring(0, 500) + '...';
+            }
+            el.textContent = formatted;
+          }
+        } catch(e){} 
+      }
+      var _pendingToggle = false;
+      function setTickerButton(enabled){ 
+        var btn = document.getElementById('btn-ticker-toggle'); 
+        var status = document.getElementById('ticker-status');
+        var badge = document.getElementById('ticker-badge');
+        if(!btn || !status || !badge) return; 
+        status.textContent = '定时提示：' + (enabled ? '已启用' : '未启用');
+        badge.textContent = enabled ? '开启' : '关闭';
+        badge.className = enabled ? 'status-badge active' : 'status-badge';
+      }
+      function logLine(obj){ 
+        try { 
+          var el = document.getElementById('logs'); 
+          if(!el) return; 
+          var timestamp = new Date().toLocaleTimeString();
+          var s = (typeof obj==='string'?obj:JSON.stringify(obj, null, 2));
+          el.textContent = `[${timestamp}] ${s}\n` + el.textContent;
+          if (el.textContent.split('\n').length > 20) {
+            el.textContent = el.textContent.split('\n').slice(0, 20).join('\n');
+          }
+        } catch(e){} 
+      }
+      function refreshTickerStatus(){
+        // 添加重试机制和错误处理
+        try {
+          bridgeRequest('plugin-process', { action: 'execute', method: 'getTickerStatus' });
+        } catch (e) {
+          logLine('状态获取失败，工作进程可能繁忙');
+        }
+      }
+      document.getElementById('btn-toast').onclick = () => {
+        logLine('显示提示消息');
+        bridgeRequest('renderer-popup', { action: 'toast', payload: { message: 'Hello from window sample!', options: { durationMs: 2500 } } });
+      };
+      document.getElementById('btn-alert').onclick = () => {
+        logLine('显示警告对话框');
+        bridgeRequest('renderer-popup', { action: 'alert', payload: { title: 'Notice', message: 'This is an alert from window sample.' } });
+      };
+      document.getElementById('btn-confirm').onclick = () => {
+        logLine('显示确认对话框');
+        bridgeRequest('renderer-popup', { action: 'confirm', payload: { title: 'Confirm', message: 'Proceed with operation?' } });
+      };
+      document.getElementById('btn-save-bg').onclick = () => {
+        var val = (document.getElementById('bg')||{}).value || '';
+        logLine('保存背景色: ' + (val || '默认'));
+        bridgeRequest('plugin-process', { action: 'execute', method: 'updateWindowTheme', args: [ { uiBgColor: val } ] });
+        bridgeRequest('set-config', { config: { uiBgColor: val } });
+      };
+      document.getElementById('btn-ticker-toggle').onclick = () => {
+        _pendingToggle = true;
+        logLine('切换定时提示状态');
+        // 添加重试机制，避免工作进程繁忙时立即失败
+        try {
+          bridgeRequest('plugin-process', { action: 'execute', method: 'getTickerStatus' });
+        } catch (e) {
+          logLine('定时提示状态获取失败，请稍后重试');
+          _pendingToggle = false;
+        }
+      };
+
+
+      // 处理宿主返回（只读仓库与桥接响应）
+      waitForBus(1500).then(function(bus){ if(!bus||!bus.$on) return;
+        bus.$on('plugin-init', function(msg){ 
+          try { 
+            var cfg = (msg&&msg.config)||{}; 
+            applyBg(cfg.uiBgColor); 
+            var el=document.getElementById('bg'); 
+            if(el) el.value = cfg.uiBgColor||''; 
+            logLine('插件初始化完成');
+          } catch(e){} 
+        });
+        bus.$on('plugin-event', function(msg){ 
+          try {
+            if(msg&&msg.eventType==='readonly-store'){
+              if(msg.event==='readonly-store-init'){ 
+                _storeSnap = (msg.payload||{}); 
+                renderStore(_storeSnap); 
+                logLine('只读仓库初始化');
+              }
+              if(msg.event==='readonly-store-update'){
+                var upd = msg.payload||{};
+                if(upd && typeof upd==='object' && Object.keys(upd).length>0){ 
+                  for(var k in upd){ _storeSnap[k]=upd[k]; } 
+                }
+                renderStore(_storeSnap);
+                logLine('只读仓库更新');
+              }
+            }
+            if(msg&&msg.eventType==='lifecycle'&&msg.event==='config-updated'){ 
+              bridgeRequest('get-config'); 
+              bridgeRequest('plugin-process',{ action:'execute', method:'getTickerStatus' });
+              logLine('配置已更新');
+            }
+          } catch(e){} 
+        });
+        bus.$on('bridge-response', function(resp){ 
+          try {
+            if(resp && resp.command === 'get-config' && resp.success){ 
+              var cfg = resp.data||{}; 
+              applyBg(cfg.uiBgColor); 
+              var el=document.getElementById('bg'); 
+              if(el) el.value = cfg.uiBgColor||''; 
+              setTickerButton(!!cfg.tickerEnabled); 
+              logLine('配置获取成功');
+            }
+            if(resp && resp.command === 'plugin-process' && resp.success){
+              var data = resp.data||{};
+              if(data && (data.type||data.ok||data.payload)){ 
+                logLine({ 插件响应: data }); 
+              }
+              if(typeof data.enabled === 'boolean'){
+                setTickerButton(!!data.enabled);
+                if(_pendingToggle){ 
+                  var will = !data.enabled; 
+                  // 添加延迟，避免工作进程繁忙
+                  setTimeout(function() {
+                    bridgeRequest('plugin-process', { action: 'execute', method: will ? 'enableTicker' : 'disableTicker' }); 
+                  }, 500);
+                  setTickerButton(will); 
+                  _pendingToggle = false; 
+                  logLine('定时提示已' + (will ? '启用' : '禁用'));
+                }
+              }
+            }
+          } catch(e){ 
+            if(_pendingToggle) {
+              logLine('操作失败，请稍后重试');
+              _pendingToggle = false;
+            }
+          } 
+        });
+        // 初始拉取
+        logLine('界面加载完成');
+        // 延迟初始化，避免工作进程繁忙
+        setTimeout(function() {
+          refreshTickerStatus(); 
+          bridgeRequest('get-config');
+        }, 1000);
+      });
+    </script>
+  </body>
+</html>

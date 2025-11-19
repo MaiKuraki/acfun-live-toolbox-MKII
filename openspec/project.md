@@ -1,7 +1,7 @@
 # Project Context
 
 ## Purpose
-ACFun Live Toolbox MKII is an Electron-based desktop application to assist ACFun live streamers. It provides modules for live room management, danmu (bullet chat) handling, streaming status monitoring, statistics/analytics, settings management, and integration with OBS via WebSocket. The app follows a secure Electron architecture and aims for a minimal, maintainable monorepo setup.
+ACLiveFrame is an Electron-based desktop application to assist ACFun live streamers. It provides modules for live room management, danmu (bullet chat) handling, streaming status monitoring, statistics/analytics, settings management, and integration with OBS via WebSocket. The app follows a secure Electron architecture and aims for a minimal, maintainable monorepo setup.
 
 ## Tech Stack
 - Platform: Electron 39, electron-builder 26

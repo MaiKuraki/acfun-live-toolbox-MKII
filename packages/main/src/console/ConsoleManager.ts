@@ -1,7 +1,7 @@
 import { TypedEventEmitter } from '../utils/TypedEventEmitter';
-import { ApiServer } from '../server/ApiServer';
-import { RoomManager } from '../rooms/RoomManager';
-import { PluginManager } from '../plugins/PluginManager';
+// decoupled: remove direct ApiServer dependency
+import { RoomManager, RoomInfo } from '../rooms/RoomManager';
+import { IPluginManager } from '../types/contracts';
 import { DatabaseManager } from '../persistence/DatabaseManager';
 import { ConfigManager } from '../config/ConfigManager';
 import { pluginLogger } from '../plugins/PluginLogger';
@@ -59,23 +59,20 @@ export interface ConsoleManagerEvents {
 export class ConsoleManager extends TypedEventEmitter<ConsoleManagerEvents> {
   private commands: Map<string, ConsoleCommand> = new Map();
   private sessions: Map<string, ConsoleSession> = new Map();
-  private apiServer: ApiServer;
   private roomManager: RoomManager;
-  private pluginManager: PluginManager;
+  private pluginManager: IPluginManager;
   private databaseManager: DatabaseManager;
   private configManager: ConfigManager;
   private historyFile: string;
 
   constructor(opts: {
-    apiServer: ApiServer;
     roomManager: RoomManager;
-    pluginManager: PluginManager;
+    pluginManager: IPluginManager;
     databaseManager: DatabaseManager;
     configManager: ConfigManager;
   }) {
     super();
     
-    this.apiServer = opts.apiServer;
     this.roomManager = opts.roomManager;
     this.pluginManager = opts.pluginManager;
     this.databaseManager = opts.databaseManager;
@@ -150,6 +147,18 @@ export class ConsoleManager extends TypedEventEmitter<ConsoleManagerEvents> {
       category: 'system',
       handler: this.handleClearCommand.bind(this)
     });
+  }
+
+  public listRooms(): RoomInfo[] {
+    return this.roomManager.getAllRooms();
+  }
+
+  public async connectRoom(roomId: string): Promise<boolean> {
+    return await this.roomManager.addRoom(roomId);
+  }
+
+  public async disconnectRoom(roomId: string): Promise<boolean> {
+    return await this.roomManager.removeRoom(roomId);
   }
 
   /**

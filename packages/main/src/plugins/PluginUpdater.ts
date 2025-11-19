@@ -1,5 +1,5 @@
 import { EventEmitter } from 'events';
-import { PluginInfo, PluginManifest } from './PluginManager';
+import type { PluginInfo, PluginManifest } from './PluginManager';
 import { pluginLogger } from './PluginLogger';
 import { pluginLifecycleManager } from './PluginLifecycle';
 import * as fs from 'fs';

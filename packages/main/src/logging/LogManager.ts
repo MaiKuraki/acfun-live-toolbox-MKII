@@ -1,6 +1,7 @@
 import * as fs from 'fs';
 import * as path from 'path';
 import { app } from 'electron';
+import { DataManager } from '../persistence/DataManager';
 
 export interface LogEntry {
   timestamp: string;
@@ -25,6 +26,7 @@ class EnhancedLogManager implements LogManager {
   private readonly maxRecentLogs = 1000;
   private currentLogFile: string;
   private currentFileSize = 0;
+  private readonly dataManager = DataManager.getInstance();
 
   // 敏感信息脱敏模式
   private readonly sensitivePatterns = [
@@ -138,23 +140,14 @@ class EnhancedLogManager implements LogManager {
     const correlationPart = correlationId ? ` [${correlationId}]` : '';
     const logMessage = `[${timestamp}] [${level.toUpperCase()}] [${source}]${correlationPart} ${sanitizedMessage}\n`;
 
-    // 控制台输出
-    switch (level) {
-      case 'error':
-        console.error(logMessage.trim());
-        break;
-      case 'warn':
-        console.warn(logMessage.trim());
-        break;
-      case 'debug':
-        console.debug(logMessage.trim());
-        break;
-      default:
-        console.log(logMessage.trim());
-    }
+    // 移除控制台直接输出，避免与重写的 console.* 重复打印
 
     // 写入文件
     this.writeToFile(logMessage);
+
+    try {
+      this.dataManager.publish('system:logs', logEntry as any, { ttlMs: 5 * 60 * 1000, persist: false, meta: { kind: 'system-log' } });
+    } catch {}
   }
 
   private writeToFile(logMessage: string): void {

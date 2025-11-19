@@ -378,4 +378,41 @@ export class QueryService {
       });
     });
   }
+
+  public async listRooms(limit: number = 200): Promise<Array<{ roomId: string; streamerName: string }>> {
+    const sql = `
+      SELECT e.room_id AS room_id,
+             COALESCE(r.streamer_name, '') AS streamer_name,
+             MAX(e.timestamp) AS last_ts
+      FROM events e
+      LEFT JOIN rooms_meta r ON r.room_id = e.room_id
+      GROUP BY e.room_id
+      ORDER BY last_ts DESC
+      LIMIT ?
+    `;
+    const rows = await this.executeQuery<{ room_id: string; streamer_name: string; last_ts: number }>(sql, [limit]);
+    return rows.map(row => ({ roomId: String(row.room_id), streamerName: row.streamer_name || '' }));
+  }
+
+  public async getDbInfo(): Promise<{ eventsCount: number; latestEventTs: number | null; latestRoomIds: string[]; roomsMetaCount: number }> {
+    const countRows = await this.executeQuery<{ total: number }>('SELECT COUNT(*) AS total FROM events', []);
+    const latestRows = await this.executeQuery<{ ts: number; room_id: string }>('SELECT timestamp AS ts, room_id FROM events ORDER BY timestamp DESC LIMIT 10', []);
+    const roomsRows = await this.executeQuery<{ total: number }>('SELECT COUNT(*) AS total FROM rooms_meta', []);
+    const latestTs = latestRows[0]?.ts ?? null;
+    const latestRoomIds = Array.from(new Set(latestRows.map(r => String(r.room_id))));
+    return {
+      eventsCount: countRows[0]?.total || 0,
+      latestEventTs: latestTs,
+      latestRoomIds,
+      roomsMetaCount: roomsRows[0]?.total || 0
+    };
+  }
+
+  public async getEventsSample(limit: number = 20): Promise<Array<{ id: number; room_id: string; type: string; ts: number }>> {
+    const rows = await this.executeQuery<{ id: number; room_id: string; type: string; ts: number }>(
+      'SELECT id, room_id, type, timestamp AS ts FROM events ORDER BY timestamp DESC, id DESC LIMIT ?',
+      [limit]
+    );
+    return rows.map(r => ({ id: r.id, room_id: String(r.room_id), type: String(r.type), ts: Number(r.ts) }));
+  }
 }

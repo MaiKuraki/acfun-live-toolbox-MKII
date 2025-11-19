@@ -33,6 +33,19 @@ async function handleMessage(type, payload) {
   return { ok: true, type, payload };
 }
 
+let __tickerEnabled = false;
+function getTickerStatus() {
+  return { enabled: __tickerEnabled };
+}
+function enableTicker(message, options) {
+  __tickerEnabled = true;
+  return { ok: true, enabled: true, message, options };
+}
+function disableTicker() {
+  __tickerEnabled = false;
+  return { ok: true, enabled: false };
+}
+
 // ===== 直播事件处理 =====
 
 /**
@@ -596,6 +609,9 @@ export default {
   init,
   cleanup,
   handleMessage,
+  getTickerStatus,
+  enableTicker,
+  disableTicker,
   
   // 直播事件
   onLiveStart,

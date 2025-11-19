@@ -6,146 +6,19 @@
         <t-select 
           v-model="selectedRoomId" 
           placeholder="选择房间"
-          style="width: 200px;"
+          style="width: 240px;"
           @change="switchRoom"
+          filterable
         >
           <t-option 
-            v-for="room in roomStore.liveRooms" 
-            :key="room.liveId"
-            :value="room.liveId"
-            :label="`${room.streamer?.userName} (${room.liveId})`"
+            v-for="room in historicalRooms" 
+            :key="room.roomId"
+            :value="room.roomId"
+            :label="`${room.streamerName} (${room.roomId})`"
           />
         </t-select>
-        <t-button
-          variant="outline"
-          @click="clearDanmu"
-        >
-          <t-icon name="delete" />
-          清空弹幕
-        </t-button>
-        <t-button
-          variant="outline"
-          @click="exportDanmu"
-        >
-          <t-icon name="download" />
-          导出
-        </t-button>
       </div>
     </div>
-
-    <!-- 弹幕统计 -->
-    <div class="danmu-stats">
-      <t-card
-        class="stat-card"
-        hover-shadow
-      >
-        <div class="stat-content">
-          <div class="stat-number">
-            {{ danmuList.length }}
-          </div>
-          <div class="stat-label">
-            总弹幕数
-          </div>
-        </div>
-      </t-card>
-      <t-card
-        class="stat-card"
-        hover-shadow
-      >
-        <div class="stat-content">
-          <div class="stat-number">
-            {{ commentCount }}
-          </div>
-          <div class="stat-label">
-            评论
-          </div>
-        </div>
-      </t-card>
-      <t-card
-        class="stat-card"
-        hover-shadow
-      >
-        <div class="stat-content">
-          <div class="stat-number">
-            {{ giftCount }}
-          </div>
-          <div class="stat-label">
-            礼物
-          </div>
-        </div>
-      </t-card>
-      <t-card
-        class="stat-card"
-        hover-shadow
-      >
-        <div class="stat-content">
-          <div class="stat-number">
-            {{ likeCount }}
-          </div>
-          <div class="stat-label">
-            点赞
-          </div>
-        </div>
-      </t-card>
-    </div>
-
-    <!-- 弹幕过滤器 -->
-    <t-card
-      class="filter-card"
-      title="弹幕过滤"
-      hover-shadow
-    >
-      <div class="filter-controls">
-        <div class="filter-group">
-          <label>事件类型:</label>
-          <t-checkbox-group v-model="activeFilters">
-            <t-checkbox value="comment">
-              评论
-            </t-checkbox>
-            <t-checkbox value="gift">
-              礼物
-            </t-checkbox>
-            <t-checkbox value="like">
-              点赞
-            </t-checkbox>
-            <t-checkbox value="enter_room">
-              进入
-            </t-checkbox>
-            <t-checkbox value="follow">
-              关注
-            </t-checkbox>
-            <t-checkbox value="system">
-              系统
-            </t-checkbox>
-          </t-checkbox-group>
-        </div>
-        
-        <div class="filter-group">
-          <label>关键词过滤:</label>
-          <t-input 
-            v-model="keywordFilter" 
-            placeholder="输入关键词..." 
-            clearable
-            style="width: 200px;"
-          />
-        </div>
-        
-        <div class="filter-group">
-          <label>用户过滤:</label>
-          <t-input 
-            v-model="userFilter" 
-            placeholder="输入用户名..." 
-            clearable
-            style="width: 200px;"
-          />
-        </div>
-        
-        <div class="filter-group">
-          <label>自动滚动:</label>
-          <t-switch v-model="autoScroll" />
-        </div>
-      </div>
-    </t-card>
 
     <!-- 弹幕列表 -->
     <t-card
@@ -153,10 +26,73 @@
       title="弹幕列表"
       hover-shadow
     >
-      <template #actions>
-        <span class="danmu-count">{{ filteredDanmu.length }} 条弹幕</span>
+      <template #header>
+        <div class="danmu-card-header">
+          <div class="danmu-card-title">弹幕列表</div>
+          <div class="danmu-filters">
+            <div class="filter-group">
+              <t-select
+                v-model="selectedEventTypes"
+                multiple
+                placeholder="事件类型"
+                style="width: 180px;"
+                :min-collapsed-num="1"
+              >
+                <t-option value="danmaku" label="弹幕" />
+                <t-option value="gift" label="礼物" />
+                <t-option value="like" label="点赞" />
+                <t-option value="enter" label="进入" />
+                <t-option value="follow" label="关注" />
+                <t-option value="system" label="系统" />
+              </t-select>
+            </div>
+            
+            <div class="filter-group">
+              <t-select
+                v-model="keywordFilters"
+                multiple
+                placeholder="关键词过滤"
+                style="width: 180px;"
+                :min-collapsed-num="1"
+                allow-create
+                @create="addKeywordFilter"
+              />
+            </div>
+            
+            <div class="filter-group">
+              <t-input 
+                v-model="userFilter" 
+                placeholder="用户过滤（用户名/UID）" 
+                clearable
+                style="width: 140px;"
+              />
+            </div>
+            <div class="header-actions">
+              <t-button
+                variant="outline"
+                @click="exportDanmu"
+                :loading="exportingDanmu"
+              >
+                <div style="display: flex; align-items: center; gap: 4px;">
+                  <t-icon name="download" />
+                  导出
+                </div>
+              </t-button>
+            </div>
+          </div>
+        </div>
+        <div class="keyword-tags" v-if="keywordFilters.length > 0">
+          <t-tag
+            v-for="keyword in keywordFilters"
+            :key="keyword"
+            closable
+            @close="removeKeywordFilter(keyword)"
+            size="small"
+          >
+            {{ keyword }}
+          </t-tag>
+        </div>
       </template>
-
       <div
         v-if="!selectedRoomId"
         class="empty-state"
@@ -166,6 +102,14 @@
           size="48px"
         />
         <p>请先选择一个房间</p>
+      </div>
+
+      <div
+        v-else-if="loadingDanmu"
+        class="loading-state"
+      >
+        <t-loading />
+        <span>正在加载弹幕数据...</span>
       </div>
 
       <div
@@ -189,6 +133,7 @@
           :key="danmu.id"
           class="danmu-item"
           :class="`danmu-${danmu.type}`"
+          @click="showDanmuDetails(danmu)"
         >
           <div class="danmu-time">
             {{ formatTime(danmu.timestamp) }}
@@ -203,7 +148,7 @@
             <t-button
               size="small"
               variant="text"
-              @click="copyDanmu(danmu)"
+              @click.stop="copyDanmu(danmu)"
             >
               <t-icon name="copy" />
             </t-button>
@@ -211,11 +156,25 @@
               size="small"
               variant="text"
               theme="danger"
-              @click="deleteDanmu(danmu)"
+              @click.stop="deleteDanmu(danmu)"
             >
               <t-icon name="delete" />
             </t-button>
           </div>
+        </div>
+      </div>
+      
+      <!-- 分页组件放在底部 -->
+      <div class="pagination-footer" v-if="selectedRoomId && !loadingDanmu && allFilteredDanmu.length > 0">
+        <div class="pagination-controls">
+          <span class="danmu-count">{{ allFilteredDanmu.length }} 条弹幕</span>
+          <t-pagination
+            v-model="currentPage"
+            :total="allFilteredDanmu.length"
+            :page-size="pageSize"
+            @change="handlePageChange"
+            size="small"
+          />
         </div>
       </div>
     </t-card>
@@ -266,6 +225,7 @@
 import { ref, computed, onMounted, onUnmounted, nextTick, watch } from 'vue';
 import { useRoute } from 'vue-router';
 import { useRoomStore } from '../stores/room';
+import { MessagePlugin } from 'tdesign-vue-next';
 
 // 弹幕组件
 import CommentEvent from '../components/events/CommentEvent.vue';
@@ -282,48 +242,78 @@ const danmuList = ref<any[]>([]);
 const danmuListRef = ref<HTMLElement>();
 const showDetailsDialog = ref(false);
 const selectedDanmu = ref<any>(null);
+const loadingDanmu = ref(false);
+const exportingDanmu = ref(false);
 
 // 过滤器状态
-const activeFilters = ref<string[]>(['comment', 'gift', 'like', 'enter_room', 'follow', 'system']);
-const keywordFilter = ref('');
+const selectedEventTypes = ref<string[]>(['danmaku', 'gift', 'like', 'enter', 'follow', 'system']);
+const keywordFilters = ref<string[]>([]);
 const userFilter = ref('');
-const autoScroll = ref(true);
+
+// 分页状态
+const currentPage = ref(1);
+const pageSize = ref(20);
+const totalCount = ref(0);
+
+// 历史房间列表
+const historicalRooms = ref<Array<{roomId: string, streamerName: string}>>([]);
+
+// 自动刷新定时器
+let autoRefreshTimer: NodeJS.Timeout | null = null;
 
 // WebSocket 连接
 let ws: WebSocket | null = null;
 let reconnectTimer: NodeJS.Timeout | null = null;
 
 // 计算属性
-const filteredDanmu = computed(() => {
+const allFilteredDanmu = computed(() => {
   let filtered = danmuList.value;
 
   // 类型过滤
-  if (activeFilters.value.length > 0) {
-    filtered = filtered.filter(danmu => activeFilters.value.includes(danmu.type));
+  if (selectedEventTypes.value.length > 0) {
+    filtered = filtered.filter(danmu => {
+      const danmuType = danmu.type === 'comment' ? 'danmaku' : danmu.type;
+      return selectedEventTypes.value.includes(danmuType);
+    });
   }
 
-  // 关键词过滤
-  if (keywordFilter.value) {
-    const keyword = keywordFilter.value.toLowerCase();
-    filtered = filtered.filter(danmu => 
-      danmu.content?.toLowerCase().includes(keyword) ||
-      danmu.userName?.toLowerCase().includes(keyword)
-    );
+  // 关键词过滤（多关键词，满足任意一个即可）
+  if (keywordFilters.value.length > 0) {
+    filtered = filtered.filter(danmu => {
+      const content = (danmu.content || '').toLowerCase();
+      const userName = (danmu.userName || '').toLowerCase();
+      return keywordFilters.value.some(keyword => 
+        content.includes(keyword.toLowerCase()) ||
+        userName.includes(keyword.toLowerCase())
+      );
+    });
   }
 
-  // 用户过滤
+  // 用户过滤（支持用户名和UID）
   if (userFilter.value) {
-    const user = userFilter.value.toLowerCase();
-    filtered = filtered.filter(danmu => 
-      danmu.userName?.toLowerCase().includes(user)
-    );
+    const filter = userFilter.value.toLowerCase();
+    filtered = filtered.filter(danmu => {
+      const userName = (danmu.userName || '').toLowerCase();
+      const userId = (danmu.userId || '').toLowerCase();
+      return userName.includes(filter) || userId.includes(filter);
+    });
   }
 
-  return filtered.slice().reverse(); // 最新的在前面
+  return filtered.slice().reverse(); // 只反转，不切片
+});
+
+const filteredDanmu = computed(() => {
+  const filtered = allFilteredDanmu.value;
+  
+  // 分页处理
+  const startIndex = (currentPage.value - 1) * pageSize.value;
+  const endIndex = startIndex + pageSize.value;
+  
+  return filtered.slice(startIndex, endIndex); // 分页切片
 });
 
 const commentCount = computed(() => 
-  danmuList.value.filter(d => d.type === 'comment').length
+  danmuList.value.filter(d => d.type === 'comment' || d.type === 'danmaku').length
 );
 
 const giftCount = computed(() => 
@@ -335,10 +325,84 @@ const likeCount = computed(() =>
 );
 
 // 方法
-const switchRoom = (roomId: string) => {
+const loadHistoricalRooms = async () => {
+  try {
+    // 获取历史房间列表（从SQLite数据库）
+    const response = await fetch('/api/events/rooms');
+    
+    // 检查响应内容类型
+    const contentType = response.headers.get('content-type');
+    if (response.ok && contentType && contentType.includes('application/json')) {
+      const data = await response.json();
+      historicalRooms.value = data.rooms || [];
+    } else {
+      // 如果响应不是JSON，使用本地存储
+      const stored = localStorage.getItem('historicalRooms');
+      if (stored) {
+        historicalRooms.value = JSON.parse(stored);
+      }
+    }
+  } catch (error) {
+    console.error('加载历史房间失败:', error);
+    // 回退到本地存储
+    const stored = localStorage.getItem('historicalRooms');
+    if (stored) {
+      historicalRooms.value = JSON.parse(stored);
+    }
+  }
+};
+
+const switchRoom = async (roomId: string) => {
   selectedRoomId.value = roomId;
   danmuList.value = [];
+  try {
+    const status = await window.electronApi.room.status(roomId);
+    if ('error' in status || String(status?.status || '') !== 'connected') {
+      try { await window.electronApi.room.connect(roomId); } catch (e) { console.warn('connect room failed:', e); }
+    }
+  } catch {}
+  await loadHistoricalDanmu(roomId);
   connectWebSocket();
+};
+
+const loadHistoricalDanmu = async (roomId: string, page: number = 1) => {
+  if (!roomId) return;
+  
+  loadingDanmu.value = true;
+  try {
+    const params = new URLSearchParams({
+      room_id: roomId,
+      pageSize: pageSize.value.toString(),
+      page: page.toString()
+    });
+
+    // 添加类型过滤
+    if (selectedEventTypes.value.length > 0) {
+      params.append('type', selectedEventTypes.value.join(','));
+    }
+
+    const response = await fetch(`/api/events?${params}`);
+    if (response.ok) {
+      const data = await response.json();
+      danmuList.value = (data.items || []).map((item: any) => ({
+        id: item.id || `${item.ts}_${Math.random()}`,
+        type: item.event_type === 'danmaku' ? 'comment' : item.event_type,
+        timestamp: item.ts,
+        userId: item.user_id,
+        userName: item.user_name,
+        content: item.content,
+        ...item
+      }));
+      totalCount.value = data.total || data.items?.length || 0;
+      currentPage.value = page;
+    } else {
+      console.error('加载历史弹幕失败:', response.statusText);
+    }
+  } catch (error) {
+    console.error('加载历史弹幕失败:', error);
+  } finally {
+    loadingDanmu.value = false;
+  }
 };
 
 const connectWebSocket = () => {
@@ -419,36 +483,51 @@ const handleDanmu = (danmuData: any) => {
   if (danmuList.value.length > 1000) {
     danmuList.value.splice(0, 100);
   }
+};
 
-  // 自动滚动
-  if (autoScroll.value) {
-    nextTick(() => {
-      if (danmuListRef.value) {
-        danmuListRef.value.scrollTop = danmuListRef.value.scrollHeight;
-      }
+const exportDanmu = async () => {
+  if (!selectedRoomId.value) return;
+  
+  exportingDanmu.value = true;
+  try {
+    const params = new URLSearchParams({
+      room_id: selectedRoomId.value,
+      filename: `danmu_${selectedRoomId.value}_${new Date().toISOString().slice(0, 10)}.csv`
     });
+
+    const response = await fetch(`/api/export?${params}`);
+    if (response.ok) {
+      const blob = await response.blob();
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = params.get('filename') || 'danmu_export.csv';
+      a.click();
+      URL.revokeObjectURL(url);
+      MessagePlugin.success('导出成功');
+    } else {
+      MessagePlugin.error('导出失败');
+    }
+  } catch (error) {
+    console.error('导出失败:', error);
+    // 回退到前端导出
+    const data = JSON.stringify(danmuList.value, null, 2);
+    const blob = new Blob([data], { type: 'application/json' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = `danmu_${selectedRoomId.value}_${new Date().toISOString().slice(0, 10)}.json`;
+    a.click();
+    URL.revokeObjectURL(url);
+  } finally {
+    exportingDanmu.value = false;
   }
-};
-
-const clearDanmu = () => {
-  danmuList.value = [];
-};
-
-const exportDanmu = () => {
-  const data = JSON.stringify(danmuList.value, null, 2);
-  const blob = new Blob([data], { type: 'application/json' });
-  const url = URL.createObjectURL(blob);
-  const a = document.createElement('a');
-  a.href = url;
-  a.download = `danmu_${selectedRoomId.value}_${new Date().toISOString().slice(0, 10)}.json`;
-  a.click();
-  URL.revokeObjectURL(url);
 };
 
 const copyDanmu = (danmu: any) => {
   const text = danmu.content || JSON.stringify(danmu);
   navigator.clipboard.writeText(text);
-  // TODO: 显示成功提示
+  MessagePlugin.success('已复制到剪贴板');
 };
 
 const deleteDanmu = (danmu: any) => {
@@ -458,9 +537,36 @@ const deleteDanmu = (danmu: any) => {
   }
 };
 
+const showDanmuDetails = (danmu: any) => {
+  selectedDanmu.value = danmu;
+  showDetailsDialog.value = true;
+};
+
+const addKeywordFilter = (keyword: string) => {
+  if (keyword && !keywordFilters.value.includes(keyword)) {
+    keywordFilters.value.push(keyword);
+  }
+};
+
+const removeKeywordFilter = (keyword: string) => {
+  const index = keywordFilters.value.indexOf(keyword);
+  if (index > -1) {
+    keywordFilters.value.splice(index, 1);
+  }
+};
+
+const handlePageChange = (pageInfo: { current: number; pageSize: number }) => {
+  currentPage.value = pageInfo.current;
+  pageSize.value = pageInfo.pageSize;
+  if (selectedRoomId.value) {
+    loadHistoricalDanmu(selectedRoomId.value, pageInfo.current);
+  }
+};
+
 const getDanmuComponent = (type: string) => {
   switch (type) {
     case 'comment':
+    case 'danmaku':
       return CommentEvent;
     case 'gift':
       return GiftEvent;
@@ -473,10 +579,11 @@ const getDanmuComponent = (type: string) => {
 
 const getDanmuTypeText = (type: string) => {
   switch (type) {
-    case 'comment': return '评论';
+    case 'comment':
+    case 'danmaku': return '弹幕';
     case 'gift': return '礼物';
     case 'like': return '点赞';
-    case 'enter_room': return '进入房间';
+    case 'enter': return '进入房间';
     case 'follow': return '关注';
     case 'system': return '系统消息';
     default: return '未知';
@@ -491,6 +598,14 @@ const formatDetailTime = (timestamp: number) => {
   return new Date(timestamp).toLocaleString();
 };
 
+// 监听过滤器变化，重新加载数据
+watch([selectedEventTypes, keywordFilters, userFilter], () => {
+  if (selectedRoomId.value) {
+    currentPage.value = 1; // 重置到第一页
+    // 不需要重新加载数据，因为计算属性会自动更新
+  }
+});
+
 // 监听路由参数
 watch(() => route.params.roomId, (roomId) => {
   if (roomId && typeof roomId === 'string') {
@@ -500,13 +615,13 @@ watch(() => route.params.roomId, (roomId) => {
 }, { immediate: true });
 
 // 生命周期
-onMounted(() => {
-  roomStore.loadRooms();
+onMounted(async () => {
+  await loadHistoricalRooms();
   
-  // 如果没有从路由获取房间ID，选择第一个在线房间
-  if (!selectedRoomId.value && roomStore.liveRooms.length > 0) {
-    selectedRoomId.value = roomStore.liveRooms[0].liveId;
-    switchRoom(selectedRoomId.value);
+  // 如果没有从路由获取房间ID，选择第一个历史房间
+  if (!selectedRoomId.value && historicalRooms.value.length > 0) {
+    selectedRoomId.value = historicalRooms.value[0].roomId;
+    await switchRoom(selectedRoomId.value);
   }
 });
 
@@ -530,10 +645,44 @@ onUnmounted(() => {
   overflow: hidden;
 }
 
+.danmu-card-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  flex-wrap: nowrap;
+}
+
+.danmu-card-title {
+  font-size: 16px;
+  font-weight: 500;
+  color: var(--td-text-color-primary);
+  white-space: nowrap;
+}
+
+.danmu-filters {
+  display: flex;
+  align-items: center;
+  gap: 16px;
+  flex-wrap: nowrap;
+  overflow-x: auto;
+}
+
+.keyword-tags {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  padding: 8px 16px;
+  border-top: 1px solid var(--td-border-level-1-color);
+  background-color: var(--td-bg-color-container);
+  margin: 0 -16px;
+}
+
 .page-header {
   display: flex;
   justify-content: space-between;
   align-items: center;
+  flex-shrink: 0;
 }
 
 .page-header h2 {
@@ -547,62 +696,50 @@ onUnmounted(() => {
   align-items: center;
 }
 
-.danmu-stats {
-  display: grid;
-  grid-template-columns: repeat(4, 1fr);
-  gap: 16px;
-}
-
-.stat-card {
-  min-height: 80px;
-}
-
-.stat-content {
-  display: flex;
-  flex-direction: column;
-  align-items: center;
-  justify-content: center;
-  height: 60px;
-}
-
-.stat-number {
-  font-size: 24px;
-  font-weight: bold;
-  color: var(--td-brand-color);
-}
-
-.stat-label {
-  font-size: 12px;
-  color: var(--td-text-color-secondary);
-  margin-top: 4px;
-}
-
 .filter-card {
   flex-shrink: 0;
 }
 
 .filter-controls {
   display: flex;
-  flex-wrap: wrap;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.filter-row {
+  display: flex;
+  flex-wrap: nowrap !important;
   gap: 16px;
   align-items: center;
+  min-width: 0;
+  overflow-x: auto;
+  white-space: nowrap;
 }
 
 .filter-group {
   display: flex;
   align-items: center;
   gap: 8px;
+  min-width: 0;
+  flex-shrink: 0;
+  white-space: nowrap;
 }
 
-.filter-group label {
-  font-size: 14px;
-  color: var(--td-text-color-secondary);
-  white-space: nowrap;
+/* 删除label，使用placeholder 承担提示文案 */
+
+.keyword-tags {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-left: 80px;
 }
 
 .danmu-list-card {
   flex: 1;
   min-height: 0;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
 }
 
 .danmu-count {
@@ -610,21 +747,38 @@ onUnmounted(() => {
   color: var(--td-text-color-secondary);
 }
 
-.empty-state {
+.pagination-controls {
+  display: flex;
+  align-items: center;
+  gap: 16px;
+}
+
+.pagination-footer {
+  padding: 16px;
+  border-top: 1px solid var(--td-border-level-1-color);
+  background-color: var(--td-bg-color-container);
+  display: flex;
+  justify-content: flex-end;
+}
+
+.empty-state,
+.loading-state {
   display: flex;
   flex-direction: column;
   align-items: center;
   justify-content: center;
   padding: 40px;
   color: var(--td-text-color-secondary);
+  gap: 12px;
 }
 
-.empty-state p {
-  margin-top: 16px;
+.empty-state p,
+.loading-state p {
+  margin: 0;
 }
 
 .danmu-list {
-  max-height: 500px;
+  flex: 1;
   overflow-y: auto;
   display: flex;
   flex-direction: column;
@@ -639,6 +793,7 @@ onUnmounted(() => {
   border-radius: 4px;
   background-color: var(--td-bg-color-container);
   transition: background-color 0.2s;
+  cursor: pointer;
 }
 
 .danmu-item:hover {
@@ -704,7 +859,8 @@ onUnmounted(() => {
 }
 
 /* 弹幕类型样式 */
-.danmu-comment {
+.danmu-comment,
+.danmu-danmaku {
   border-left: 3px solid var(--td-brand-color);
 }
 
@@ -716,27 +872,37 @@ onUnmounted(() => {
   border-left: 3px solid var(--td-error-color);
 }
 
+.danmu-enter {
+  border-left: 3px solid var(--td-success-color);
+}
+
+.danmu-follow {
+  border-left: 3px solid var(--td-brand-color-5);
+}
+
 .danmu-system {
   border-left: 3px solid var(--td-gray-color-6);
 }
 
 /* 响应式设计 */
 @media (max-width: 1024px) {
-  .danmu-stats {
-    grid-template-columns: repeat(2, 1fr);
-  }
-  
-  .filter-controls {
+  .danmu-card-header {
     flex-direction: column;
     align-items: flex-start;
+    gap: 12px;
+  }
+  
+  .danmu-filters {
+    width: 100%;
+    overflow-x: auto;
+  }
+  
+  .keyword-tags {
+    margin: 0 -16px;
   }
 }
 
 @media (max-width: 768px) {
-  .danmu-stats {
-    grid-template-columns: 1fr;
-  }
-  
   .page-header {
     flex-direction: column;
     gap: 12px;
@@ -748,6 +914,22 @@ onUnmounted(() => {
     justify-content: space-between;
   }
   
+  .danmu-card-header {
+    flex-direction: column;
+    align-items: flex-start;
+    gap: 12px;
+  }
+  
+  .danmu-filters {
+    width: 100%;
+    overflow-x: auto;
+  }
+  
+  .filter-group {
+    flex-shrink: 0;
+    width: auto;
+  }
+  
   .danmu-item {
     flex-direction: column;
     gap: 8px;
@@ -756,6 +938,16 @@ onUnmounted(() => {
   .danmu-actions {
     opacity: 1;
     align-self: flex-end;
+  }
+  
+  .pagination-footer {
+    padding: 12px;
+  }
+  
+  .pagination-controls {
+    flex-direction: column;
+    gap: 8px;
+    align-items: flex-end;
   }
 }
 </style>

@@ -35,6 +35,10 @@ export class EventWriter {
       ts: event.ts || Date.now()
     });
 
+    if (process.env.ACFRAME_DEBUG_LOGS === '1') {
+      try { console.log('[Writer] enqueue size=' + String(this.queue.length)); } catch {}
+    }
+
     // 如果队列达到批处理大小，立即刷新
     if (this.queue.length >= this.batchSize) {
       this.flushQueue().catch((err: any) => {
@@ -51,6 +55,10 @@ export class EventWriter {
     this.isWriting = true;
     const eventsToWrite = this.queue.splice(0, this.batchSize);
 
+    if (process.env.ACFRAME_DEBUG_LOGS === '1') {
+      try { console.log('[Writer] flush begin batch=' + String(eventsToWrite.length)); } catch {}
+    }
+
     try {
       await this.writeBatch(eventsToWrite);
     } catch (error: any) {
@@ -59,6 +67,9 @@ export class EventWriter {
       this.queue.unshift(...eventsToWrite);
     } finally {
       this.isWriting = false;
+      if (process.env.ACFRAME_DEBUG_LOGS === '1') {
+        try { console.log('[Writer] flush end batch=' + String(eventsToWrite.length) + ' ok'); } catch {}
+      }
     }
   }
 
@@ -113,6 +124,9 @@ export class EventWriter {
                 console.error('Error committing transaction:', commitErr);
                 reject(commitErr);
               } else {
+                if (process.env.ACFRAME_DEBUG_LOGS === '1') {
+                  try { console.log('[Writer] commit ok count=' + String(events.length)); } catch {}
+                }
                 resolve();
               }
             });

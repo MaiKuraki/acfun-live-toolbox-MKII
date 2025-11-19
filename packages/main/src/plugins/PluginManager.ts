@@ -9,10 +9,12 @@ import { pluginLifecycleManager } from './PluginLifecycle';
 import { PluginUpdater } from './PluginUpdater';
 import { pluginLogger } from './PluginLogger';
 import { pluginErrorHandler, ErrorType, RecoveryAction } from './PluginErrorHandler';
+import { DataManager } from '../persistence/DataManager';
 import { pluginHotReloadManager, HotReloadConfig } from './PluginHotReload';
 import { pluginVersionManager } from './PluginVersionManager';
 import { MemoryPoolManager } from './MemoryPoolManager';
-import { ConnectionPoolManager } from './ConnectionPoolManager';
+import { PluginConnectionPoolManager } from './ConnectionPoolManager';
+import { PluginCoordinator } from './PluginCoordinator';
 import { pluginCacheManager } from './PluginCacheManager';
 import { pluginPerformanceMonitor } from './PluginPerformanceMonitor';
 import { pluginLazyLoader } from './PluginLazyLoader';
@@ -31,6 +33,8 @@ export interface PluginManifest {
   version: string;
   description?: string;
   author?: string;
+  test?: boolean;
+  icon?: string;
   main: string;
   permissions?: string[];
   minAppVersion?: string;
@@ -40,7 +44,6 @@ export interface PluginManifest {
   ui?: {
     name?: string;
     description?: string;
-    icon?: string;
     // 统一静态托管字段（新）
     spa?: boolean;
     route?: string;
@@ -113,7 +116,8 @@ export class PluginManager extends TypedEventEmitter<PluginManagerEvents> {
   private processManager: ProcessManager;
   private pluginUpdater: PluginUpdater;
   private memoryPoolManager: MemoryPoolManager;
-  private connectionPoolManager: ConnectionPoolManager;
+  private connectionPoolManager: PluginConnectionPoolManager;
+  private coordinator: PluginCoordinator;
   private tokenManager: TokenManager;
   private plugins: Map<string, PluginInfo> = new Map();
   private pluginsDir: string;
@@ -146,7 +150,12 @@ export class PluginManager extends TypedEventEmitter<PluginManagerEvents> {
     
     // 初始化性能优化组件
     this.memoryPoolManager = new MemoryPoolManager();
-    this.connectionPoolManager = new ConnectionPoolManager();
+    this.connectionPoolManager = new PluginConnectionPoolManager();
+    this.coordinator = new PluginCoordinator({
+      memoryPool: this.memoryPoolManager,
+      connectionPool: this.connectionPoolManager,
+      updater: this.pluginUpdater,
+    });
     
     this.ensurePluginsDirectory();
     // 安装内置示例插件（如缺失）
@@ -289,6 +298,28 @@ export class PluginManager extends TypedEventEmitter<PluginManagerEvents> {
   }
 
   private setupErrorHandling(): void {
+    const dm = DataManager.getInstance();
+    pluginErrorHandler.on('plugin-error', (err: any) => {
+      try {
+        const pluginId = String(err?.pluginId || 'unknown');
+        const channel = `plugin:${pluginId}:overlay`;
+        dm.publish(channel, { overlayId: undefined, event: 'runtime-error', payload: { error: String(err?.message || '') } }, { ttlMs: 5 * 60 * 1000, persist: true, meta: { kind: 'lifecycle' } });
+      } catch {}
+      try {
+        const entry = { level: 'error', source: 'plugin', pluginId: String(err?.pluginId || ''), message: String(err?.message || ''), timestamp: Date.now() };
+        dm.publish('system:logs', entry, { ttlMs: 10 * 60 * 1000, persist: true, meta: { kind: 'log' } });
+      } catch {}
+      try {
+        const pid = String(err?.pluginId || '');
+        const msg = String(err?.message || '');
+        const e = err?.error;
+        if (e && e.stack) {
+          console.error('[PluginError]', pid, msg, '\n', e.stack);
+        } else {
+          console.error('[PluginError]', pid, msg);
+        }
+      } catch {}
+    });
     // 监听错误处理器的恢复事件
     pluginErrorHandler.on('recovery-execute', async (event) => {
       const { pluginId, action } = event;
@@ -445,12 +476,14 @@ export class PluginManager extends TypedEventEmitter<PluginManagerEvents> {
         try {
           const manifestText = fs.readFileSync(manifestPath, 'utf-8');
           const manifestJson = JSON.parse(manifestText) as any;
-          const mainFile = typeof manifestJson.main === 'string' ? manifestJson.main : 'index.js';
-          const destMain = path.join(dest, mainFile);
-          const srcMain = path.join(src, mainFile);
-          if (!fs.existsSync(destMain) && fs.existsSync(srcMain)) {
-            fs.cpSync(srcMain, destMain, { recursive: false });
-            pluginLogger.info('Recovered missing plugin main file', id, { file: mainFile });
+          const mainFile = typeof manifestJson.main === 'string' ? manifestJson.main : null;
+          if (mainFile) {
+            const destMain = path.join(dest, mainFile);
+            const srcMain = path.join(src, mainFile);
+            if (!fs.existsSync(destMain) && fs.existsSync(srcMain)) {
+              fs.cpSync(srcMain, destMain, { recursive: false });
+              pluginLogger.info('Recovered missing plugin main file', id, { file: mainFile });
+            }
           }
         } catch (repairErr) {
           pluginLogger.warn('Failed to repair plugin main file', id, repairErr as Error);
@@ -482,13 +515,29 @@ export class PluginManager extends TypedEventEmitter<PluginManagerEvents> {
           const manifestPath = path.join(pluginPath, 'manifest.json');
           
           if (fs.existsSync(manifestPath)) {
-             const manifest = JSON.parse(fs.readFileSync(manifestPath, 'utf-8')) as PluginManifest;
-             // 加载内置默认清单并与用户清单进行浅合并，增量补充新字段
+             let manifest: PluginManifest;
              const defaultCandidates = [
                path.join(process.cwd(), 'buildResources', 'plugins', pluginId, 'manifest.json'),
                path.join(process.resourcesPath || process.cwd(), 'plugins', pluginId, 'manifest.json')
              ];
              const defaultManifestPath = defaultCandidates.find(p => fs.existsSync(p));
+             try {
+               manifest = JSON.parse(fs.readFileSync(manifestPath, 'utf-8')) as PluginManifest;
+             } catch (parseErr) {
+               try {
+                 if (defaultManifestPath) {
+                   const repaired = fs.readFileSync(defaultManifestPath, 'utf-8');
+                   const base = JSON.parse(repaired) as PluginManifest;
+                   fs.writeFileSync(manifestPath, repaired, 'utf-8');
+                   manifest = base;
+                   pluginLogger.info('Repaired invalid manifest from bundled copy', pluginId, { manifestPath });
+                 } else {
+                   throw parseErr;
+                 }
+               } catch (repairErr) {
+                 throw repairErr instanceof Error ? repairErr : new Error(String(repairErr));
+               }
+             }
              let mergedManifest: PluginManifest = manifest;
              try {
                if (defaultManifestPath) {
@@ -918,6 +967,33 @@ export class PluginManager extends TypedEventEmitter<PluginManagerEvents> {
       // 检查依赖
       // await this.checkDependencies(plugin.manifest);
 
+      // 支持纯静态托管插件：当未声明 main 且声明了 ui/window/overlay 时，跳过进程启动
+      const hasProcessMain = typeof plugin.manifest.main === 'string' && plugin.manifest.main.trim() !== '';
+      const hasStaticHosting = !!(plugin.manifest.ui || (plugin.manifest as any).window || plugin.manifest.overlay);
+      if (!hasProcessMain && hasStaticHosting) {
+        // 直接标记为启用并持久化配置
+        plugin.enabled = true;
+        plugin.status = 'enabled';
+        plugin.lastError = undefined;
+
+        const configKey = `plugins.${pluginId}`;
+        this.configManager.set(configKey, {
+          enabled: true,
+          installedAt: plugin.installedAt
+        });
+
+        // 执行 afterEnable 生命周期钩子
+        await pluginLifecycleManager.executeHook('afterEnable', {
+          pluginId,
+          manifest: plugin.manifest,
+          context: { action: 'enable' }
+        });
+
+        this.emit('plugin.enabled', { id: pluginId });
+        pluginLogger.info('Enabled static-hosted plugin without process', pluginId, { pluginId });
+        return;
+      }
+      
       // 启动插件进程
       const pluginMainPath = path.join(plugin.installPath, plugin.manifest.main);
       if (!fs.existsSync(pluginMainPath)) {
@@ -1153,9 +1229,15 @@ export class PluginManager extends TypedEventEmitter<PluginManagerEvents> {
       const manifestContent = fs.readFileSync(manifestPath, 'utf-8');
       const manifest = JSON.parse(manifestContent) as PluginManifest;
 
-      // 验证必需字段
-      if (!manifest.id || !manifest.name || !manifest.version || !manifest.main) {
-        throw new Error('插件清单文件缺少必需字段 (id, name, version, main)');
+      // 验证必需字段（支持纯静态托管插件）
+      if (!manifest.id || !manifest.name || !manifest.version) {
+        throw new Error('插件清单文件缺少必需字段 (id, name, version)');
+      }
+
+      const hasProcessMain = typeof manifest.main === 'string' && manifest.main.trim() !== '';
+      const hasStaticHosting = !!(manifest.ui || (manifest as any).window || manifest.overlay);
+      if (!hasProcessMain && !hasStaticHosting) {
+        throw new Error('插件清单文件缺少入口: 需要 main 或至少一个 ui/window/overlay');
       }
 
       // 验证版本格式
@@ -1170,10 +1252,29 @@ export class PluginManager extends TypedEventEmitter<PluginManagerEvents> {
         throw new Error('插件 ID 格式错误，只能包含小写字母、数字、连字符和下划线');
       }
 
-      // 验证主文件存在
-      const mainFilePath = path.join(pluginDir, manifest.main);
-      if (!fs.existsSync(mainFilePath)) {
-        throw new Error(`插件主文件 ${manifest.main} 不存在`);
+      // 验证图标字段（若提供）
+      if ((manifest as any).icon !== undefined) {
+        const icon = String((manifest as any).icon || '').trim();
+        if (!icon) {
+          throw new Error('icon 字段不能为空字符串');
+        }
+        const ext = path.extname(icon).toLowerCase();
+        const allowed = ['.png', '.jpg', '.jpeg', '.ico', '.svg'];
+        if (!allowed.includes(ext)) {
+          throw new Error('icon 文件扩展名不被支持');
+        }
+        const iconPath = path.join(pluginDir, 'ui', icon);
+        if (!fs.existsSync(iconPath)) {
+          throw new Error(`icon 文件不存在: ${icon}`);
+        }
+      }
+
+      // 验证主文件存在（仅当声明了 main 时）
+      if (hasProcessMain) {
+        const mainFilePath = path.join(pluginDir, manifest.main);
+        if (!fs.existsSync(mainFilePath)) {
+          throw new Error(`插件主文件 ${manifest.main} 不存在`);
+        }
       }
 
       // 校验 Wujie 相关可选字段（UI / Overlay）
@@ -1231,7 +1332,7 @@ export class PluginManager extends TypedEventEmitter<PluginManagerEvents> {
         }
       };
 
-      // 注意：ui/overlay 根级对象既承载展示元数据（name/description/icon），又包含新的托管字段
+      // 注意：ui/overlay 根级对象仅承载展示元数据（name/description），以及新的托管字段
       validateHosting('ui', manifest.ui);
       validateHosting('overlay', manifest.overlay);
       validateHosting('window', (manifest as any).window);
@@ -1476,11 +1577,9 @@ export class PluginManager extends TypedEventEmitter<PluginManagerEvents> {
           // 恢复备份
           fs.cpSync(backupPath, pluginPath, { recursive: true });
       
-          // 重新加载插件
-          // await this.loadPlugin(pluginId);
-      
-          // 重新启用插件（如果之前是启用状态）
-          if (plugin.enabled) {
+          // 重新加载插件信息并按之前状态恢复
+          try { this.loadInstalledPlugins(); } catch {}
+          if (wasEnabled) {
               await this.enablePlugin(pluginId);
           }
       
@@ -1701,7 +1800,7 @@ export class PluginManager extends TypedEventEmitter<PluginManagerEvents> {
     }
 
     try {
-      const manifestPath = path.join(plugin.installPath, 'plugin.json');
+      const manifestPath = path.join(plugin.installPath, 'manifest.json');
       if (fs.existsSync(manifestPath)) {
         const manifestContent = fs.readFileSync(manifestPath, 'utf-8');
         const manifest: PluginManifest = JSON.parse(manifestContent);

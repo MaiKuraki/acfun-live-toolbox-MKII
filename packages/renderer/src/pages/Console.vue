@@ -1,126 +1,141 @@
 <template>
   <div class="console-page">
-    <div class="header">
-      <h1>控制台</h1>
-      <div
-        v-if="consoleData"
-        class="stats"
-      >
+    <t-card class="header-card" title="系统监控" hover-shadow>
+      <div class="stats-container">
         <div class="stat-item">
-          <span class="label">WebSocket 连接:</span>
-          <span class="value">{{ consoleData.websocketClients }}</span>
+          <div class="stat-icon">
+            <t-icon name="desktop" />
+          </div>
+          <div class="stat-content">
+            <span class="stat-label">Overlay 连接</span>
+            <span class="stat-value">{{ overlayCount }}</span>
+          </div>
         </div>
         <div class="stat-item">
-          <span class="label">活跃会话:</span>
-          <span class="value">{{ consoleData.activeSessions?.length || 0 }}</span>
+          <div class="stat-icon">
+            <t-icon name="window" />
+          </div>
+          <div class="stat-content">
+            <span class="stat-label">窗口连接</span>
+            <span class="stat-value">{{ windowCount }}</span>
+          </div>
         </div>
-      </div>
-    </div>
-
-    <div
-      v-if="consoleData"
-      class="content"
-    >
-      <div class="commands-section">
-        <h2>可用命令</h2>
-        <div class="commands-grid">
-          <div 
-            v-for="command in consoleData.commands" 
-            :key="command.name"
-            class="command-card"
-          >
-            <div class="command-header">
-              <span class="command-name">{{ command.name }}</span>
-              <span
-                class="command-category"
-                :class="getCategoryClass(command.category)"
-              >
-                {{ command.category }}
-              </span>
-            </div>
-            <div class="command-description">
-              {{ command.description }}
-            </div>
-            <div
-              v-if="command.usage"
-              class="command-usage"
-            >
-              <strong>用法:</strong> <code>{{ command.usage }}</code>
-            </div>
+        <div class="stat-item">
+          <div class="stat-icon">
+            <t-icon name="widget" />
+          </div>
+          <div class="stat-content">
+            <span class="stat-label">已加载插件</span>
+            <span class="stat-value">{{ pluginTotal }}</span>
+          </div>
+        </div>
+        <div class="stat-item">
+          <div class="stat-icon">
+            <t-icon name="internet" />
+          </div>
+          <div class="stat-content">
+            <span class="stat-label">WebSocket 客户端</span>
+            <span class="stat-value">{{ wsClients }}</span>
           </div>
         </div>
       </div>
+    </t-card>
 
-      <div
-        v-if="consoleData?.activeSessions?.length > 0"
-        class="sessions-section"
-      >
-        <h2>活跃会话</h2>
-        <div class="sessions-list">
-          <div 
-            v-for="session in consoleData.activeSessions" 
-            :key="session.id"
-            class="session-card"
+    <t-card class="logs-card" hover-shadow>
+      <div class="log-header">
+        <div class="log-title-section">
+          <t-icon name="root-list" style="font-size: 16px;" />
+          <span class="title">实时日志</span>
+          <t-tag v-if="!autoScroll" theme="warning" size="small">已暂停</t-tag>
+        </div>
+        <div class="filters">
+          <t-checkbox v-model="debugMode">Debug</t-checkbox>
+          <t-select 
+            v-model="levelFilter" 
+            :options="levelOptions" 
+            clearable 
+            class="filter-item level-filter" 
+            placeholder="筛选级别"
+          />
+          <t-input 
+            v-model="textFilter" 
+            class="filter-item search-input" 
+            placeholder="搜索日志内容…" 
+            clearable
           >
-            <div class="session-header">
-              <span class="session-id">会话 #{{ session.id }}</span>
-              <span
-                class="session-status"
-                :class="getStatusClass(session.status)"
-              >
-                {{ getStatusText(session.status) }}
-              </span>
+            <template #prefix-icon>
+              <t-icon name="search" style="font-size: 14px;" />
+            </template>
+          </t-input>
+          <t-button 
+            theme="primary" 
+            @click="exportLogs"
+            class="export-btn"
+          >
+            <template #icon>
+              <t-icon name="download" />
+            </template>
+            导出日志
+          </t-button>
+        </div>
+      </div>
+      <div ref="logListRef" class="log-container">
+        <div class="log-list" @scroll="handleScroll">
+          <div 
+            v-for="(log, idx) in visibleLogs" 
+            :key="`${log.timestamp}-${log.source}-${log.message?.substring(0, 50)}-${idx}`" 
+            class="log-row" 
+            :data-level="normalizeLogLevel(log.level)"
+            :class="{ 'highlight': isLong(log) }"
+          >
+            <div class="log-time">
+              <t-icon name="time" />
+              <span class="ts">{{ formatTs(log.timestamp ?? (log as any).ts) }}</span>
             </div>
-            <div class="session-info">
-              <div class="info-item">
-                <span class="label">房间:</span>
-                <span class="value">{{ session.room || '未指定' }}</span>
-              </div>
-              <div class="info-item">
-                <span class="label">开始时间:</span>
-                <span class="value">{{ formatDate(session.startTime) }}</span>
-              </div>
-              <div
-                v-if="session.lastActivity"
-                class="info-item"
+            <div class="log-level">
+              <t-tag 
+                :theme="getLevelTheme(log.level)" 
+                size="small"
+                class="level-tag"
               >
-                <span class="label">最后活动:</span>
-                <span class="value">{{ formatDate(session.lastActivity) }}</span>
-              </div>
+                {{ normalizeLogLevel(log.level).toUpperCase() }}
+              </t-tag>
             </div>
-            <div
-              v-if="session.details"
-              class="session-details"
-            >
-              <strong>详情:</strong> {{ session.details }}
+            <div class="log-source">
+              <t-icon name="folder" />
+              <span class="source">{{ log.source }}</span>
+            </div>
+            <div class="log-message">
+              <span class="message-text">{{ isLong(log) ? truncateMessage(log.message) : log.message }}</span>
+              <t-button 
+                v-if="isLong(log)" 
+                size="small" 
+                variant="text" 
+                @click="viewFull(log)"
+                class="view-full-btn"
+              >
+                <t-icon name="browse" style="font-size: 12px;" />
+                查看全文
+              </t-button>
             </div>
           </div>
         </div>
-      </div>
-
-      <div
-        v-else
-        class="empty-sessions"
-      >
-        <div class="empty-icon">
-          📭
+        <div v-if="visibleLogs.length === 0 && filteredLogs.length === 0" class="empty-state">
+          <t-icon name="file-search" size="large" />
+          <p>暂无日志数据</p>
+          <span class="empty-desc">日志将实时显示在这里</span>
         </div>
-        <p>当前没有活跃的会话</p>
       </div>
-    </div>
-
-    <div
-      v-else
-      class="loading"
-    >
-      <div class="spinner" />
-      <p>正在加载控制台数据...</p>
-    </div>
+    </t-card>
   </div>
 </template>
 
 <script setup lang="ts">
-import { ref, onMounted, onUnmounted } from 'vue'
+import { ref, computed, onMounted, onUnmounted, nextTick, watch } from 'vue'
+import { useConsoleStore } from '../stores/console'
+import GlobalPopup from '../services/globalPopup'
+
+type LogEntry = { timestamp?: string | number; level: 'info' | 'error' | 'warn' | 'debug'; source?: string; message?: string; correlationId?: string; ts?: number }
 
 interface Command {
   name: string
@@ -138,24 +153,118 @@ interface Session {
   details?: string
 }
 
-interface ConsoleData {
-  commands: Command[]
-  activeSessions: Session[]
-  websocketClients: number
+const commands = ref<Command[]>([])
+const overlayCount = ref(0)
+const windowCount = ref(0)
+const pluginTotal = ref(0)
+const wsClients = ref(0)
+const logs = ref<LogEntry[]>([])
+const debugMode = ref(false)
+const overlayCounts = ref<Record<string, number>>({})
+const levelFilter = ref<string>('')
+const textFilter = ref('')
+const autoScroll = ref(true)
+const logListRef = ref<HTMLDivElement | null>(null)
+let resumeTimer: number | null = null
+const levelOptions = [
+  { label: '全部', value: '' },
+  { label: '错误', value: 'error' },
+  { label: '警告', value: 'warn' },
+  { label: '信息', value: 'info' },
+  { label: '调试', value: 'debug' }
+]
+
+const filteredLogs = computed(() => {
+  const filtered = logs.value.filter(l => {
+    const hasMessage = String(l.message || '').trim().length > 0
+    if (!hasMessage) return false
+    if (!debugMode.value) {
+      if (normalizeLogLevel(l.level) !== 'error') return false
+    } else {
+      if (levelFilter.value && normalizeLogLevel(l.level) !== levelFilter.value) return false
+    }
+    if (textFilter.value && !String(l.message || '').toLowerCase().includes(textFilter.value.toLowerCase())) return false
+    return true
+  })
+  return filtered.reverse()
+})
+
+// Virtual scrolling state
+const visibleLogs = ref<LogEntry[]>([])
+const scrollTop = ref(0)
+const containerHeight = ref(0)
+const itemHeight = 44 // Approximate height of each log row
+const bufferSize = 20 // Number of items to render outside visible area
+let updateTimer: number | null = null
+
+const updateVisibleLogs = () => {
+  // Debounce updates to prevent excessive re-renders
+  if (updateTimer) clearTimeout(updateTimer)
+  updateTimer = window.setTimeout(() => {
+    const totalLogs = filteredLogs.value
+    const startIndex = Math.max(0, Math.floor(scrollTop.value / itemHeight) - bufferSize)
+    const endIndex = Math.min(totalLogs.length, Math.ceil((scrollTop.value + containerHeight.value) / itemHeight) + bufferSize)
+    
+    visibleLogs.value = totalLogs.slice(startIndex, endIndex)
+    
+    // Update container padding to maintain scroll position
+    const logListEl = document.querySelector('.log-list') as HTMLElement
+    if (logListEl) {
+      logListEl.style.paddingTop = `${startIndex * itemHeight}px`
+      logListEl.style.paddingBottom = `${Math.max(0, (totalLogs.length - endIndex) * itemHeight)}px`
+    }
+  }, 16) // ~60fps update rate
 }
 
-const consoleData = ref<ConsoleData | null>(null)
-let refreshInterval: number | null = null
+const isLong = (l: LogEntry) => {
+  try { return String(l.message || '').length > 160 } catch { return false }
+}
 
-const fetchConsoleData = async () => {
+// Memoized message truncation for performance
+const truncateMessage = (message: string, maxLength: number = 160) => {
   try {
-    const response = await fetch('http://127.0.0.1:18299/api/console/data')
-    if (response.ok) {
-      consoleData.value = await response.json()
-    }
-  } catch (error) {
-    console.error('Failed to fetch console data:', error)
+    const msg = String(message || '')
+    return msg.length > maxLength ? msg.substring(0, maxLength) + '...' : msg
+  } catch {
+    return String(message || '')
   }
+}
+
+const viewFull = (l: LogEntry) => {
+  try {
+    const title = `[${String(l.level).toUpperCase()}] ${String(l.source || '')} @ ${formatTs(l.timestamp)}`
+    GlobalPopup.alert(title, String(l.message || ''))
+  } catch {}
+}
+
+const normalizeLogLevel = (level: any): 'error' | 'warn' | 'info' | 'debug' => {
+  if (typeof level === 'string') {
+    const l = level.trim().toLowerCase();
+    if (l === 'error' || l === 'err' || l === 'e') return 'error';
+    if (l === 'warn' || l === 'warning' || l === 'w') return 'warn';
+    if (l === 'info' || l === 'log' || l === 'i') return 'info';
+    if (l === 'debug' || l === 'trace' || l === 'd') return 'debug';
+    return 'info';
+  }
+  if (typeof level === 'number') {
+    // Common numeric mapping: 40+=error, 30+=warn, 20+=info, else debug
+    if (level >= 40) return 'error';
+    if (level >= 30) return 'warn';
+    if (level >= 20) return 'info';
+    return 'debug';
+  }
+  return 'info';
+}
+
+const getLevelTheme = (level: string) => {
+  const normalizedLevel = normalizeLogLevel(level)
+  const themeMap: Record<string, string> = {
+    'error': 'danger',
+    'warn': 'warning',
+    'info': 'primary',
+    'debug': 'default'
+  }
+  return themeMap[normalizedLevel] || 'default'
 }
 
 const getCategoryClass = (category: string) => {
@@ -169,262 +278,695 @@ const getCategoryClass = (category: string) => {
   return categoryMap[category.toLowerCase()] || 'category-default'
 }
 
-const getStatusClass = (status: string) => {
-  const statusMap: Record<string, string> = {
-    'active': 'status-active',
-    'idle': 'status-idle',
-    'connecting': 'status-connecting',
-    'error': 'status-error'
+const formatTs = (ts: string | number | undefined) => {
+  try {
+    if (ts === undefined || ts === null) return new Date().toLocaleTimeString('zh-CN', { hour: '2-digit', minute: '2-digit', second: '2-digit' })
+    
+    // Handle different timestamp formats
+    let date: Date
+    
+    // If it's already a valid ISO string or timestamp
+    if (typeof ts === 'string' && ts.includes('T')) {
+      date = new Date(ts)
+    } else if (typeof ts === 'number' || !isNaN(Number(ts))) {
+      // Handle Unix timestamps
+      date = new Date(Number(ts))
+    } else {
+      // Try to parse as date string
+      date = new Date(ts)
+    }
+    
+    if (isNaN(date.getTime())) {
+      // If parsing fails, try to extract time from log message
+      const timeMatch = typeof ts === 'string' ? ts.match(/(\d{1,2}):(\d{2}):(\d{2})/) : null
+      if (timeMatch) {
+        return timeMatch[0]
+      }
+      return new Date().toLocaleTimeString('zh-CN', { hour: '2-digit', minute: '2-digit', second: '2-digit' })
+    }
+    
+    return date.toLocaleString('zh-CN', {
+      month: '2-digit',
+      day: '2-digit',
+      hour: '2-digit',
+      minute: '2-digit',
+      second: '2-digit'
+    })
+  } catch {
+    return new Date().toLocaleTimeString('zh-CN', { hour: '2-digit', minute: '2-digit', second: '2-digit' })
   }
-  return statusMap[status.toLowerCase()] || 'status-default'
 }
 
-const getStatusText = (status: string) => {
-  const statusMap: Record<string, string> = {
-    'active': '活跃',
-    'idle': '空闲',
-    'connecting': '连接中',
-    'error': '错误'
+const scrollToBottom = async () => {
+  if (!autoScroll.value) return
+  await nextTick()
+  const el = logListRef.value
+  if (el) {
+    el.scrollTop = el.scrollHeight
+    // Update visible logs after scroll
+    scrollTop.value = el.scrollTop
+    containerHeight.value = el.clientHeight
+    updateVisibleLogs()
   }
-  return statusMap[status.toLowerCase()] || status
 }
 
-const formatDate = (dateString: string) => {
-  return new Date(dateString).toLocaleString('zh-CN')
+const handleScroll = () => {
+  const el = logListRef.value
+  if (el) {
+    scrollTop.value = el.scrollTop
+    containerHeight.value = el.clientHeight
+    updateVisibleLogs()
+  }
+  
+  // Pause auto-scroll when user scrolls
+  autoScroll.value = false
+  if (resumeTimer) clearTimeout(resumeTimer)
+  resumeTimer = window.setTimeout(() => { 
+    autoScroll.value = true
+    scrollToBottom() 
+  }, 10000)
 }
 
-onMounted(() => {
-  fetchConsoleData()
-  // 每30秒刷新一次数据
-  refreshInterval = window.setInterval(fetchConsoleData, 30000)
+
+
+const exportLogs = async () => {
+  try {
+    const data = filteredLogs.value
+    const suggested = `logs-${Date.now()}.json`
+    const save = await window.electronApi.dialog.showSaveDialog({ title: '保存日志', defaultPath: suggested })
+    const filePath = (save as any)?.filePath || (save as any)?.path
+    if (!filePath) return
+    await window.electronApi.fs.writeFile(String(filePath), JSON.stringify(data, null, 2))
+  } catch {}
+}
+
+const refreshStats = async () => {
+  try {
+    const status = await window.electronApi.monitoring.queryPageStatus()
+    const plugins = Array.isArray((status as any)?.plugins) ? (status as any).plugins : []
+    overlayCount.value = plugins.reduce((sum: number, p: any) => sum + (p.connectedCount || 0), 0)
+  } catch { overlayCount.value = 0 }
+  try {
+    const wl = await window.electronApi.plugin.window.list()
+    windowCount.value = (wl as any)?.windows?.length || 0
+  } catch { windowCount.value = 0 }
+  try {
+    const st = await window.electronApi.plugin.stats()
+    pluginTotal.value = (st as any)?.data?.total || ((await window.electronApi.plugin.list()) as any)?.data?.length || 0
+  } catch { pluginTotal.value = 0 }
+  try {
+    const info = await window.electronApi.http.get('/')
+    wsClients.value = (info as any)?.websocket_clients || 0
+  } catch { wsClients.value = 0 }
+}
+
+onMounted(async () => {
+  try {
+    const cs = useConsoleStore()
+    await cs.createSession()
+    const cmds = await cs.loadAvailableCommands()
+    commands.value = cmds || []
+  } catch {}
+
+  await refreshStats()
+  const statsTimer = window.setInterval(refreshStats, 15000)
+  ;(window as any)._consoleStatsTimer = statsTimer
+
+  // Initialize virtual scrolling
+  nextTick(() => {
+    const el = logListRef.value
+    if (el) {
+      containerHeight.value = el.clientHeight
+      updateVisibleLogs()
+    }
+  })
+
+  // Handle window resize
+  const handleResize = () => {
+    const el = logListRef.value
+    if (el) {
+      containerHeight.value = el.clientHeight
+      updateVisibleLogs()
+    }
+  }
+  window.addEventListener('resize', handleResize)
+  ;(window as any)._consoleResizeHandler = handleResize
+
+  try {
+    const es = new EventSource('http://127.0.0.1:18299/sse/system/logs')
+    es.addEventListener('init', (e: any) => {
+      try {
+        const arr = JSON.parse(e.data || '[]')
+        logs.value = Array.isArray(arr) ? arr.slice(-1000) : []
+        scrollToBottom()
+      } catch {}
+    })
+    
+    // Batch log updates for better performance
+    let logBatch: LogEntry[] = []
+    let batchTimer: number | null = null
+    
+    const processLogBatch = () => {
+      if (logBatch.length > 0) {
+        logs.value.push(...logBatch)
+        // Keep only last 1000 logs to prevent memory issues
+        if (logs.value.length > 1000) {
+          logs.value = logs.value.slice(-1000)
+        }
+        logBatch = []
+        scrollToBottom()
+      }
+      batchTimer = null
+    }
+    
+    es.addEventListener('log', (e: any) => {
+      try {
+        const entry = JSON.parse(e.data || '{}') as LogEntry
+        logBatch.push(entry)
+        
+        // Process batch immediately if it's getting large, or schedule processing
+        if (logBatch.length >= 10) {
+          if (batchTimer) clearTimeout(batchTimer)
+          processLogBatch()
+        } else if (!batchTimer) {
+          batchTimer = window.setTimeout(processLogBatch, 100) // Process within 100ms
+        }
+      } catch {}
+    })
+    ;(window as any)._consoleLogES = es
+  } catch {}
+
+  // Overlay连接数：初始化快照并订阅各插件的页面状态
+  try {
+    const status = await window.electronApi.monitoring.queryPageStatus()
+    const plugins = Array.isArray((status as any)?.plugins) ? (status as any).plugins : []
+    const counts: Record<string, number> = {}
+    for (const p of plugins) {
+      const pid = String((p && p.pluginId) || '')
+      if (!pid) continue
+      counts[pid] = Number(p.connectedCount || 0)
+    }
+    overlayCounts.value = counts
+    overlayCount.value = Object.values(counts).reduce((a, b) => a + (Number(b) || 0), 0)
+
+    const listResult = await window.electronApi.plugin.list()
+    const list = (listResult as any)?.data || []
+    const unsubMap = new Map<string, { unsubscribe: () => Promise<void> | void }>()
+    for (const plugin of list) {
+      const pid = String(plugin?.id || '')
+      if (!pid) continue
+      try {
+        const sub = await window.electronApi.monitoring.subscribePageStatus(pid, (update: any) => {
+          try {
+            const rec = update?.record
+            const msg = (rec && rec.payload) || rec || {}
+            const type = String(msg?.type || '')
+            const current = Number(overlayCounts.value[pid] || 0)
+            if (type === 'overlay-connected') {
+              overlayCounts.value = { ...overlayCounts.value, [pid]: current + 1 }
+            } else if (type === 'overlay-disconnected') {
+              overlayCounts.value = { ...overlayCounts.value, [pid]: Math.max(0, current - 1) }
+            }
+            overlayCount.value = Object.values(overlayCounts.value).reduce((a, b) => a + (Number(b) || 0), 0)
+          } catch {}
+        })
+        unsubMap.set(pid, sub)
+      } catch {}
+    }
+    ;(window as any)._consoleOverlayUnsubMap = unsubMap
+  } catch {}
 })
 
+// Watch for changes in filtered logs and update visible logs
+watch(filteredLogs, () => {
+  updateVisibleLogs()
+}, { flush: 'post' })
+
 onUnmounted(() => {
-  if (refreshInterval) {
-    clearInterval(refreshInterval)
-  }
+  try { const es: EventSource = (window as any)._consoleLogES; es && es.close && es.close() } catch {}
+  try { const t: number = (window as any)._consoleStatsTimer; if (t) clearInterval(t) } catch {}
+  try {
+    const m: Map<string, { unsubscribe: () => Promise<void> | void }> = (window as any)._consoleOverlayUnsubMap
+    if (m) { for (const [, h] of m) { try { h?.unsubscribe?.() } catch {} } }
+  } catch {}
+  try { const handler: () => void = (window as any)._consoleResizeHandler; if (handler) window.removeEventListener('resize', handler) } catch {}
+  if (updateTimer) clearTimeout(updateTimer)
+  if (resumeTimer) clearTimeout(resumeTimer)
 })
 </script>
 
 <style scoped>
+/* Modern Console Page Layout */
 .console-page {
-  max-width: 1200px;
-  margin: 0 auto;
-  padding: 20px;
-  font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
-}
-
-.header {
+  height: 100%; /* Use parent container height (728px) */
   display: flex;
-  justify-content: space-between;
-  align-items: center;
-  margin-bottom: 30px;
-  padding-bottom: 20px;
-  border-bottom: 2px solid #e1e5e9;
+  flex-direction: column;
+  gap: 12px;
+  padding: 16px;
+  background: var(--td-bg-color-page);
+  box-sizing: border-box;
 }
 
-.header h1 {
-  margin: 0;
-  color: #2c3e50;
-  font-size: 2.5rem;
+/* Enhanced Header Card */
+.header-card {
+  margin-bottom: 0;
+  border-radius: 8px;
+  background: var(--td-bg-color-container);
+  border: 1px solid var(--td-border-level-1-color);
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.05);
 }
 
-.stats {
+.header-card :deep(.t-card__header) {
+  padding: 12px 16px 8px;
+}
+
+.header-card :deep(.t-card__title) {
+  font-size: 14px;
+  font-weight: 600;
+}
+
+.header-card :deep(.t-card__body) {
+  padding: 8px 16px 12px;
+}
+
+.logs-card :deep(.t-card__body) {
+  flex: 1;
   display: flex;
-  gap: 20px;
+  flex-direction: column;
+  padding: 0;
+  overflow: hidden;
+  min-height: 0;
+}
+
+.stats-container {
+  display: flex;
+  gap: 6px;
+  padding: 4px 0;
 }
 
 .stat-item {
+  flex: 1;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 6px 8px;
+  background: var(--td-bg-color-container);
+  border-radius: 6px;
+  border: 1px solid var(--td-border-level-1-color);
+  transition: all 0.3s ease;
+  min-width: 0;
+}
+
+.stat-item:hover {
+  transform: translateY(-1px);
+  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.08);
+}
+
+.stat-icon {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 24px;
+  height: 24px;
+  border-radius: 4px;
+  background: var(--td-brand-color-1);
+  color: var(--td-brand-color-6);
+  font-size: 14px;
+  flex-shrink: 0;
+}
+
+.stat-content {
   display: flex;
   flex-direction: column;
-  align-items: center;
-  padding: 10px 15px;
-  background: #f8f9fa;
-  border-radius: 8px;
+  gap: 2px;
+  min-width: 0;
 }
 
-.stat-item .label {
-  font-size: 0.8rem;
-  color: #7f8c8d;
-  margin-bottom: 5px;
+.stat-label {
+  font-size: 10px;
+  color: var(--td-text-color-secondary);
+  font-weight: 500;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 
-.stat-item .value {
-  font-size: 1.2rem;
+.stat-value {
+  font-size: 14px;
   font-weight: 600;
-  color: #2c3e50;
+  color: var(--td-text-color-primary);
+  line-height: 1;
 }
 
-.commands-section, .sessions-section {
-  margin-bottom: 40px;
+/* Enhanced Logs Card */
+.logs-card {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  max-height: 100%; /* Ensure card doesn't exceed available space */
+  border-radius: 12px;
+  background: var(--td-bg-color-container);
+  border: 1px solid var(--td-border-level-1-color);
+  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.05);
+  overflow: hidden;
 }
 
-.commands-section h2, .sessions-section h2 {
-  margin: 0 0 20px 0;
-  color: #2c3e50;
-}
-
-.commands-grid {
-  display: grid;
-  grid-template-columns: repeat(auto-fill, minmax(350px, 1fr));
-  gap: 20px;
-}
-
-.command-card {
-  background: white;
-  border: 1px solid #e1e5e9;
-  border-radius: 8px;
-  padding: 20px;
-  transition: box-shadow 0.2s ease;
-}
-
-.command-card:hover {
-  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.1);
-}
-
-.command-header {
+.log-header {
   display: flex;
   justify-content: space-between;
   align-items: center;
-  margin-bottom: 10px;
+  padding: 12px 16px;
+  border-bottom: 1px solid var(--td-border-level-1-color);
+  background: var(--td-bg-color-container);
+  border-radius: 12px 12px 0 0;
+  gap: 16px;
 }
 
-.command-name {
-  font-family: 'Courier New', monospace;
+.log-title-section {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.log-title-section .title {
+  font-size: 16px;
   font-weight: 600;
-  color: #2c3e50;
-  font-size: 1.1rem;
+  color: var(--td-text-color-primary);
 }
 
-.command-category {
-  padding: 4px 8px;
+.filters {
+  display: flex;
+  gap: 12px;
+  align-items: center;
+  justify-content: flex-end;
+  flex: 1;
+}
+
+.filter-item {
+  min-width: 140px;
+}
+
+.level-filter {
+  width: 120px;
+}
+
+.search-input {
+  width: 200px;
+}
+
+.search-input :deep(.t-input__prefix) {
+  display: flex;
+  align-items: center;
+}
+
+.export-btn {
+  padding: 6px 12px;
+  height: 32px;
+}
+
+.export-btn :deep(.t-button__icon) {
+  font-size: 14px;
+  line-height: 1;
+  margin-right: 4px;
+  vertical-align: middle;
+}
+
+.export-btn :deep(.t-button__content) {
+  display: flex;
+  align-items: center;
+  line-height: 1;
+}
+
+/* Log Container */
+.log-container {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  overflow: hidden;
+}
+
+.log-list {
+  flex: 1;
+  overflow-y: auto;
+  padding: 8px 8px 8px 8px; /* Keep consistent padding */
+  min-height: 0;
+  position: relative; /* For virtual scrolling positioning */
+}
+
+.log-row {
+  display: grid;
+  grid-template-columns: 160px 80px 140px 1fr;
+  gap: 12px;
+  padding: 8px 12px;
+  margin-bottom: 2px;
   border-radius: 4px;
-  font-size: 0.7rem;
+  background: var(--td-bg-color-container);
+  border: 1px solid transparent;
+  transition: all 0.2s ease;
+  align-items: flex-start;
+  min-width: 0;
+  word-break: break-word;
+  contain: layout style paint; /* Performance optimization */
+  will-change: transform; /* Smooth animations */
+}
+
+.log-row:hover {
+  background: var(--td-bg-color-container-hover);
+  border-color: var(--td-border-level-1-color);
+  transform: translateX(2px);
+}
+
+.log-row.highlight {
+  border-left: 3px solid var(--td-brand-color-6);
+}
+
+.log-row[data-level="error"] {
+  background: linear-gradient(90deg, rgba(227, 77, 89, 0.15) 0%, transparent 100%);
+  border-left: 3px solid rgba(227, 77, 89, 0.8);
+}
+
+.log-row[data-level="warn"] {
+  background: linear-gradient(90deg, rgba(255, 165, 0, 0.15) 0%, transparent 100%);
+  border-left: 3px solid rgba(255, 165, 0, 0.8);
+}
+
+.log-row[data-level="info"] {
+  background: transparent;
+  border-left: 3px solid rgba(0, 168, 255, 0.6);
+}
+
+.log-row[data-level="debug"] {
+  background: linear-gradient(90deg, rgba(144, 147, 153, 0.1) 0%, transparent 100%);
+  border-left: 3px solid rgba(144, 147, 153, 0.4);
+}
+
+/* Log Row Components */
+.log-time {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 12px;
+  color: var(--td-text-color-secondary);
+}
+
+.log-level {
+  display: flex;
+  align-items: center;
+}
+
+.level-tag {
   font-weight: 600;
+  font-size: 11px;
   text-transform: uppercase;
-}
-
-.category-system { background: #3498db; color: white; }
-.category-room { background: #27ae60; color: white; }
-.category-event { background: #f39c12; color: white; }
-.category-debug { background: #e74c3c; color: white; }
-.category-plugin { background: #9b59b6; color: white; }
-.category-default { background: #95a5a6; color: white; }
-
-.command-description {
-  color: #7f8c8d;
-  line-height: 1.5;
-  margin-bottom: 10px;
-}
-
-.command-usage {
-  font-size: 0.9rem;
-}
-
-.command-usage code {
-  background: #f8f9fa;
-  padding: 2px 6px;
-  border-radius: 4px;
-  font-family: 'Courier New', monospace;
-}
-
-.sessions-list {
-  display: flex;
-  flex-direction: column;
-  gap: 15px;
-}
-
-.session-card {
-  background: white;
-  border: 1px solid #e1e5e9;
-  border-radius: 8px;
-  padding: 20px;
-}
-
-.session-header {
-  display: flex;
-  justify-content: space-between;
-  align-items: center;
-  margin-bottom: 15px;
-}
-
-.session-id {
-  font-weight: 600;
-  color: #2c3e50;
-}
-
-.session-status {
-  padding: 4px 8px;
-  border-radius: 4px;
-  font-size: 0.8rem;
-  font-weight: 600;
-}
-
-.status-active { background: #27ae60; color: white; }
-.status-idle { background: #f39c12; color: white; }
-.status-connecting { background: #3498db; color: white; }
-.status-error { background: #e74c3c; color: white; }
-.status-default { background: #95a5a6; color: white; }
-
-.session-info {
-  display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
-  gap: 10px;
-  margin-bottom: 10px;
-}
-
-.info-item {
-  display: flex;
-  justify-content: space-between;
-}
-
-.info-item .label {
-  font-weight: 600;
-  color: #7f8c8d;
-}
-
-.info-item .value {
-  color: #2c3e50;
-}
-
-.session-details {
-  color: #7f8c8d;
-  font-size: 0.9rem;
-  line-height: 1.4;
-}
-
-.empty-sessions {
+  letter-spacing: 0.5px;
+  min-width: 45px;
   text-align: center;
-  padding: 40px;
-  color: #7f8c8d;
 }
 
-.empty-icon {
-  font-size: 3rem;
-  margin-bottom: 15px;
+/* Enhanced level tag colors for better visibility */
+.level-tag.t-tag--danger {
+  background-color: rgba(227, 77, 89, 0.15) !important;
+  color: #d32f2f !important;
+  border-color: rgba(227, 77, 89, 0.3) !important;
 }
 
-.loading {
+.level-tag.t-tag--warning {
+  background-color: rgba(255, 165, 0, 0.15) !important;
+  color: #f57c00 !important;
+  border-color: rgba(255, 165, 0, 0.3) !important;
+}
+
+.level-tag.t-tag--primary {
+  background-color: rgba(0, 168, 255, 0.15) !important;
+  color: #1976d2 !important;
+  border-color: rgba(0, 168, 255, 0.3) !important;
+}
+
+.level-tag.t-tag--default {
+  background-color: rgba(144, 147, 153, 0.15) !important;
+  color: #606266 !important;
+  border-color: rgba(144, 147, 153, 0.3) !important;
+}
+
+.log-source {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 12px;
+  color: var(--td-text-color-secondary);
+}
+
+.log-message {
+  display: flex;
+  justify-content: space-between;
+  align-items: flex-start;
+  gap: 8px;
+  min-width: 0;
+  overflow: hidden;
+}
+
+.message-text {
+  font-size: 13px;
+  color: var(--td-text-color-primary);
+  line-height: 1.4;
+  white-space: pre-wrap;
+  word-break: break-word;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+  flex: 1;
+  contain: layout style paint; /* Performance optimization */
+}
+
+.view-full-btn {
+  flex-shrink: 0;
+  opacity: 0;
+  transition: opacity 0.2s ease;
+}
+
+.log-row:hover .view-full-btn {
+  opacity: 1;
+}
+
+/* Empty State */
+.empty-state {
   display: flex;
   flex-direction: column;
   align-items: center;
   justify-content: center;
-  min-height: 300px;
-  color: #7f8c8d;
+  padding: 60px 20px;
+  color: var(--td-text-color-placeholder);
 }
 
-.spinner {
-  width: 40px;
-  height: 40px;
-  border: 4px solid #e1e5e9;
-  border-top: 4px solid #3498db;
-  border-radius: 50%;
-  animation: spin 1s linear infinite;
-  margin-bottom: 15px;
+.empty-state p {
+  margin: 16px 0 8px;
+  font-size: 16px;
+  font-weight: 500;
 }
 
-@keyframes spin {
-  0% { transform: rotate(0deg); }
-  100% { transform: rotate(360deg); }
+.empty-desc {
+  font-size: 14px;
+  color: var(--td-text-color-secondary);
+}
+
+/* Responsive Design */
+@media (max-width: 1024px) {
+  .stats-container {
+    flex-wrap: nowrap;
+    gap: 8px;
+  }
+  
+  .stat-item {
+    flex: 1 1 auto;
+    min-width: 0;
+    padding: 6px 8px;
+  }
+  
+  .log-row {
+    grid-template-columns: 140px 70px 120px 1fr;
+    gap: 8px;
+  }
+  
+  .filters {
+    flex-wrap: wrap;
+  }
+}
+
+@media (max-width: 768px) {
+  .console-page {
+    padding: 12px;
+    gap: 8px;
+  }
+  
+  .stats-container {
+    flex-direction: column;
+    gap: 6px;
+  }
+  
+  .stat-item {
+    flex: 1 1 auto;
+    padding: 6px 10px;
+  }
+  
+  .stat-icon {
+    width: 20px;
+    height: 20px;
+    font-size: 12px;
+  }
+  
+  .stat-label {
+    font-size: 9px;
+  }
+  
+  .stat-value {
+    font-size: 12px;
+  }
+  
+  .log-header {
+    flex-direction: column;
+    gap: 12px;
+    align-items: stretch;
+  }
+  
+  .filters {
+    justify-content: stretch;
+  }
+  
+  .log-row {
+    grid-template-columns: 1fr;
+    gap: 6px;
+  }
+  
+  .log-time,
+  .log-source {
+    font-size: 11px;
+  }
+  
+  .message-text {
+    font-size: 12px;
+  }
+}
+
+/* Custom Scrollbar */
+.log-list::-webkit-scrollbar {
+  width: 6px;
+}
+
+.log-list::-webkit-scrollbar-track {
+  background: var(--td-bg-color-secondarycontainer);
+  border-radius: 3px;
+}
+
+.log-list::-webkit-scrollbar-thumb {
+  background: var(--td-border-level-1-color);
+  border-radius: 3px;
+}
+
+.log-list::-webkit-scrollbar-thumb:hover {
+  background: var(--td-text-color-placeholder);
 }
 </style>

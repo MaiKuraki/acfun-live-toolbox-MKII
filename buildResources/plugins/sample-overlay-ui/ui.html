@@ -6,120 +6,142 @@
   <title>示例插件 UI</title>
   <style>
     html, body { height: 100%; margin: 0; }
-    body { display: flex; align-items: center; justify-content: center; font-family: system-ui, -apple-system, Segoe UI, Roboto, Helvetica, Arial, sans-serif; }
-    .card { background: rgba(255,255,255,0.85); padding: 24px 28px; border-radius: 10px; box-shadow: 0 6px 24px rgba(0,0,0,.12); }
-    .title { font-size: 20px; font-weight: 600; margin-bottom: 12px; }
-    .row { display: flex; gap: 8px; align-items: center; }
-    input[type=text] { padding: 8px 10px; border: 1px solid #ccc; border-radius: 6px; min-width: 220px; }
+    body { height: 100%; display: flex; flex-direction: column; font-family: system-ui, -apple-system, Segoe UI, Roboto, Helvetica, Arial, sans-serif; }
+    .app { display: flex; flex-direction: column; gap: 12px; padding: 12px; box-sizing: border-box; height: 100%; }
+    .row { background: rgba(255,255,255,0.85); border-radius: 10px; box-shadow: 0 6px 24px rgba(0,0,0,.12); padding: 12px 14px; }
+    .row .title { font-size: 18px; font-weight: 600; margin-bottom: 8px; }
+    .intro .controls { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
+    input[type=text] { padding: 8px 10px; border: 1px solid #ccc; border-radius: 6px; min-width: 160px; }
     button { padding: 8px 12px; border: 0; background: #2b78e4; color: #fff; border-radius: 6px; cursor: pointer; }
     button:hover { background: #225fb5; }
     .hint { color: #666; font-size: 12px; margin-top: 6px; }
+    .store pre { margin: 0; padding: 0; font-size: 12px; line-height: 1.5; white-space: pre-wrap; max-height: 32vh; overflow: auto; }
+    .send .inputs { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
   </style>
   <script>
     (function(){
       var cfg = { uiBgColor: '#f4f4f4' };
-      var pending = {};
       var reqSeq = 0;
       var waiters = new Map();
+      var storeSnap = {};
+      function getBus(){ try { return (window.$wujie && window.$wujie.bus) || (window.__WUJIE && window.__WUJIE.bus) || (window.wujie && window.wujie.bus) || null; } catch(e){ return null; } }
 
-      function applyBg(color){
-        try { document.body.style.background = color || '#f4f4f4'; } catch(e) {}
-      }
-
-      function post(msg){ try { window.parent && window.parent.postMessage(msg, '*'); } catch(e){} }
+      function applyBg(color){ try { document.body.style.background = color || '#f4f4f4'; } catch(e){} }
       function request(command, payload){
         return new Promise(function(resolve, reject){
           var id = 'req-' + (++reqSeq) + '-' + Date.now();
           waiters.set(id, { resolve, reject, command });
-          post({ type: 'bridge-request', requestId: id, command: command, payload: payload || {} });
+          try { var bus = getBus(); bus && bus.$emit && bus.$emit('bridge-request', { type: 'bridge-request', requestId: id, command: command, payload: payload || {} }); } catch(e){}
           setTimeout(function(){ if(waiters.has(id)){ waiters.delete(id); reject(new Error('Timeout for '+command)); } }, 15000);
         });
       }
 
-      window.addEventListener('message', function(ev){
-        var data = ev && ev.data || {}; if(!data || typeof data !== 'object') return;
+      function renderStore(){ try { var el = document.getElementById('store'); if(el) el.textContent = JSON.stringify(storeSnap, null, 2); } catch(e){} }
+      function mergeSlice(base, slice){ if(!base || typeof base!=='object') return slice; for(var k in slice){ base[k] = Object.assign({}, base[k]||{}, slice[k]||{}); } return base; }
+
+      function handleEnvelope(data){ if(!data || typeof data !== 'object') return;
         // 初始化与生命周期
         if(data.type === 'plugin-init'){
           var initCfg = data && data.config;
-          if (initCfg && typeof initCfg === 'object') {
-            try {
-              Object.assign(cfg, initCfg);
-              applyBg(cfg.uiBgColor);
-              var input0 = document.getElementById('bg');
-              if (input0) input0.value = cfg.uiBgColor;
-            } catch(e){}
+          if (initCfg && typeof initCfg === 'object') { try { Object.assign(cfg, initCfg); applyBg(cfg.uiBgColor); var input0 = document.getElementById('bg'); if (input0) input0.value = cfg.uiBgColor; } catch(e){} }
+          request('get-config').then(function(resp){ try { Object.assign(cfg, resp || {}); applyBg(cfg.uiBgColor); var input1 = document.getElementById('bg'); if (input1) input1.value = cfg.uiBgColor; } catch(e){} });
+          return;
+        }
+        if(data.type === 'plugin-event' && data.eventType === 'lifecycle'){
+          if(data.event === 'ready' || data.event === 'config-updated'){
+            request('get-config').then(function(resp){ try { Object.assign(cfg, resp || {}); applyBg(cfg.uiBgColor); var input2 = document.getElementById('bg'); if (input2) input2.value = cfg.uiBgColor; } catch(e){} });
+            return;
           }
-          // 读取已保存配置以确保与主进程持久化一致
-          request('get-config').then(function(resp){
-            try {
-              Object.assign(cfg, resp || {});
-              applyBg(cfg.uiBgColor);
-              var input1 = document.getElementById('bg');
-              if (input1) input1.value = cfg.uiBgColor;
-            } catch(e){}
-          });
-          return;
         }
-        if(data.type === 'plugin-event' && data.eventType === 'lifecycle' && data.event === 'ready'){
-          // 尝试获取配置以确保初始一致
-          request('get-config').then(function(resp){
-            try {
-              Object.assign(cfg, resp || {});
-              applyBg(cfg.uiBgColor);
-              var input2 = document.getElementById('bg');
-              if (input2) input2.value = cfg.uiBgColor;
-            } catch(e){}
-          });
-          return;
-        }
-        if(data.type === 'plugin-event' && data.eventType === 'lifecycle' && data.event === 'config-updated'){
-          request('get-config').then(function(resp){
-            try {
-              Object.assign(cfg, resp || {});
-              applyBg(cfg.uiBgColor);
-              var input3 = document.getElementById('bg');
-              if (input3) input3.value = cfg.uiBgColor;
-            } catch(e){}
-          });
-          return;
+        // 只读仓库：初始快照与增量更新
+        if(data.type === 'plugin-event' && data.eventType === 'readonly-store'){
+          if(data.event === 'readonly-store-init'){
+            storeSnap = (data.payload || {});
+            renderStore();
+            return;
+          }
+          if(data.event === 'readonly-store-update'){
+            storeSnap = mergeSlice(storeSnap, (data.payload || {}));
+            renderStore();
+            return;
+          }
         }
         // 桥接响应
         if(data.type === 'bridge-response'){
-          var w = waiters.get(data.requestId);
-          if(!w) return;
+          var w = waiters.get(data.requestId); if(!w) return;
           waiters.delete(data.requestId);
           if(data.success) w.resolve(data.data); else w.reject(new Error(data.error||('Failed '+String(w.command))));
         }
-      });
+      }
+      function onBusPluginInit(msg){ handleEnvelope(msg); }
+      function onBusPluginEvent(msg){ handleEnvelope(msg); }
+      function onBusBridgeResponse(msg){ handleEnvelope(msg); }
 
       function isHexColor(str){ return /^#([0-9a-fA-F]{3}|[0-9a-fA-F]{6})$/.test(String(str||'')); }
-      function saveBg(){
-        var val = (document.getElementById('bg')||{}).value || '';
-        if(!val || !isHexColor(val)) { alert('请输入合法的十六进制颜色值，如 #2b2b2b'); return; }
-        request('set-config', { config: { uiBgColor: val } }).then(function(){ cfg.uiBgColor = val; applyBg(val); }).catch(function(e){ console.warn('set-config failed:', e); });
+      function saveBg(){ var val = (document.getElementById('bg')||{}).value || ''; if(!val || !isHexColor(val)) { alert('请输入合法的十六进制颜色值，如 #2b2b2b'); return; } request('set-config', { config: { uiBgColor: val } }).then(function(){ cfg.uiBgColor = val; applyBg(val); }).catch(function(e){ console.warn('set-config failed:', e); }); }
+      function sendText(){
+        var msg = (document.getElementById('msgText')||{}).value || '';
+        if(!msg) { alert('请输入要发送的文本'); return; }
+        var payload = { text: String(msg), ts: Date.now() };
+        try {
+          var bus = getBus();
+          if (bus && bus.$emit) {
+            // 未提供 overlayId 时按插件广播到所有 Overlay
+            bus.$emit('overlay-send', { type: 'overlay-send', event: 'text', payload: payload });
+          }
+        } catch(e){}
       }
 
       window.addEventListener('DOMContentLoaded', function(){
-        // 通知宿主 UI 已就绪，促使发送 plugin-init
-        post({ type: 'ui-ready' });
+        try { var bus = getBus(); bus && bus.$emit && bus.$emit('ui-ready', { type: 'ui-ready' }); } catch(e){}
         applyBg(cfg.uiBgColor);
-        var input = document.getElementById('bg');
-        if(input) input.value = cfg.uiBgColor;
-        var btn = document.getElementById('save');
-        if(btn) btn.addEventListener('click', saveBg);
+        var input = document.getElementById('bg'); if(input) input.value = cfg.uiBgColor;
+        var btn = document.getElementById('save'); if(btn) btn.addEventListener('click', saveBg);
+        var sendBtn = document.getElementById('sendBtn'); if(sendBtn) sendBtn.addEventListener('click', sendText);
+        try { var bus = getBus(); if(bus && bus.$on){ bus.$on('plugin-init', onBusPluginInit); bus.$on('plugin-event', onBusPluginEvent); bus.$on('bridge-response', onBusBridgeResponse); } } catch(e){}
       });
     })();
   </script>
 </head>
 <body>
-  <div class="card">
-    <div class="title">这个是ui页面</div>
-    <div class="row">
-      <label for="bg">背景色：</label>
-      <input id="bg" type="text" placeholder="#f4f4f4" />
-      <button id="save">保存</button>
+  <div class="app">
+    <div class="row intro">
+      <div class="title">开发者文档：UI 页面（三行布局）</div>
+      <div>
+        定位：插件在宿主应用中打开的设置/控制页，负责读写配置、展示只读仓库数据，并与 Overlay 进行交互。
+      </div>
+      <div>
+        通信：
+        1) 通过 <code>plugin-event</code> 接收渲染进程下发的只读仓库（事件：<code>readonly-store-init</code>、<code>readonly-store-update</code>）；
+        2) 通过 <code>bridge-request</code> 发起配置读写（<code>get-config</code>/<code>set-config</code>）；
+        3) 通过 <code>overlay-send</code> 将消息路由到 Overlay；未提供 <code>overlayId</code> 时按插件广播到所有 Overlay（示例 UI 的默认行为）。
+      </div>
+      <div>
+        能力：
+        - 展示并订阅只读仓库快照（房间、UI、角色、账号等切片）；
+        - 提供配置输入与保存示例（字段：<code>uiBgColor</code>）；
+        - 发送文本消息到 Overlay（事件名 <code>text</code>，结构：<code>{ text, ts }</code>）。
+      </div>
+      <div class="controls">
+        <label for="bg">背景色：</label>
+        <input id="bg" type="text" placeholder="#f4f4f4" />
+        <button id="save">保存</button>
+      </div>
+      <div class="hint">提示：保存后将触发宿主配置更新事件，UI 会重新读取配置并应用背景色。</div>
     </div>
-    <div class="hint">通过配置管理读写：字段为“UI页面背景色”（示例值如 #2b2b2b）。</div>
+    <div class="row store">
+      <div class="title">渲染进程只读仓库快照</div>
+      <pre id="store"></pre>
+    </div>
+    <div class="row send">
+      <div class="title">发送到 Overlay</div>
+      <div class="inputs">
+        <label for="msgText">文本：</label>
+        <input id="msgText" type="text" placeholder="点我发送" />
+        <button id="sendBtn">发送</button>
+      </div>
+      <div class="hint">未提供 overlayId 时默认广播到当前插件的所有 Overlay；事件名 <code>text</code>，结构：{ text, ts }。</div>
+    </div>
   </div>
 </body>
 </html>

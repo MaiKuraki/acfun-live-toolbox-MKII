@@ -1,4 +1,4 @@
-# Task List: Refactor AcFun Live Toolbox
+# Task List: Refactor ACLiveFrame
 
 ## Phase 1: Foundation & Core Structure
 - [x] 1.1. Create the new directory structure in `packages/main/src` as per DDD (`adapter`, `rooms`, `persistence`, `server`, `plugins`, `ipc`, `logging`, `types`).

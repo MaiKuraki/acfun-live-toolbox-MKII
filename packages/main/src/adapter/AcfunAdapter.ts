@@ -4,7 +4,7 @@ import { AcFunLiveApi, ApiConfig, DanmuMessage as StandardDanmuMessage, UserInfo
 import { TokenManager } from '../server/TokenManager';
 import { NormalizedEvent, NormalizedEventType, RoomStatus } from '../types';
 import { ensureNormalized } from '../events/normalize';
-import { ConnectionPoolManager } from './ConnectionPoolManager';
+import { AcfunApiConnectionPool } from './ConnectionPoolManager';
 import { ConnectionErrorHandler } from './ConnectionErrorHandler';
 
 /**
@@ -125,7 +125,7 @@ export class AcfunAdapter extends EventEmitter {
   /** Token管理器 */
   private tokenManager: TokenManager;
   /** 连接池管理器 */
-  private connectionPool: ConnectionPoolManager;
+  private connectionPool: AcfunApiConnectionPool;
   /** 连接错误处理器 */
   private connectionErrorHandler: ConnectionErrorHandler;
   /** 重连定时器 */
@@ -150,7 +150,7 @@ export class AcfunAdapter extends EventEmitter {
    */
   constructor(
     config: Partial<AdapterConfig> = {},
-    connectionPool?: ConnectionPoolManager
+    connectionPool?: AcfunApiConnectionPool
   ) {
     super();
 
@@ -176,7 +176,7 @@ export class AcfunAdapter extends EventEmitter {
 
     // 初始化依赖组件
     this.tokenManager = TokenManager.getInstance();
-    this.connectionPool = connectionPool || new ConnectionPoolManager();
+    this.connectionPool = connectionPool || new AcfunApiConnectionPool();
     this.connectionErrorHandler = new ConnectionErrorHandler();
 
     // 使用TokenManager提供的统一API实例
@@ -389,9 +389,15 @@ export class AcfunAdapter extends EventEmitter {
       if (this.config.debug) {
         console.log(`[AcfunAdapter] Successfully connected to room ${this.config.roomId}`);
       }
+      if (process.env.ACFRAME_DEBUG_LOGS === '1') {
+        try { console.log('[Adapter] connect ok roomId=' + String(this.config.roomId) + ' state=CONNECTED'); } catch {}
+      }
 
     } catch (error) {
       this.handleConnectionError(error as Error);
+      if (process.env.ACFRAME_DEBUG_LOGS === '1') {
+        try { console.log('[Adapter] connect fail roomId=' + String(this.config.roomId) + ' err=' + String((error as any)?.message || error)); } catch {}
+      }
       throw error;
     } finally {
       this.isConnecting = false;
@@ -552,11 +558,8 @@ export class AcfunAdapter extends EventEmitter {
           console.log('[AcfunAdapter] Token expiring soon; please re-login if needed.');
         }
 
-        // 为防止统一实例令牌曾被清理，稳健地重新应用一次
-        const info = await this.tokenManager.getTokenInfo();
-        if (info?.serviceToken) {
-          try { this.api?.setAuthToken(info.serviceToken); } catch {}
-        }
+        // 统一由 TokenManager 管理认证头，避免重复设置导致覆盖
+        await this.tokenManager.getTokenInfo();
         return;
       }
 
@@ -569,8 +572,6 @@ export class AcfunAdapter extends EventEmitter {
       const validation = await this.tokenManager.validateToken(tokenInfo ?? undefined);
 
       if (validation.isValid && tokenInfo?.serviceToken) {
-        // 再次应用一次令牌到统一 API 实例，避免外部清理造成缺失
-        try { this.api?.setAuthToken(tokenInfo.serviceToken); } catch {}
         if (this.config.debug) {
           console.log('[AcfunAdapter] Authentication restored via persisted token');
         }
@@ -615,9 +616,12 @@ export class AcfunAdapter extends EventEmitter {
         if (result.success && result.data) {
           // 保存会话ID用于后续停止操作
           this.danmuSessionId = result.data.sessionId;
-          
+
           if (this.config.debug) {
             console.log('[AcfunAdapter] Danmu service started with session ID:', this.danmuSessionId);
+          }
+          if (process.env.ACFRAME_DEBUG_LOGS === '1') {
+            try { console.log('[Adapter] danmu start roomId=' + String(this.config.roomId) + ' sessionId=' + String(this.danmuSessionId)); } catch {}
           }
         } else {
           throw new Error(result.error || 'Failed to start danmu service');
@@ -882,6 +886,11 @@ export class AcfunAdapter extends EventEmitter {
       });
 
       this.safeEmit('event', normalized);
+      if (process.env.ACFRAME_DEBUG_LOGS === '1') {
+        try {
+          console.log('[Adapter] unified type=' + String(type) + ' roomId=' + String(normalized.room_id) + ' ts=' + String(normalized.ts) + ' userId=' + String(normalized.user_id ?? '') + ' userName=' + String(normalized.user_name ?? ''));
+        } catch {}
+      }
     } catch (error) {
       if (this.config.debug) {
         console.warn('[AcfunAdapter] Failed to normalize/emit unified event:', error);
@@ -1011,7 +1020,7 @@ export class AcfunAdapter extends EventEmitter {
    * 获取连接池管理器实例
    * @returns 连接池管理器实例
    */
-  getConnectionPool(): ConnectionPoolManager {
+  getConnectionPool(): AcfunApiConnectionPool {
     return this.connectionPool;
   }
 

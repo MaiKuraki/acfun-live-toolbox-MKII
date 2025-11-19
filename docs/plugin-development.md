@@ -1,8 +1,8 @@
-# AcFun Live Toolbox 插件开发指南
+# ACLiveFrame 插件开发指南
 
 ## 概述
 
-AcFun Live Toolbox 提供了一个强大的插件系统，允许开发者扩展应用的功能。本文档将指导您如何开发、测试和发布插件。
+ACLiveFrame 提供了一个强大的插件系统，允许开发者扩展应用的功能。本文档将指导您如何开发、测试和发布插件。
 
 > 迁移提示：当前版本不实现“插件弹窗”（独立 BrowserWindow）。请使用 Overlay 或应用内路由承载插件 UI。原 `plugin.popup.*` 相关预加载 API 与 IPC 通道不再提供。
 

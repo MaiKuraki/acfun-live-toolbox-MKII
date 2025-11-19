@@ -1,8 +1,8 @@
-# AcFun Live Toolbox 集成指南
+# ACLiveFrame 集成指南
 
 ## 概述
 
-本文档提供了 AcFun Live Toolbox 的完整集成指南，包括认证设置、配置管理、故障排除和最佳实践。
+本文档提供了 ACLiveFrame 的完整集成指南，包括认证设置、配置管理、故障排除和最佳实践。
 
 ## 认证设置
 
@@ -17,7 +17,7 @@
 
 ### AcFun 账号认证
 
-AcFun Live Toolbox 使用 `acfunlive-http-api` 库进行认证，支持二维码登录和令牌管理。
+ACLiveFrame 使用 `acfunlive-http-api` 库进行认证，支持二维码登录和令牌管理。
 
 #### 二维码登录流程（统一 TokenManager）
 

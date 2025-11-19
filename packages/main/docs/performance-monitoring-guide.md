@@ -2,7 +2,7 @@
 
 ## 概述
 
-本指南详细介绍了如何在 AcFun Live Toolbox MKII 中监控插件性能、诊断性能问题和进行性能调试。通过本指南，开发者可以有效地识别和解决性能瓶颈。
+本指南详细介绍了如何在 ACLiveFrame 中监控插件性能、诊断性能问题和进行性能调试。通过本指南，开发者可以有效地识别和解决性能瓶颈。
 
 ## 性能监控系统架构
 
@@ -770,7 +770,7 @@ class PerformanceDashboard {
   
   start() {
     console.clear();
-    console.log('🚀 AcFun Live Toolbox MKII 性能监控仪表板');
+    console.log('🚀 ACLiveFrame 性能监控仪表板');
     console.log('=' .repeat(60));
     
     this.updateInterval = setInterval(() => {
@@ -788,7 +788,7 @@ class PerformanceDashboard {
   private updateDashboard() {
     // 清屏并重新绘制
     console.clear();
-    console.log('🚀 AcFun Live Toolbox MKII 性能监控仪表板');
+    console.log('🚀 ACLiveFrame 性能监控仪表板');
     console.log('=' .repeat(60));
     console.log(`更新时间: ${new Date().toLocaleTimeString()}\n`);
     
@@ -1029,4 +1029,4 @@ process.on('SIGINT', () => {
 - 定期生成性能报告
 - 建立性能基准线
 
-通过本指南，开发者可以全面了解和掌握 AcFun Live Toolbox MKII 的性能监控和调试技术，有效提升插件的运行效率和稳定性。
+通过本指南，开发者可以全面了解和掌握 ACLiveFrame 的性能监控和调试技术，有效提升插件的运行效率和稳定性。

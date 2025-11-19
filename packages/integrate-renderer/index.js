@@ -66,8 +66,7 @@ function createStepLogger() {
 
 console.log('\n\n\n\n----------');
 console.log('Default vite project has been successfully created.');
-console.log('However, additional modifications to the default vite project are now being implemented');
-console.log('to ensure compatibility with the template.');
+console.log('Applying additional modifications to the project template.');
 console.log('All changes are detailed below.');
 console.log('\n');
 

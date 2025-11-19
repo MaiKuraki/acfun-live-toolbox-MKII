@@ -1,5 +1,6 @@
 import { defineStore } from 'pinia';
-import { ref, computed } from 'vue';
+import { ref, computed, watch } from 'vue';
+import { reportReadonlyUpdate } from '../utils/readonlyReporter';
 import type { UserInfo } from 'acfunlive-http-api';
 
 // 渲染层最小账户信息结构，去除无用字段（medal、managerType等）
@@ -276,6 +277,20 @@ export const useAccountStore = defineStore('account', () => {
 
   // 初始化时加载用户信息
   loadUserInfo();
+
+  // 变更订阅：登录状态与最小用户档案变化时，调用统一只读上报
+  watch(
+    () => [loginState.value.isLoggedIn, userInfo.value],
+    () => {
+      try {
+        const profile = userInfo.value
+          ? { userID: userInfo.value.userID, nickname: userInfo.value.nickname, avatar: userInfo.value.avatar }
+          : null;
+        reportReadonlyUpdate({ account: { isLoggedIn: loginState.value.isLoggedIn, profile } });
+      } catch {}
+    },
+    { deep: true }
+  );
 
   return {
     // 状态

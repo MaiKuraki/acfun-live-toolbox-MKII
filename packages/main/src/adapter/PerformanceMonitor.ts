@@ -1,5 +1,5 @@
 import { EventEmitter } from 'events';
-import { connectionPool } from './ConnectionPoolManager';
+import { acfunApiConnectionPool } from './ConnectionPoolManager';
 
 // 性能指标接口
 export interface PerformanceMetrics {
@@ -63,7 +63,7 @@ export class PerformanceMonitor extends EventEmitter {
 
     // 启动连接池性能监控
     if (this.config.enableConnectionPoolMonitoring !== false) {
-      connectionPool.startPerformanceMonitoring((metrics) => {
+      acfunApiConnectionPool.startPerformanceMonitoring((metrics) => {
         this.emit('connectionPoolMetrics', metrics);
       });
     }
@@ -96,7 +96,7 @@ export class PerformanceMonitor extends EventEmitter {
    */
   private collectMetrics(): void {
     try {
-      const connectionPoolMetrics = connectionPool.getPerformanceMetrics();
+      const connectionPoolMetrics = acfunApiConnectionPool.getPerformanceMetrics();
       
       const metrics: PerformanceMetrics = {
         timestamp: new Date(),

@@ -4,6 +4,7 @@ import fs from 'fs';
 import path from 'path';
 import { AcFunLiveApi, createApi, ApiConfig, TokenInfo } from 'acfunlive-http-api';
 import { getLogManager } from '../logging/LogManager';
+import { ConfigManager } from '../config/ConfigManager';
 
 /**
  * 扩展的令牌信息接口
@@ -81,6 +82,7 @@ export class TokenManager extends EventEmitter {
   
   /** 日志管理器 */
   private logManager: ReturnType<typeof getLogManager>;
+  private configManager: ConfigManager;
   
   /** 是否正在刷新令牌 */
   private isRefreshing: boolean = false;
@@ -117,6 +119,7 @@ export class TokenManager extends EventEmitter {
     
     this.api = createApi(config);
     this.logManager = getLogManager();
+    this.configManager = new ConfigManager();
 
     // 设置密钥文件路径
     if (customSecretsPath) {
@@ -293,16 +296,14 @@ export class TokenManager extends EventEmitter {
 
       if (status?.success && status?.data) {
         const d: any = status.data;
-        const mappedServiceToken = d.serviceToken || d.token || d.accessToken || '';
-        const mappedSecurityKey = d.securityKey || d.securityToken || '';
-        const mappedDeviceId = d.deviceId || d.deviceID || '';
+        const ti: any = d.tokenInfo || {};
 
         const tokenInfo: ExtendedTokenInfo = {
-          userID: d.userId || '',
-          securityKey: mappedSecurityKey,
-          serviceToken: mappedServiceToken,
-          deviceID: mappedDeviceId,
-          cookies: d.cookies || [],
+          userID: ti.userID || d.userId || '',
+          securityKey: ti.securityKey || '',
+          serviceToken: ti.serviceToken || (typeof d.token === 'string' ? d.token : ''),
+          deviceID: ti.deviceID || ti.deviceId || '',
+          cookies: Array.isArray(ti.cookies) ? ti.cookies : [],
           expiresAt: d.expiresAt || (Date.now() + 24 * 60 * 60 * 1000),
           isValid: true
         };
@@ -457,13 +458,33 @@ export class TokenManager extends EventEmitter {
   private async setTokenInfo(tokenInfo: ExtendedTokenInfo): Promise<void> {
     const wasAuthenticated = this.isAuthenticated();
     this.tokenInfo = tokenInfo;
+    console.log('[TokenManager] setTokenInfo', {
+      userID: tokenInfo.userID,
+      deviceID: tokenInfo.deviceID,
+      serviceTokenPresent: !!tokenInfo.serviceToken,
+      cookiesCount: Array.isArray(tokenInfo.cookies) ? tokenInfo.cookies.length : 0,
+      cookieNames: Array.isArray(tokenInfo.cookies) ? tokenInfo.cookies.map((c: any) => c.name) : []
+    });
     
     // 保存到文件
-    await this.saveTokenInfo(tokenInfo);
+    const keep = !!this.configManager.get<boolean>('auth.keepLogin', true);
+    if (keep) {
+      await this.saveTokenInfo(tokenInfo);
+    }
     
     // 同步令牌到统一 API 实例
     try {
-      this.api.setAuthToken(tokenInfo.serviceToken);
+      const ensuredDeviceId = tokenInfo.deviceID && tokenInfo.deviceID.length > 0 
+        ? tokenInfo.deviceID 
+        : Array.from({ length: 32 }, () => '0123456789abcdef'[Math.floor(Math.random() * 16)]).join('');
+      const finalToken = JSON.stringify({
+        userID: tokenInfo.userID,
+        securityKey: tokenInfo.securityKey,
+        serviceToken: tokenInfo.serviceToken,
+        deviceID: ensuredDeviceId,
+        cookies: Array.isArray(tokenInfo.cookies) ? tokenInfo.cookies : []
+      });
+      this.api.setAuthToken(finalToken);
     } catch (e) {
       this.logManager.addLog(
         'TokenManager',
@@ -487,29 +508,16 @@ export class TokenManager extends EventEmitter {
    */
   private async loadTokenInfo(): Promise<void> {
     try {
+      const keep = !!this.configManager.get<boolean>('auth.keepLogin', true);
+      if (!keep) return;
       if (fs.existsSync(this.secretsPath)) {
         const data = fs.readFileSync(this.secretsPath, 'utf8');
         const parsed = JSON.parse(data);
-        
         if (parsed && parsed.userID) {
-          this.tokenInfo = {
-            ...parsed,
-            isValid: true
-          };
+          this.tokenInfo = { ...parsed, isValid: true };
           this.logManager.addLog('TokenManager', 'Token info loaded from file', 'info');
-
-          // 同步令牌到统一 API 实例
-          try {
-            if (this.tokenInfo && this.tokenInfo.serviceToken) {
-              this.api.setAuthToken(this.tokenInfo.serviceToken);
-            }
-          } catch (e) {
-            this.logManager.addLog(
-              'TokenManager',
-              `Failed to apply loaded token to API instance: ${e instanceof Error ? e.message : String(e)}`,
-              'error'
-            );
-          }
+          const info = this.tokenInfo as ExtendedTokenInfo;
+          await this.setTokenInfo(info);
         }
       }
     } catch (error) {
@@ -547,7 +555,7 @@ export class TokenManager extends EventEmitter {
   /**
    * 清除令牌信息
    */
-  private async clearStoredTokenInfo(): Promise<void> {
+  public async clearStoredTokenInfo(): Promise<void> {
     try {
       if (fs.existsSync(this.secretsPath)) {
         fs.unlinkSync(this.secretsPath);

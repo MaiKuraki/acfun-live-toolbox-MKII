@@ -1,15 +1,15 @@
 <template>
-  <div class="layout-shell">
+  <div class="layout-shell" :class="{ 'window-layout': isWindowLayout }">
     <!-- Topbar 区域 (40px 高度) -->
-    <Topbar class="layout-topbar" />
+    <Topbar v-if="!isWindowLayout" class="layout-topbar" />
     
     <!-- 主要内容区域 -->
-    <div class="layout-main">
+    <div class="layout-main" :class="{ 'no-topbar': isWindowLayout }">
       <!-- Sidebar 导航区域 (208px 宽度) -->
-      <Sidebar class="layout-sidebar" />
+      <Sidebar v-if="!isWindowLayout" class="layout-sidebar" />
       
       <!-- RouterView 内容区域 (816x728px 可用空间) -->
-      <div class="layout-content">
+      <div class="layout-content" :class="{ 'full': isWindowLayout }">
         <RouterView />
       </div>
     </div>
@@ -17,9 +17,13 @@
 </template>
 
 <script setup lang="ts">
-import { RouterView } from 'vue-router';
+import { RouterView, useRoute } from 'vue-router';
+import { computed } from 'vue';
 import Topbar from '../components/Topbar.vue';
 import Sidebar from '../components/Sidebar.vue';
+
+const route = useRoute();
+const isWindowLayout = computed(() => (route.meta as any)?.layout === 'window');
 </script>
 
 <style scoped>
@@ -35,6 +39,13 @@ import Sidebar from '../components/Sidebar.vue';
   min-height: 768px;
 }
 
+.layout-shell.window-layout {
+  min-width: 0;
+  min-height: 0;
+  width: 100%;
+  height: 100%;
+}
+
 .layout-topbar {
   width: 100%;
   height: 40px;
@@ -47,6 +58,10 @@ import Sidebar from '../components/Sidebar.vue';
   display: flex;
   height: calc(100vh - 40px); /* 减去topbar高度 */
   overflow: hidden;
+}
+
+.layout-main.no-topbar {
+  height: 100vh;
 }
 
 .layout-sidebar {
@@ -66,6 +81,11 @@ import Sidebar from '../components/Sidebar.vue';
   
   /* 在1024x768下，内容区域为816x728px */
   max-width: 816px;
+}
+
+.layout-content.full {
+  width: 100%;
+  max-width: none;
 }
 
 /* 1024x768分辨率专用样式 */

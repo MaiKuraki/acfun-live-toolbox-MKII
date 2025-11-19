@@ -2,12 +2,15 @@ import { createRouter, createWebHashHistory, type RouteRecordRaw } from 'vue-rou
 
 // 导入布局组件
 const LayoutShell = () => import('../layouts/LayoutShell.vue');
+const WindowFramePluginPage = () => import('../pages/WindowFramePluginPage.vue');
 
 // 导入页面组件
 const HomePage = () => import('../pages/HomePage.vue');
 const LivePage = () => import('../pages/LivePage.vue');
 const LiveRoomPage = () => import('../pages/LiveRoomPage.vue');
 const LiveDanmuPage = () => import('../pages/LiveDanmuPage.vue');
+const LiveCreatePage = () => import('../pages/LiveCreatePage.vue');
+const LiveManagePage = () => import('../pages/LiveManagePage.vue');
 const PluginsPage = () => import('../pages/PluginsPage.vue');
 const PluginManagementPage = () => import('../pages/PluginManagementPage.vue');
 const PluginFramePage = () => import('../pages/PluginFramePage.vue');
@@ -58,15 +61,33 @@ const routes: RouteRecordRaw[] = [
             }
           },
           {
-            path: 'danmu',
+            path: 'danmu/:roomId?',
             name: 'LiveDanmu',
             component: LiveDanmuPage,
             meta: {
               title: '弹幕设置',
               parent: 'Live'
             }
+          },
+          {
+            path: 'manage/:id',
+            name: 'LiveManage',
+            component: LiveManagePage,
+            meta: {
+              title: '直播间管理',
+              hideInSidebar: true
+            }
           }
         ]
+      },
+      {
+        path: 'live/create',
+        name: 'LiveCreate',
+        component: LiveCreatePage,
+        meta: {
+          title: '创建直播',
+          showInSidebar: true
+        }
       },
       {
         path: 'plugins',
@@ -147,6 +168,16 @@ const routes: RouteRecordRaw[] = [
         }
       }
     ]
+  },
+  {
+    path: '/plugins/:pluginId/window',
+    name: 'PluginWindow',
+    component: WindowFramePluginPage,
+    meta: {
+      title: '插件窗口',
+      hideInSidebar: true,
+      layout: 'window'
+    }
   },
   {
     path: '/:pathMatch(.*)*',

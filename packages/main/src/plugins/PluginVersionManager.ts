@@ -2,7 +2,7 @@ import { EventEmitter } from 'events';
 import * as fs from 'fs';
 import * as path from 'path';
 import { pluginLogger } from './PluginLogger';
-import { PluginManifest } from './PluginManager';
+import type { PluginManifest } from './PluginManager';
 
 export interface VersionInfo {
   version: string;

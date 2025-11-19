@@ -12,5 +12,4 @@ export interface EventBatch {
   timestamp: number;
 }
 
-// Import the standardized types for backward compatibility
 import { NormalizedEvent, RoomStatus } from './contracts';

@@ -6,19 +6,20 @@ import morgan from 'morgan';
 import { createServer, Server } from 'http';
 import * as fs from 'fs';
 import * as path from 'path';
+import { app } from 'electron';
 import { WsHub } from './WsHub';
 import { QueryService, EventQuery } from '../persistence/QueryService';
 import { CsvExporter, ExportOptions } from '../persistence/CsvExporter';
 import { DatabaseManager } from '../persistence/DatabaseManager';
 import { DiagnosticsService } from '../logging/DiagnosticsService';
 import { OverlayManager } from '../plugins/OverlayManager';
-import { PluginManager } from '../plugins/PluginManager';
-import { ConsoleManager } from '../console/ConsoleManager';
+import { IPluginManager, IConsoleManager } from '../types/contracts';
 import { ConfigManager } from '../config/ConfigManager';
 import { AcfunApiProxy } from './AcfunApiProxy';
 import { NormalizedEventType } from '../types';
 import { DataManager, IDataManager } from '../persistence/DataManager';
 import PluginPageStatusManager from '../persistence/PluginPageStatusManager';
+import { SSE_HEARTBEAT_MS } from '../config/config';
 
 /**
  * API 服务器配置
@@ -44,19 +45,20 @@ export class ApiServer {
   private csvExporter: CsvExporter;
   private diagnosticsService: DiagnosticsService;
   private overlayManager: OverlayManager;
-  private consoleManager: ConsoleManager;
+  private consoleManager: IConsoleManager;
   private acfunApiProxy: AcfunApiProxy;
   private pluginRoutes: Map<string, { method: 'GET' | 'POST'; path: string; handler: express.RequestHandler }[]> = new Map();
-  private pluginManager?: PluginManager;
+  private pluginManager?: IPluginManager;
   private dataManager: IDataManager;
+  private templatesCache: Record<string, string> = {};
 
-  constructor(config: ApiServerConfig = { port: 1299 }, databaseManager: DatabaseManager, diagnosticsService: DiagnosticsService, overlayManager: OverlayManager, consoleManager: ConsoleManager) {
+  constructor(config: ApiServerConfig = { port: 1299 }, databaseManager: DatabaseManager, diagnosticsService: DiagnosticsService, overlayManager: OverlayManager, consoleManager: IConsoleManager) {
     this.config = {
       host: '127.0.0.1',
       enableCors: true,
       enableHelmet: true,
       enableCompression: true,
-      enableLogging: true,
+      enableLogging: process.env.NODE_ENV === 'development',
       ...config
     };
 
@@ -78,7 +80,7 @@ export class ApiServer {
   /**
    * 注入 PluginManager 引用，用于统一静态托管插件页面。
    */
-  public setPluginManager(pm: PluginManager): void {
+  public setPluginManager(pm: IPluginManager): void {
     this.pluginManager = pm;
   }
 
@@ -124,8 +126,8 @@ export class ApiServer {
     }
 
     // 解析中间件
-    this.app.use(express.json({ limit: '10mb' }));
-    this.app.use(express.urlencoded({ extended: true, limit: '10mb' }));
+    this.app.use(express.json({ limit: '20mb' }));
+    this.app.use(express.urlencoded({ extended: true, limit: '20mb' }));
 
     // 禁用全局 ETag，避免插件静态资源返回 304 导致示例脚本未更新
     this.app.disable('etag');
@@ -216,6 +218,25 @@ export class ApiServer {
       });
     });
 
+    const apidocDir = path.resolve(process.cwd(), 'docs', 'apidoc');
+    try {
+      if (fs.existsSync(apidocDir)) {
+        this.app.use('/docs/api', (express as any).static(apidocDir, {
+          cacheControl: true,
+          maxAge: '7d',
+          setHeaders: (res: any, filePath: string) => {
+            try {
+              if (filePath && filePath.endsWith('index.html')) {
+                res.setHeader('Cache-Control', 'no-store');
+              } else {
+                res.setHeader('Cache-Control', 'public, max-age=604800, immutable');
+              }
+            } catch {}
+          }
+        }));
+      }
+    } catch {}
+
     // Health check endpoint
     this.app.get('/api/health', (req: express.Request, res: express.Response) => {
       res.json({
@@ -264,6 +285,11 @@ export class ApiServer {
         }
 
         const result = await this.queryService.queryEvents(query);
+        if (process.env.ACFRAME_DEBUG_LOGS === '1') {
+          try {
+            console.log('[API] /api/events params room_id=' + String(query.room_id || '') + ' page=' + String(query.page) + ' pageSize=' + String(query.pageSize) + ' type=' + String((typesArr || []).join(',')) + ' total=' + String(result.total) + ' items=' + String(result.items.length));
+          } catch {}
+        }
         res.json(result);
       } catch (error) {
         next(error);
@@ -281,43 +307,19 @@ export class ApiServer {
       }
     });
 
-    // GET /api/diagnostics - 生成诊断包
-    this.app.get('/api/diagnostics', async (req: express.Request, res: express.Response, next: express.NextFunction) => {
+    this.app.get('/api/events/rooms', async (req: express.Request, res: express.Response, next: express.NextFunction) => {
       try {
-        const zipPath = await this.diagnosticsService.generateDiagnosticPackage();
-        const stat = fs.statSync(zipPath);
-        const filename = path.basename(zipPath);
-
-        res.setHeader('Content-Type', 'application/zip');
-        res.setHeader('Content-Disposition', `attachment; filename="${filename}"`);
-        res.setHeader('Content-Length', stat.size);
-
-        const stream = fs.createReadStream(zipPath);
-        stream.on('error', (err) => next(err));
-        stream.pipe(res);
+        const limit = req.query.limit ? Math.max(1, Math.min(1000, parseInt(String(req.query.limit)))) : 200;
+        const rooms = await this.queryService.listRooms(limit);
+        if (process.env.ACFRAME_DEBUG_LOGS === '1') {
+          try { console.log('[API] /api/events/rooms rooms=' + String(rooms.length)); } catch {}
+        }
+        res.json({ rooms });
       } catch (error) {
         next(error);
       }
     });
 
-    // GET /api/logs - 获取最近的日志
-    this.app.get('/api/logs', (req: express.Request, res: express.Response) => {
-      try {
-        const limit = req.query.limit ? parseInt(req.query.limit as string) : 100;
-        const levelRaw = req.query.level as string | undefined;
-        const level: 'info' | 'warn' | 'error' | undefined =
-          levelRaw === 'info' || levelRaw === 'warn' || levelRaw === 'error' ? levelRaw : undefined;
-
-        const logs = this.diagnosticsService.getRecentLogs(limit, level);
-        res.json({
-          logs,
-          total: logs.length,
-          timestamp: Date.now()
-        });
-      } catch (error) {
-        res.status(500).json({ error: 'Failed to retrieve logs' });
-      }
-    });
 
     // GET /api/export - 导出数据为 CSV
     this.app.get('/api/export', async (req: express.Request, res: express.Response, next: express.NextFunction) => {
@@ -337,43 +339,7 @@ export class ApiServer {
       }
     });
 
-    // GET /api/diagnostics - 获取诊断信息
-    this.app.get('/api/diagnostics', async (req: express.Request, res: express.Response, next: express.NextFunction) => {
-      try {
-        const zipPath = await this.diagnosticsService.generateDiagnosticPackage();
-        const stat = fs.statSync(zipPath);
-        const filename = path.basename(zipPath);
-
-        res.setHeader('Content-Type', 'application/zip');
-        res.setHeader('Content-Disposition', `attachment; filename="${filename}"`);
-        res.setHeader('Content-Length', stat.size);
-
-        const stream = fs.createReadStream(zipPath);
-        stream.on('error', (err) => next(err));
-        stream.pipe(res);
-      } catch (error) {
-        next(error);
-      }
-    });
-
-    // GET /api/logs - 获取最近的日志
-    this.app.get('/api/logs', (req: express.Request, res: express.Response) => {
-      try {
-        const limit = req.query.limit ? parseInt(req.query.limit as string) : 100;
-        const levelRaw = req.query.level as string | undefined;
-        const level: 'info' | 'warn' | 'error' | undefined =
-          levelRaw === 'info' || levelRaw === 'warn' || levelRaw === 'error' ? levelRaw : undefined;
-
-        const logs = this.diagnosticsService.getRecentLogs(limit, level);
-        res.json({
-          logs,
-          total: logs.length,
-          timestamp: Date.now()
-        });
-      } catch (error) {
-        res.status(500).json({ error: 'Failed to retrieve logs' });
-      }
-    });
+    
 
     // POST /api/export - 触发 CSV 导出
     this.app.post('/api/export', async (req: express.Request, res: express.Response, next: express.NextFunction) => {
@@ -431,6 +397,90 @@ export class ApiServer {
           error: (error as Error).message
         });
       }
+    });
+
+
+    
+    this.app.get('/sse/system/logs', (req: express.Request, res: express.Response) => {
+      res.setHeader('Content-Type', 'text/event-stream');
+      res.setHeader('Cache-Control', 'no-cache');
+      res.setHeader('Connection', 'keep-alive');
+      res.setHeader('X-Accel-Buffering', 'no');
+      try { (res as any).flushHeaders?.(); } catch {}
+      try { res.write(':\n\n'); } catch {}
+
+      const channel = 'system:logs';
+      const send = (entry: any) => {
+        try {
+          res.write('event: log\n');
+          res.write(`data: ${JSON.stringify(entry)}\n\n`);
+        } catch {}
+      };
+
+      try {
+        const recent = this.diagnosticsService.getRecentLogs(200);
+        res.write('event: init\n');
+        res.write(`data: ${JSON.stringify(recent)}\n\n`);
+      } catch {}
+
+      const unsubscribe = this.dataManager.subscribe(channel, send as any, undefined);
+
+      const heartbeat = setInterval(() => {
+        try {
+          res.write('event: heartbeat\n');
+          res.write(`data: {"ts": ${Date.now()}}\n\n`);
+        } catch {}
+      }, SSE_HEARTBEAT_MS);
+
+      const cleanup = () => {
+        try { unsubscribe(); } catch {}
+        try { clearInterval(heartbeat); } catch {}
+        try { res.end(); } catch {}
+      };
+      req.on('close', cleanup);
+    });
+
+    
+    this.app.get('/api/logs', (req: express.Request, res: express.Response, next: express.NextFunction) => {
+      try {
+        const level = (req.query.level as string | undefined)?.toLowerCase() as ('info' | 'error' | 'warn' | 'debug' | undefined);
+        const source = req.query.source as string | undefined;
+        const fromTs = req.query.from_ts ? parseInt(String(req.query.from_ts)) : undefined;
+        const toTs = req.query.to_ts ? parseInt(String(req.query.to_ts)) : undefined;
+        const limit = req.query.limit ? Math.min(1000, Math.max(1, parseInt(String(req.query.limit)))) : 200;
+
+        let logs = this.diagnosticsService.getRecentLogs(limit) as any[];
+        if (level) logs = logs.filter(l => String(l.level).toLowerCase() === level);
+        if (source) logs = logs.filter(l => String(l.source || '').includes(source));
+        if (fromTs) logs = logs.filter(l => new Date(String(l.timestamp)).getTime() >= fromTs);
+        if (toTs) logs = logs.filter(l => new Date(String(l.timestamp)).getTime() <= toTs);
+
+        res.json({ success: true, data: logs });
+      } catch (error) { next(error); }
+    });
+
+    
+    this.app.post('/api/logs/export', (req: express.Request, res: express.Response, next: express.NextFunction) => {
+      try {
+        const fromTs = req.body?.from_ts ? parseInt(String(req.body.from_ts)) : undefined;
+        const toTs = req.body?.to_ts ? parseInt(String(req.body.to_ts)) : undefined;
+        const level = String(req.body?.level || 'error').toLowerCase();
+        const source = req.body?.source ? String(req.body.source) : undefined;
+        const limit = req.body?.limit ? Math.min(5000, Math.max(1, parseInt(String(req.body.limit)))) : 1000;
+
+        let logs = this.diagnosticsService.getRecentLogs(limit) as any[];
+        logs = logs.filter(l => String(l.level).toLowerCase() === level);
+        if (source) logs = logs.filter(l => String(l.source || '').includes(source));
+        if (fromTs) logs = logs.filter(l => new Date(String(l.timestamp)).getTime() >= fromTs);
+        if (toTs) logs = logs.filter(l => new Date(String(l.timestamp)).getTime() <= toTs);
+
+        const outDir = path.join(app.getPath('userData'), 'logs-exports');
+        try { if (!fs.existsSync(outDir)) fs.mkdirSync(outDir, { recursive: true }); } catch {}
+        const filename = `error-logs-${Date.now()}.json`;
+        const filepath = path.join(outDir, filename);
+        fs.writeFileSync(filepath, JSON.stringify(logs, null, 2), 'utf-8');
+        res.json({ success: true, filepath, count: logs.length });
+      } catch (error) { next(error); }
     });
 
     // Console API endpoints
@@ -519,10 +569,11 @@ export class ApiServer {
     // AcFun API 代理路由 - 将所有 /api/acfun/* 请求代理到 AcfunApiProxy
     this.app.use('/api/acfun', this.acfunApiProxy.createRoutes());
 
-    // GET /plugins/:id/:rest* - 插件页面托管（Express v5/path-to-regexp@v6 使用命名通配符）
-    this.app.all('/plugins/:id/:rest(.*)', (req: express.Request, res: express.Response, next: express.NextFunction) => {
+    // GET /plugins/:id/*rest - 插件页面托管（path-to-regexp v8 命名通配符）
+    this.app.all('/plugins/:id/*rest', (req: express.Request, res: express.Response, next: express.NextFunction) => {
       const pluginId = req.params.id;
-      const reqPath = `/${(req.params as any).rest || ''}`; // path within plugin scope
+      const splat = (req.params as any).rest;
+      const reqPath = `/${Array.isArray(splat) ? splat.join('/') : (splat || '')}`; // path within plugin scope
 
       // 路由命中检查（只匹配已注册的前缀路径）
       const routes = this.pluginRoutes.get(pluginId) || [];
@@ -557,15 +608,12 @@ export class ApiServer {
 
           const getPageConf = (type: 'ui' | 'window' | 'overlay') => {
             const m: any = plugin.manifest || {};
-            const legacy = (type === 'ui' ? m.ui?.wujie : type === 'overlay' ? m.overlay?.wujie : undefined) || undefined;
             const conf = m[type] || {};
-            // 统一字段：spa、route、html；兼容 legacy .wujie.url
             return {
               spa: conf?.spa === true,
               route: typeof conf?.route === 'string' ? conf.route : undefined,
               html: typeof conf?.html === 'string' ? conf.html : undefined,
-              legacyUrl: legacy?.url
-            } as { spa: boolean; route?: string; html?: string; legacyUrl?: string };
+            } as { spa: boolean; route?: string; html?: string };
           };
 
           const sendFile = (absPath: string) => {
@@ -579,15 +627,16 @@ export class ApiServer {
             const resolved = path.resolve(absPath);
 
             // 计算最终发送路径：
-            // - 对于 base-example，若打包资源中存在对应文件，则优先使用打包资源（避免旧版已安装副本覆盖）。
-            // - 其他插件按原规则，仅允许安装目录下的文件。
+            // - 开发环境且清单声明 test: true 时，若打包资源存在对应文件，则优先使用打包资源（避免旧版已安装副本覆盖）。
+            // - 其他情况按原规则，仅允许安装目录下的文件。
             let finalPath = resolved;
-            const preferBundledFor = new Set(['base-example', 'sample-overlay-ui']);
-            if (preferBundledFor.has(plugin.id) && bundledRoot) {
+            const isDev = process.env.NODE_ENV === 'development' || !(process as any).isPackaged;
+            const preferBundled = !!bundledRoot && !!(plugin as any).manifest && (plugin as any).manifest.test === true && isDev;
+            if (preferBundled) {
               // 仅当 resolved 位于安装目录内时，尝试构造打包资源中的等价路径
               const rel = path.relative(installRoot, resolved);
               if (!rel.startsWith('..')) {
-                const candidate = path.join(bundledRoot, rel);
+                const candidate = path.join(bundledRoot!, rel);
                 if (fs.existsSync(candidate)) {
                   finalPath = path.resolve(candidate);
                 }
@@ -596,7 +645,7 @@ export class ApiServer {
 
             // 防止目录穿越：finalPath 必须位于允许的根目录之一
             const allowedRoots = [installRoot];
-            if (preferBundledFor.has(plugin.id) && bundledRoot) {
+            if (preferBundled && bundledRoot) {
               allowedRoots.push(path.resolve(bundledRoot));
             }
             const finalResolved = path.resolve(finalPath);
@@ -761,7 +810,7 @@ export class ApiServer {
         try {
           send('heartbeat', { ts: Date.now() });
         } catch {}
-      }, 15000);
+      }, SSE_HEARTBEAT_MS);
 
       // 事件监听
       const onUpdated = (updated: any) => {
@@ -900,7 +949,7 @@ export class ApiServer {
           res.write(`data: {\"ts\": ${Date.now()}}\n\n`);
         } catch {}
         try { statusManager.overlayClientHeartbeat(pluginId, clientId); } catch {}
-      }, 15000);
+      }, SSE_HEARTBEAT_MS);
 
       const cleanup = () => {
         try { unsubscribe(); } catch {}
@@ -912,7 +961,7 @@ export class ApiServer {
       req.on('close', cleanup);
     });
 
-    // POST /api/plugins/:pluginId/overlay/messages - 入队插件 overlay 消息
+    // POST /api/plugins/:pluginId/overlay/messages - 入队插件 overlay 消息（overlayId 缺省时按插件广播）
     this.app.post('/api/plugins/:pluginId/overlay/messages', async (req: express.Request, res: express.Response) => {
       const pluginId = req.params.pluginId;
       const { overlayId, event, payload, ttlMs, persist } = (req.body || {}) as { overlayId?: string; event?: string; payload?: any; ttlMs?: number; persist?: boolean };
@@ -922,8 +971,20 @@ export class ApiServer {
       }
       try {
         const channel = `plugin:${pluginId}:overlay`;
-        const record = this.dataManager.publish(channel, { overlayId, event, payload }, { ttlMs, persist: persist !== false, meta: { kind: 'message' } });
-        return res.json({ success: true, id: record.id });
+        const id = String(overlayId || '').trim();
+        if (!id) {
+          // 广播：枚举该插件的所有 overlay，并为每个 overlayId 发布一条消息
+          const overlays = this.overlayManager.getAllOverlays().filter(ov => String(ov?.pluginId || '') === String(pluginId));
+          const ids: string[] = [];
+          for (const ov of overlays) {
+            const rec = this.dataManager.publish(channel, { overlayId: ov.id, event, payload }, { ttlMs, persist: persist !== false, meta: { kind: 'message' } });
+            ids.push(rec.id);
+          }
+          return res.json({ success: true, count: ids.length, ids });
+        } else {
+          const record = this.dataManager.publish(channel, { overlayId: id, event, payload }, { ttlMs, persist: persist !== false, meta: { kind: 'message' } });
+          return res.json({ success: true, id: record.id });
+        }
       } catch (error: any) {
         console.error('[ApiServer] enqueue plugin overlay message failed:', error);
         return res.status(500).json({ success: false, error: error?.message || 'ENQUEUE_FAILED' });
@@ -1016,6 +1077,93 @@ export class ApiServer {
       }
     });
 
+    // POST /api/renderer/readonly-store - 渲染层只读仓库快照上报（统一源头）
+    this.app.post('/api/renderer/readonly-store', async (req: express.Request, res: express.Response) => {
+      try {
+        const { type, payload } = (req.body || {}) as { type?: string; payload?: any };
+        const evt = String(type || '').trim();
+        if (!evt || (evt !== 'readonly-store-init' && evt !== 'readonly-store-update')) {
+          return res.status(400).json({ success: false, error: 'INVALID_EVENT' });
+        }
+        const channel = 'renderer:readonly-store';
+        const record = this.dataManager.publish(channel, { event: evt, payload }, { ttlMs: 10 * 60 * 1000, persist: true, meta: { kind: 'readonly-store' } });
+        return res.json({ success: true, id: record.id });
+      } catch (error: any) {
+        console.error('[ApiServer] renderer readonly-store enqueue failed:', error);
+        return res.status(500).json({ success: false, error: error?.message || 'ENQUEUE_FAILED' });
+      }
+    });
+
+    // SSE: GET /sse/renderer/readonly-store - 订阅渲染层只读仓库（主进程统一分发）
+    this.app.get('/sse/renderer/readonly-store', (req: express.Request, res: express.Response) => {
+      // 标准 SSE 头
+      res.setHeader('Content-Type', 'text/event-stream');
+      res.setHeader('Cache-Control', 'no-cache');
+      res.setHeader('Connection', 'keep-alive');
+      res.setHeader('X-Accel-Buffering', 'no');
+      try { (res as any).flushHeaders?.(); } catch {}
+      try { res.write(':\n\n'); } catch {}
+      console.log('[ApiServer#SSE /sse/renderer/readonly-store] connect');
+
+      const channel = 'renderer:readonly-store';
+          const sendRecord = (rec: any) => {
+            try {
+              if (rec && typeof rec.id === 'string') {
+                res.write(`id: ${rec.id}\n`);
+              }
+              const kind = (rec?.meta && rec.meta.kind) || 'readonly-store';
+              const payload = (rec && rec.payload) || rec;
+              // 事件名沿用 payload.event（init/update），便于前端区分
+              const evt = String(payload && payload.event || 'readonly-store-update');
+              // 过滤顶层 plugin 字段
+              const dataObj = (payload && payload.payload) ? { ...(payload.payload || {}) } : {};
+              try { if (dataObj && typeof dataObj === 'object' && 'plugin' in dataObj) delete (dataObj as any).plugin; } catch {}
+              res.write(`event: ${evt}\n`);
+              res.write(`data: ${JSON.stringify(dataObj)}\n\n`);
+            } catch (e) {
+              console.warn('[ApiServer] SSE(renderer store) send failed:', e);
+            }
+          };
+
+      // 初始快照：汇总最近记录的各切片，构造完整 init 快照
+      try {
+        const recent = this.dataManager.getRecent(channel) || [];
+        const snapshot: Record<string, any> = {};
+        for (const rec of recent) {
+          const outer = (rec && (rec.payload ?? rec)) as any;
+          const data = outer && (outer.payload ?? outer);
+          if (!data || typeof data !== 'object' || Array.isArray(data)) continue;
+          for (const key of Object.keys(data)) {
+            const val = (data as any)[key];
+            if (val === undefined) continue;
+            snapshot[key] = val;
+          }
+        }
+        if ('plugin' in snapshot) delete (snapshot as any).plugin;
+        res.write('event: readonly-store-init\n');
+        res.write(`data: ${JSON.stringify(snapshot)}\n\n`);
+      } catch {}
+
+      // 订阅后续更新
+      const unsubscribe = this.dataManager.subscribe(channel, sendRecord as any, undefined);
+
+      // 心跳保持
+      const heartbeat = setInterval(() => {
+        try {
+          res.write('event: heartbeat\n');
+          res.write(`data: {"ts": ${Date.now()}}\n\n`);
+        } catch {}
+      }, SSE_HEARTBEAT_MS);
+
+      const cleanup = () => {
+        try { unsubscribe(); } catch {}
+        try { clearInterval(heartbeat); } catch {}
+        try { res.end(); } catch {}
+        console.log('[ApiServer#SSE /sse/renderer/readonly-store] disconnect');
+      };
+      req.on('close', cleanup);
+    });
+
     // POST /api/overlay/create - 创建一个 Overlay（替代渲染层 preload 创建）
     this.app.post('/api/overlay/create', async (req: express.Request, res: express.Response) => {
       try {
@@ -1077,19 +1225,19 @@ export class ApiServer {
         const html = req.query.html ? String(req.query.html) : undefined;
 
         if (!pluginId) {
-          return res.status(400).send('<h1>400 Bad Request</h1><p>Missing query parameter: plugin</p>');
+          return this.sendErrorHtml(res, 400, 'Bad Request', 'Missing query parameter: plugin');
         }
         // overlayId 可选：支持插件级包装（不强制 overlayId）
 
         const plugin = this.pluginManager?.getPlugin(pluginId);
         if (!plugin) {
-          return res.status(404).send(`<h1>404 Not Found</h1><p>Plugin '${this.escapeHtml(pluginId)}' not found.</p>`);
+          return this.sendErrorHtml(res, 404, 'Not Found', `Plugin '${this.escapeHtml(pluginId)}' not found.`);
         }
         // 禁用态：拒绝包装页访问（避免通过外部浏览器绕过前端按钮限制）
         try {
           const isEnabled = plugin.status === 'enabled' && plugin.enabled === true;
           if (!isEnabled) {
-            return res.status(403).send(`<h1>403 Forbidden</h1><p>Plugin '${this.escapeHtml(plugin.id)}' is disabled.</p>`);
+            return this.sendErrorHtml(res, 403, 'Forbidden', `Plugin '${this.escapeHtml(plugin.id)}' is disabled.`);
           }
         } catch {}
 
@@ -1112,342 +1260,12 @@ export class ApiServer {
         const delimiter = pluginPagePath.includes('?') ? '&' : '?';
         const pluginUrl = `${base}${pluginPagePath}${delimiter}t=${Date.now()}`;
 
-        const htmlDoc = `<!DOCTYPE html>
-<html lang="zh">
-<head>
-  <meta charset="utf-8" />
-  <meta name="viewport" content="width=device-width, initial-scale=1" />
-  <title>Overlay Wrapper - ${this.escapeHtml(plugin.name || plugin.id)}</title>
-  <style>
-    html, body, #app { height: 100%; margin: 0; padding: 0; }
-    #app { display: flex; }
-    iframe { width: 100%; height: 100%; border: 0; }
-  </style>
-</head>
-<body>
-  <div id="app"></div>
-  <script>
-    (function(){
-      var pluginId = ${JSON.stringify(pluginId)};
-      var overlayId = ${JSON.stringify(overlayId)};
-      var childSrc = ${JSON.stringify(pluginUrl)};
-      var appEl = document.getElementById('app');
-      if (!appEl) return;
-
-      // 提供与渲染进程一致的共享只读 store 容器（内容由 SSE 初始化）
-      window.__WUJIE_SHARED = window.__WUJIE_SHARED || {};
-      window.__WUJIE_SHARED.readonlyStore = {};
-
-      // 创建子页面容器（使用 iframe 简化实现）
-      var iframe = document.createElement('iframe');
-      iframe.name = 'overlay:' + overlayId;
-      iframe.src = childSrc;
-      iframe.referrerPolicy = 'no-referrer';
-      iframe.sandbox = 'allow-scripts allow-same-origin allow-forms allow-popups';
-      appEl.appendChild(iframe);
-
-      // 运行期 API Base：默认使用当前页面 origin；若可从快照中解析 websocket_endpoint，则覆盖为对应端口的 HTTP 基址
-      var __API_BASE_OVERRIDE = null;
-
-      function injectProps(){
-        try {
-          var win = iframe.contentWindow;
-          if (!win) return;
-          if (__propsInjectedFor && String(__propsInjectedFor) === String(overlayId)) { return; }
-          win.__WUJIE_PROPS__ = win.__WUJIE_PROPS__ || {};
-          win.__WUJIE_PROPS__.overlayId = overlayId;
-          win.__WUJIE_PROPS__.shared = { readonlyStore: window.__WUJIE_SHARED.readonlyStore };
-          __propsInjectedFor = overlayId;
-          try { console.log('[overlay-wrapper] injectProps', { pluginId: pluginId, overlayId: overlayId }); } catch(e){}
-        } catch (e) { console.warn('[overlay-wrapper] props injection failed:', e); }
-      }
-      // 在子页面加载完成后注入与 Wujie 兼容的 props（overlayId 与只读 store）
-      iframe.addEventListener('load', function(){
-        injectProps();
-        // 发送一次初始生命周期事件，促使子页立即完成 overlayId 对齐
-        try { postToChild({ type: 'overlay-event', overlayId: overlayId, eventType: 'overlay-message', event: 'overlay-lifecycle', payload: { phase: 'wrapped-init' } }); } catch(e){}
-        try { console.log('[overlay-wrapper] iframe loaded'); } catch(e){}
-      });
-
-      function postToChild(payload){
-        try {
-          var win = iframe.contentWindow;
-          if (!win) return;
-          win.postMessage(payload, '*');
-        } catch (e) { console.warn('[overlay-wrapper] postMessage failed:', e); }
-      }
-
-      // 初始化快照回退：在 SSE init 之前，主动拉取 overlay 快照并发送只读仓库初始化
-      var __sentReadonlyInit = false;
-      var __initSnapshotRequested = false;
-      var __propsInjectedFor = null;
-      function initSnapshot(){
-        try {
-          if (!overlayId) return;
-          if (__initSnapshotRequested) return;
-          __initSnapshotRequested = true;
-          fetch('/api/overlay/' + encodeURIComponent(overlayId))
-            .then(function(resp){ return resp.json(); })
-            .then(function(json){
-              try {
-                if (json && json.success && json.data && json.data.overlay) {
-                  var ov = json.data.overlay || {};
-                  window.__WUJIE_SHARED.readonlyStore.overlay = ov;
-                  postToChild({ type: 'overlay-event', overlayId: overlayId, eventType: 'overlay-message', event: 'readonly-store-init', payload: { overlay: ov } });
-                  __sentReadonlyInit = true;
-                  try { console.log('[overlay-wrapper] init snapshot', { overlayId: overlayId }); } catch(e){}
-                  try {
-                    var wsEp = String(((json && json.data && json.data.websocket_endpoint) || ''));
-                    if (wsEp) {
-                      // 解析 ws://host:port/path → 提取 host:port 并构造 http://host:port
-                      var schemeSep = wsEp.indexOf('://');
-                      var rest = schemeSep > 0 ? wsEp.slice(schemeSep + 3) : wsEp;
-                      var firstSlash = rest.indexOf('/');
-                      var hostPort = firstSlash >= 0 ? rest.slice(0, firstSlash) : rest;
-                      var colon = hostPort.indexOf(':');
-                      var host = colon > 0 ? hostPort.slice(0, colon) : (hostPort || '127.0.0.1');
-                      var port = colon > 0 ? hostPort.slice(colon + 1) : '';
-                      if (port) {
-                        var httpBase = 'http://' + host + ':' + port;
-                        __API_BASE_OVERRIDE = httpBase;
-                        try { console.log('[overlay-wrapper] API base override', { base: httpBase }); } catch(e){}
-                      }
-                    }
-                  } catch(_e){}
-                }
-              } catch(e){ console.warn('[overlay-wrapper] init snapshot parse failed:', e); }
-            })
-            .catch(function(e){ console.warn('[overlay-wrapper] init snapshot request failed:', e); __initSnapshotRequested = false; });
-        } catch(e){ console.warn('[overlay-wrapper] init snapshot failed:', e); }
-      }
-
-      // 自动创建 overlay（当未在 URL 中显式传递 overlayId 时）
-      function ensureOverlay(){
-        return new Promise(function(resolve){
-          if (overlayId) { resolve(overlayId); return; }
-          try {
-            fetch('/api/overlay/create', {
-              method: 'POST', headers: { 'Content-Type': 'application/json' },
-              body: JSON.stringify({ pluginId: pluginId, type: 'default' })
-            }).then(function(resp){ return resp.json(); }).then(function(json){
-              if (json && json.success && json.overlayId) {
-                overlayId = String(json.overlayId);
-                try { iframe.name = 'overlay:' + overlayId; } catch(e){}
-                injectProps();
-                // 主动初始化只读仓库，将快照发送到子页
-                initSnapshot();
-                // 通知子页：已自动创建 overlay
-                try { postToChild({ type: 'overlay-event', overlayId: overlayId, eventType: 'overlay-message', event: 'overlay-lifecycle', payload: { phase: 'auto-created' } }); } catch(e){}
-                try { console.log('[overlay-wrapper] auto-created overlay', { overlayId: overlayId }); } catch(e){}
-              } else {
-                console.warn('[overlay-wrapper] auto create overlay failed:', json);
-              }
-              resolve(overlayId || null);
-            }).catch(function(e){ console.warn('[overlay-wrapper] auto create overlay error:', e); resolve(null); });
-          } catch(e){ console.warn('[overlay-wrapper] auto create overlay error:', e); resolve(null); }
+        const htmlDoc = this.renderTemplate('overlay-wrapper', {
+          TITLE: this.escapeHtml(plugin.name || plugin.id),
+          PLUGIN_ID_JSON: JSON.stringify(pluginId),
+          OVERLAY_ID_JSON: JSON.stringify(overlayId),
+          PLUGIN_URL_JSON: JSON.stringify(pluginUrl)
         });
-      }
-
-      // 订阅 SSE（在确保 overlayId 可用后进行）
-      try {
-        var lastEventId = null;
-        var seenIds = new Set();
-        var pluginStreamActive = false;
-        var __ES_PLUGIN = null;
-        var __autoRecreateAttempts = 0;
-        var __recreateInFlight = false;
-        // 统一去重：同一 overlay 的同一时间戳(updatedAt)只转发一次（跨两路 SSE）
-        var __lastUpdateStamp = null;
-        function __shouldForwardUpdate(ov){
-          try {
-            var ts = String((ov && ov.updatedAt) || '');
-            var stamp = String(overlayId) + '|' + ts;
-            if (__lastUpdateStamp && __lastUpdateStamp === stamp) return false;
-            __lastUpdateStamp = stamp; return true;
-          } catch(e){ return true; }
-        }
-
-        function autoRecreateOverlay(){
-          if (__recreateInFlight) return;
-          __recreateInFlight = true;
-          __autoRecreateAttempts++;
-          if (__autoRecreateAttempts > 3) { try { console.warn('[overlay-wrapper] auto recreate max attempts reached'); } catch(e){} __recreateInFlight = false; return; }
-          try {
-            fetch('/api/overlay/create', {
-              method: 'POST', headers: { 'Content-Type': 'application/json' },
-              body: JSON.stringify({ pluginId: pluginId, type: 'default' })
-            }).then(function(resp){ return resp.json(); }).then(function(json){
-              try {
-                if (json && json.success && json.overlayId) {
-                  overlayId = String(json.overlayId);
-                  try { iframe.name = 'overlay:' + overlayId; } catch(e){}
-                  // Reset dedupe flags for new overlayId
-                  __propsInjectedFor = null;
-                  __sentReadonlyInit = false;
-                  __initSnapshotRequested = false;
-                  injectProps();
-                  initSnapshot();
-                  try { if (__ES_PLUGIN) __ES_PLUGIN.close(); } catch(e){}
-                  connect();
-                  try { console.log('[overlay-wrapper] auto recreated overlay', { overlayId: overlayId }); } catch(e){}
-                } else {
-                  console.warn('[overlay-wrapper] auto recreate failed:', json);
-                }
-              } finally { __recreateInFlight = false; }
-            }).catch(function(e){ console.warn('[overlay-wrapper] auto recreate error:', e); __recreateInFlight = false; });
-          } catch(e){ console.warn('[overlay-wrapper] auto recreate exception:', e); __recreateInFlight = false; }
-        }
-        function connect(){
-          var q = lastEventId ? ('?lastEventId=' + encodeURIComponent(lastEventId)) : '';
-          var base = __API_BASE_OVERRIDE || (window.location && window.location.origin) || '';
-          var bstr = String(base);
-          var joinBase = bstr.charAt(bstr.length - 1) === '/' ? bstr.slice(0, -1) : bstr;
-          var es = new EventSource(joinBase + '/sse/plugins/' + encodeURIComponent(pluginId) + '/overlay' + q);
-          __ES_PLUGIN = es;
-          try { console.log('[overlay-wrapper] SSE connect', { pluginId: pluginId, lastEventId: lastEventId }); } catch(e){}
-          // 防止服务端 init 过早发送导致丢失，连接后立即触发一次快照初始化
-          initSnapshot();
-          es.onopen = function(){ try { console.log('[overlay-wrapper] SSE(open) plugin channel'); } catch(e){} };
-          es.addEventListener('init', function(ev){
-            try {
-              var data = JSON.parse(ev.data || '{}');
-              var overlays = Array.isArray(data.overlays) ? data.overlays : [];
-              var ov = overlayId ? overlays.find(function(o){ return String(o && o.id) === String(overlayId); }) : null;
-              window.__WUJIE_SHARED.readonlyStore.overlay = ov || {};
-              if (!__sentReadonlyInit) {
-                postToChild({ type: 'overlay-event', overlayId: overlayId, eventType: 'overlay-message', event: 'readonly-store-init', payload: { overlay: window.__WUJIE_SHARED.readonlyStore.overlay } });
-                __sentReadonlyInit = true;
-              }
-              pluginStreamActive = true;
-              try { console.log('[overlay-wrapper] SSE init overlays', { count: overlays.length, overlayId: overlayId, found: !!ov }); } catch(e){}
-            } catch(e){ console.warn('[overlay-wrapper] init parse failed:', e); }
-          });
-          es.addEventListener('update', function(ev){
-            try {
-              var rec = JSON.parse(ev.data || '{}');
-              if (rec && typeof rec.id === 'string') {
-                if (seenIds.has(rec.id)) return;
-                seenIds.add(rec.id); lastEventId = rec.id;
-              }
-              // 统一提取：服务端发布的 update 记录形如 { payload: { overlayId, event: 'overlay-updated', payload: <overlay> } }
-              // 亦兼容直接发布 overlay 对象的情况（payload 即 overlay）
-              var msg = (rec && rec.payload) || rec;
-              var ov = {};
-              var targetId = '';
-              try {
-                if (msg && typeof msg === 'object' && (msg.event === 'overlay-updated' || msg.event === 'overlay-update' || typeof msg.overlayId !== 'undefined')) {
-                  // 标准消息：从嵌套载荷中提取 overlay 与 overlayId
-                  ov = (msg && msg.payload) || {};
-                  targetId = String(msg && msg.overlayId || (ov && ov.id) || '');
-                } else {
-                  // 兼容：payload 直接为 overlay 对象
-                  ov = msg || {};
-                  targetId = String((ov && ov.id) || '');
-                }
-              } catch(_e){}
-              if (overlayId && String(targetId) !== String(overlayId)) return;
-
-              if (!__shouldForwardUpdate(ov)) { try { console.log('[overlay-wrapper] SSE(update) plugin dedup', { overlayId: overlayId, recId: rec && rec.id, targetId: targetId }); } catch(e){} return; }
-
-              window.__WUJIE_SHARED.readonlyStore.overlay = ov;
-              // 与示例 overlay.html 的读取方式保持一致：payload 中包含 overlay 字段
-              postToChild({ type: 'overlay-event', overlayId: overlayId, eventType: 'overlay-message', event: 'overlay-updated', payload: { overlay: ov } });
-              pluginStreamActive = true;
-              try { console.log('[overlay-wrapper] SSE update', { overlayId: overlayId, recId: rec && rec.id, targetId: targetId }); } catch(e){}
-            } catch(e){ console.warn('[overlay-wrapper] update parse failed:', e); }
-          });
-          // 订阅生命周期事件（例如 config-updated），转发为 plugin-event
-          es.addEventListener('lifecycle', function(ev){
-            try {
-              var rec = JSON.parse(ev.data || '{}');
-              if (rec && typeof rec.id === 'string') {
-                if (seenIds.has(rec.id)) return;
-                seenIds.add(rec.id); lastEventId = rec.id;
-              }
-              var msg = (rec && rec.payload) || rec;
-              postToChild({ type: 'plugin-event', eventType: 'lifecycle', event: String(msg && msg.event || ''), payload: msg && msg.payload });
-              pluginStreamActive = true;
-              try { console.log('[overlay-wrapper] SSE lifecycle', { event: msg && msg.event }); } catch(e){}
-            } catch(e){ console.warn('[overlay-wrapper] lifecycle parse failed:', e); }
-          });
-          es.addEventListener('message', function(ev){
-            try {
-              var rec = JSON.parse(ev.data || '{}');
-              if (rec && typeof rec.id === 'string') {
-                if (seenIds.has(rec.id)) return;
-                seenIds.add(rec.id); lastEventId = rec.id;
-              }
-              var msg = (rec && rec.payload) || rec;
-              if (overlayId && String(msg && msg.overlayId) !== String(overlayId)) return;
-              postToChild({ type: 'overlay-event', overlayId: overlayId, eventType: 'overlay-message', event: String(msg && msg.event || ''), payload: msg && msg.payload });
-              pluginStreamActive = true;
-              try { console.log('[overlay-wrapper] SSE message', { overlayId: overlayId, event: msg && msg.event }); } catch(e){}
-            } catch(e){ console.warn('[overlay-wrapper] message parse failed:', e); }
-          });
-          es.addEventListener('closed', function(ev){
-            try {
-              var rec = JSON.parse(ev.data || '{}');
-              var msg = (rec && rec.payload) || rec;
-              if (overlayId && String(msg && msg.overlayId) !== String(overlayId)) return;
-              postToChild({ type: 'overlay-event', overlayId: overlayId, eventType: 'overlay-message', event: 'overlay-closed' });
-              pluginStreamActive = true;
-              try { console.log('[overlay-wrapper] SSE closed', { overlayId: overlayId }); } catch(e){}
-            } catch(e){ postToChild({ type: 'overlay-event', overlayId: overlayId, eventType: 'overlay-message', event: 'overlay-closed' }); }
-          });
-          es.addEventListener('heartbeat', function(ev){
-            try { pluginStreamActive = true; console.log('[overlay-wrapper] SSE heartbeat(plugin)', ev && ev.data); } catch(e){}
-          });
-          es.onerror = function(){ try { console.warn('[overlay-wrapper] SSE error, reconnecting...'); } catch(e){} try { es.close(); } catch(e){} setTimeout(connect, 3000); };
-        }
-        ensureOverlay().then(function(){
-          connect();
-        });
-      } catch(e) { console.warn('[overlay-wrapper] SSE init failed:', e); }
-
-      // 接收子页面动作并转发到主进程 HTTP API
-      window.addEventListener('message', function(evt){
-        try {
-          var msg = evt && evt.data || {};
-          if (!msg || typeof msg !== 'object') return;
-          var type = msg.type; var id = msg.overlayId;
-          if (!type) return;
-          if (!overlayId) { console.warn('[overlay-wrapper] overlayId not ready, ignore message:', type); return; }
-          if (id !== overlayId) return;
-          if (type === 'overlay-action') {
-            var action = String(msg.action||'');
-            var data = msg.data;
-            fetch('/api/overlay/' + encodeURIComponent(overlayId) + '/action', {
-              method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ action: action, data: data })
-            }).then(function(resp){ try { return resp.json(); } catch(_){ return null; } }).then(function(json){ try { console.log('[overlay-wrapper] forwarded overlay-action', { overlayId: overlayId, action: action, success: json && json.success }); } catch(e){} }).catch(function(e){ console.warn('[overlay-wrapper] action forward failed:', e); });
-            return;
-          }
-          if (type === 'overlay-close') {
-            fetch('/api/overlay/' + encodeURIComponent(overlayId) + '/action', {
-              method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ action: 'close' })
-            }).then(function(resp){ try { return resp.json(); } catch(_){ return null; } }).then(function(json){ try { console.log('[overlay-wrapper] forwarded overlay-close', { overlayId: overlayId, success: json && json.success }); } catch(e){} }).catch(function(e){ console.warn('[overlay-wrapper] close forward failed:', e); });
-            return;
-          }
-          if (type === 'overlay-update') {
-            var updates = msg.updates;
-            fetch('/api/overlay/' + encodeURIComponent(overlayId) + '/action', {
-              method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ action: 'update', data: updates })
-            }).then(function(resp){ try { return resp.json(); } catch(_){ return null; } }).then(function(json){ try { console.log('[overlay-wrapper] forwarded overlay-update', { overlayId: overlayId, keys: Object.keys(updates||{}), success: json && json.success }); } catch(e){} }).catch(function(e){ console.warn('[overlay-wrapper] update forward failed:', e); });
-            return;
-          }
-          if (type === 'overlay-send') {
-            var evName = String(msg.event||'');
-            var payload = msg.payload;
-            fetch('/api/plugins/' + encodeURIComponent(pluginId) + '/overlay/messages', {
-              method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ overlayId: overlayId, event: evName, payload: payload })
-            }).then(function(resp){ try { return resp.json(); } catch(_){ return null; } }).then(function(json){ try { console.log('[overlay-wrapper] forwarded overlay-send', { overlayId: overlayId, event: evName, success: json && json.success }); } catch(e){} }).catch(function(e){ console.warn('[overlay-wrapper] send forward failed:', e); });
-            return;
-          }
-        } catch(e) { console.warn('[overlay-wrapper] message handler error:', e); }
-      });
-    })();
-  </script>
-</body>
-</html>`;
 
         res.setHeader('Content-Type', 'text/html; charset=utf-8');
         res.setHeader('Cache-Control', 'no-cache, no-store, must-revalidate');
@@ -1456,7 +1274,7 @@ export class ApiServer {
         return res.send(htmlDoc);
       } catch (err) {
         console.error('[ApiServer] overlay-wrapper route error:', err);
-        return res.status(500).send('<h1>500 Internal Server Error</h1>');
+        return this.sendErrorHtml(res, 500, 'Internal Server Error', 'Unexpected error in overlay wrapper.');
       }
     });
 
@@ -1574,221 +1392,6 @@ export class ApiServer {
     });
   }
 
-  /**
-   * 生成overlay页面HTML
-   */
-  private generateOverlayPage(overlay: any, room?: string, token?: string): string {
-    const { id, type, content, component, props, title, description, position, size, style, className } = overlay;
-
-    // 基础样式
-    const baseStyles = `
-      * {
-        box-sizing: border-box;
-      }
-      
-      body {
-        margin: 0;
-        padding: 0;
-        font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
-        background: transparent;
-        overflow: hidden;
-        user-select: none;
-        -webkit-user-select: none;
-      }
-      
-      .overlay-container {
-        position: fixed;
-        ${position?.top !== undefined ? `top: ${position.top}${typeof position.top === 'number' ? 'px' : ''};` : ''}
-        ${position?.left !== undefined ? `left: ${position.left}${typeof position.left === 'number' ? 'px' : ''};` : ''}
-        ${position?.right !== undefined ? `right: ${position.right}${typeof position.right === 'number' ? 'px' : ''};` : ''}
-        ${position?.bottom !== undefined ? `bottom: ${position.bottom}${typeof position.bottom === 'number' ? 'px' : ''};` : ''}
-        ${position?.x !== undefined ? `left: ${position.x}${typeof position.x === 'number' ? 'px' : ''};` : ''}
-        ${position?.y !== undefined ? `top: ${position.y}${typeof position.y === 'number' ? 'px' : ''};` : ''}
-        ${size?.width !== undefined ? `width: ${size.width}${typeof size.width === 'number' ? 'px' : ''};` : ''}
-        ${size?.height !== undefined ? `height: ${size.height}${typeof size.height === 'number' ? 'px' : ''};` : ''}
-        ${size?.maxWidth !== undefined ? `max-width: ${size.maxWidth}${typeof size.maxWidth === 'number' ? 'px' : ''};` : ''}
-        ${size?.maxHeight !== undefined ? `max-height: ${size.maxHeight}${typeof size.maxHeight === 'number' ? 'px' : ''};` : ''}
-        ${size?.minWidth !== undefined ? `min-width: ${size.minWidth}${typeof size.minWidth === 'number' ? 'px' : ''};` : ''}
-        ${size?.minHeight !== undefined ? `min-height: ${size.minHeight}${typeof size.minHeight === 'number' ? 'px' : ''};` : ''}
-        ${style?.backgroundColor ? `background-color: ${style.backgroundColor};` : ''}
-        ${style?.opacity !== undefined ? `opacity: ${style.opacity};` : ''}
-        ${style?.borderRadius ? `border-radius: ${style.borderRadius};` : ''}
-        ${style?.border ? `border: ${style.border};` : ''}
-        ${style?.boxShadow ? `box-shadow: ${style.boxShadow};` : ''}
-        ${style?.zIndex !== undefined ? `z-index: ${style.zIndex};` : 'z-index: 1000;'}
-        pointer-events: auto;
-      }
-      
-      .overlay-content {
-        width: 100%;
-        height: 100%;
-        display: flex;
-        flex-direction: column;
-      }
-      
-      .overlay-title {
-        font-weight: bold;
-        margin-bottom: 8px;
-        color: #333;
-      }
-      
-      .overlay-description {
-        font-size: 14px;
-        color: #666;
-        margin-bottom: 12px;
-      }
-      
-      .overlay-text {
-        white-space: pre-wrap;
-        word-wrap: break-word;
-      }
-      
-      .overlay-html {
-        width: 100%;
-        height: 100%;
-      }
-      
-      .overlay-component {
-        width: 100%;
-        height: 100%;
-      }
-    `;
-
-    // 生成内容
-    let overlayContent = '';
-
-    switch (type) {
-      case 'text':
-        overlayContent = `
-          <div class="overlay-content">
-            ${title ? `<div class="overlay-title">${this.escapeHtml(title)}</div>` : ''}
-            ${description ? `<div class="overlay-description">${this.escapeHtml(description)}</div>` : ''}
-            <div class="overlay-text">${this.escapeHtml(content || '')}</div>
-          </div>
-        `;
-        break;
-
-      case 'html':
-        overlayContent = `
-          <div class="overlay-content">
-            ${title ? `<div class="overlay-title">${this.escapeHtml(title)}</div>` : ''}
-            ${description ? `<div class="overlay-description">${this.escapeHtml(description)}</div>` : ''}
-            <div class="overlay-html">${content || ''}</div>
-          </div>
-        `;
-        break;
-
-      case 'component':
-        overlayContent = `
-          <div class="overlay-content">
-            ${title ? `<div class="overlay-title">${this.escapeHtml(title)}</div>` : ''}
-            ${description ? `<div class="overlay-description">${this.escapeHtml(description)}</div>` : ''}
-            <div class="overlay-component" data-component="${this.escapeHtml(component || '')}" data-props="${this.escapeHtml(JSON.stringify(props || {}))}">
-              <div style="padding: 20px; text-align: center; color: #666;">
-                Component: ${this.escapeHtml(component || 'Unknown')}
-                <br>
-                <small>Component rendering requires client-side implementation</small>
-              </div>
-            </div>
-          </div>
-        `;
-        break;
-
-      default:
-        overlayContent = `
-          <div class="overlay-content">
-            ${title ? `<div class="overlay-title">${this.escapeHtml(title)}</div>` : ''}
-            ${description ? `<div class="overlay-description">${this.escapeHtml(description)}</div>` : ''}
-            <div style="padding: 20px; text-align: center; color: #666;">
-              <div>Overlay ID: ${this.escapeHtml(id)}</div>
-              <div>Type: ${this.escapeHtml(type)}</div>
-              <div>Status: Active</div>
-              ${room ? `<div>Room: ${this.escapeHtml(room)}</div>` : ''}
-            </div>
-          </div>
-        `;
-    }
-
-    // 生成完整的HTML页面
-    return `
-      <!DOCTYPE html>
-      <html lang="en">
-      <head>
-        <meta charset="UTF-8">
-        <meta name="viewport" content="width=device-width, initial-scale=1.0">
-        <title>${this.escapeHtml(title || `Overlay ${id}`)}</title>
-        <style>${baseStyles}</style>
-        <script>
-          // Overlay API
-          window.overlayApi = {
-            id: '${this.escapeHtml(id)}',
-            room: '${this.escapeHtml(room || '')}',
-            token: '${this.escapeHtml(token || '')}',
-            
-            // 发送动作到主应用
-            action: function(actionId, data) {
-              if (window.parent && window.parent !== window) {
-                window.parent.postMessage({
-                  type: 'overlay-action',
-                  overlayId: '${this.escapeHtml(id)}',
-                  action: actionId,
-                  data: data
-                }, '*');
-              }
-            },
-            
-            // 关闭overlay
-            close: function() {
-              if (window.parent && window.parent !== window) {
-                window.parent.postMessage({
-                  type: 'overlay-close',
-                  overlayId: '${this.escapeHtml(id)}'
-                }, '*');
-              }
-            },
-            
-            // 更新overlay
-            update: function(updates) {
-              if (window.parent && window.parent !== window) {
-                window.parent.postMessage({
-                  type: 'overlay-update',
-                  overlayId: '${this.escapeHtml(id)}',
-                  updates: updates
-                }, '*');
-              }
-            }
-          };
-          
-          // 监听来自主应用的消息
-          window.addEventListener('message', function(event) {
-            if (event.data && event.data.type === 'overlay-event' && event.data.overlayId === '${this.escapeHtml(id)}') {
-              // 触发自定义事件
-              const customEvent = new CustomEvent('overlayEvent', {
-                detail: event.data
-              });
-              window.dispatchEvent(customEvent);
-            }
-          });
-          
-          // 页面加载完成后通知主应用
-          window.addEventListener('load', function() {
-            if (window.parent && window.parent !== window) {
-              window.parent.postMessage({
-                type: 'overlay-loaded',
-                overlayId: '${this.escapeHtml(id)}'
-              }, '*');
-            }
-          });
-        </script>
-      </head>
-      <body>
-        <div class="overlay-container ${className || ''}" id="overlay-${this.escapeHtml(id)}">
-          ${overlayContent}
-        </div>
-      </body>
-      </html>
-    `;
-  }
 
   /**
    * HTML转义
@@ -1805,454 +1408,79 @@ export class ApiServer {
   }
 
   /**
-   * 生成控制台页面HTML
+   * 解析模板文件路径，兼容 src 与编译输出位置
    */
-  private generateConsolePage(): string {
-    const commands = this.consoleManager.getCommands();
-    const sessions = this.consoleManager.getActiveSessions();
-
-    return `
-      <!DOCTYPE html>
-      <html lang="zh-CN">
-      <head>
-        <meta charset="UTF-8">
-        <meta name="viewport" content="width=device-width, initial-scale=1.0">
-        <title>ACLiveFrame - Console</title>
-        <style>
-          * {
-            margin: 0;
-            padding: 0;
-            box-sizing: border-box;
-          }
-          
-          body {
-            font-family: 'Consolas', 'Monaco', 'Courier New', monospace;
-            background: #1e1e1e;
-            color: #d4d4d4;
-            height: 100vh;
-            display: flex;
-            flex-direction: column;
-          }
-          
-          .header {
-            background: #2d2d30;
-            padding: 15px 20px;
-            border-bottom: 1px solid #3e3e42;
-            display: flex;
-            justify-content: space-between;
-            align-items: center;
-          }
-          
-          .header h1 {
-            color: #ffffff;
-            font-size: 18px;
-            font-weight: 600;
-          }
-          
-          .status {
-            display: flex;
-            gap: 15px;
-            font-size: 12px;
-          }
-          
-          .status-item {
-            display: flex;
-            align-items: center;
-            gap: 5px;
-          }
-          
-          .status-dot {
-            width: 8px;
-            height: 8px;
-            border-radius: 50%;
-            background: #4caf50;
-          }
-          
-          .main-content {
-            flex: 1;
-            display: flex;
-            overflow: hidden;
-          }
-          
-          .sidebar {
-            width: 300px;
-            background: #252526;
-            border-right: 1px solid #3e3e42;
-            display: flex;
-            flex-direction: column;
-          }
-          
-          .sidebar-section {
-            padding: 15px;
-            border-bottom: 1px solid #3e3e42;
-          }
-          
-          .sidebar-title {
-            font-size: 12px;
-            font-weight: 600;
-            color: #cccccc;
-            margin-bottom: 10px;
-            text-transform: uppercase;
-          }
-          
-          .command-list {
-            max-height: 200px;
-            overflow-y: auto;
-          }
-          
-          .command-item {
-            padding: 5px 8px;
-            margin: 2px 0;
-            background: #2d2d30;
-            border-radius: 3px;
-            font-size: 11px;
-            cursor: pointer;
-            transition: background 0.2s;
-          }
-          
-          .command-item:hover {
-            background: #37373d;
-          }
-          
-          .command-name {
-            color: #4fc1ff;
-            font-weight: 600;
-          }
-          
-          .command-desc {
-            color: #9d9d9d;
-            margin-top: 2px;
-          }
-          
-          .session-list {
-            flex: 1;
-            overflow-y: auto;
-          }
-          
-          .session-item {
-            padding: 8px 12px;
-            margin: 2px 0;
-            background: #2d2d30;
-            border-radius: 3px;
-            font-size: 11px;
-            cursor: pointer;
-            transition: background 0.2s;
-          }
-          
-          .session-item:hover {
-            background: #37373d;
-          }
-          
-          .session-item.active {
-            background: #0e639c;
-          }
-          
-          .console-area {
-            flex: 1;
-            display: flex;
-            flex-direction: column;
-            background: #1e1e1e;
-          }
-          
-          .console-output {
-            flex: 1;
-            padding: 15px;
-            overflow-y: auto;
-            font-size: 12px;
-            line-height: 1.4;
-          }
-          
-          .console-input {
-            background: #2d2d30;
-            border-top: 1px solid #3e3e42;
-            padding: 10px 15px;
-            display: flex;
-            align-items: center;
-            gap: 10px;
-          }
-          
-          .prompt {
-            color: #4fc1ff;
-            font-weight: 600;
-          }
-          
-          .input-field {
-            flex: 1;
-            background: transparent;
-            border: none;
-            color: #d4d4d4;
-            font-family: inherit;
-            font-size: 12px;
-            outline: none;
-          }
-          
-          .btn {
-            background: #0e639c;
-            color: white;
-            border: none;
-            padding: 5px 12px;
-            border-radius: 3px;
-            font-size: 11px;
-            cursor: pointer;
-            transition: background 0.2s;
-          }
-          
-          .btn:hover {
-            background: #1177bb;
-          }
-          
-          .btn-secondary {
-            background: #5a5a5a;
-          }
-          
-          .btn-secondary:hover {
-            background: #6a6a6a;
-          }
-          
-          .output-line {
-            margin: 2px 0;
-          }
-          
-          .output-command {
-            color: #4fc1ff;
-          }
-          
-          .output-result {
-            color: #d4d4d4;
-            margin-left: 15px;
-          }
-          
-          .output-error {
-            color: #f48771;
-          }
-          
-          .output-success {
-            color: #4caf50;
-          }
-          
-          .welcome-message {
-            color: #9d9d9d;
-            text-align: center;
-            margin-top: 50px;
-          }
-          
-          .api-info {
-            background: #2d2d30;
-            border-radius: 5px;
-            padding: 10px;
-            margin-top: 10px;
-            font-size: 11px;
-          }
-          
-          .api-endpoint {
-            color: #4fc1ff;
-            margin: 2px 0;
-          }
-        </style>
-      </head>
-      <body>
-        <div class="header">
-          <h1>AcFun Live Toolbox Console</h1>
-          <div class="status">
-            <div class="status-item">
-              <div class="status-dot"></div>
-              <span>HTTP Server</span>
-            </div>
-            <div class="status-item">
-              <div class="status-dot"></div>
-              <span>WebSocket (${this.wsHub?.getClientCount() || 0} clients)</span>
-            </div>
-            <div class="status-item">
-              <div class="status-dot"></div>
-              <span>${sessions.length} Sessions</span>
-            </div>
-          </div>
-        </div>
-        
-        <div class="main-content">
-          <div class="sidebar">
-            <div class="sidebar-section">
-              <div class="sidebar-title">Available Commands</div>
-              <div class="command-list">
-                ${commands.map(cmd => `
-                  <div class="command-item" onclick="insertCommand('${cmd.name}')">
-                    <div class="command-name">${cmd.name}</div>
-                    <div class="command-desc">${cmd.description}</div>
-                  </div>
-                `).join('')}
-              </div>
-            </div>
-            
-            <div class="sidebar-section">
-              <div class="sidebar-title">Active Sessions</div>
-              <div class="session-list">
-                ${sessions.length > 0 ? sessions.map(session => `
-                  <div class="session-item" onclick="selectSession('${session.id}')">
-                    <div>${session.name || session.id}</div>
-                    <div style="color: #9d9d9d; font-size: 10px;">
-                      Created: ${new Date(session.createdAt).toLocaleTimeString()}
-                    </div>
-                  </div>
-                `).join('') : '<div style="color: #9d9d9d; padding: 10px; text-align: center;">No active sessions</div>'}
-              </div>
-              
-              <div style="padding: 10px; border-top: 1px solid #3e3e42;">
-                <button class="btn" onclick="createSession()">New Session</button>
-              </div>
-            </div>
-            
-            <div class="sidebar-section">
-              <div class="sidebar-title">API Information</div>
-              <div class="api-info">
-                <div class="api-endpoint">POST /api/console/sessions</div>
-                <div class="api-endpoint">GET /api/console/commands</div>
-                <div class="api-endpoint">POST /api/console/sessions/:id/execute</div>
-                <div style="margin-top: 8px; color: #9d9d9d;">
-                  Use these endpoints to integrate with external tools
-                </div>
-              </div>
-            </div>
-          </div>
-          
-          <div class="console-area">
-            <div class="console-output" id="output">
-              <div class="welcome-message">
-                <h3>Welcome to AcFun Live Toolbox Console</h3>
-                <p>Create a session or select an existing one to start executing commands.</p>
-                <p>Type 'help' to see available commands.</p>
-              </div>
-            </div>
-            
-            <div class="console-input">
-              <span class="prompt">></span>
-              <input type="text" class="input-field" id="commandInput" placeholder="Enter command..." disabled>
-              <button class="btn" id="executeBtn" onclick="executeCommand()" disabled>Execute</button>
-              <button class="btn btn-secondary" onclick="clearOutput()">Clear</button>
-            </div>
-          </div>
-        </div>
-        
-        <script>
-          let currentSessionId = null;
-          
-          // 创建新会话
-          async function createSession() {
-            const name = prompt('Session name (optional):') || 'Console Session';
-            try {
-              const response = await fetch('/api/console/sessions', {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ name })
-              });
-              const data = await response.json();
-              if (data.success) {
-                currentSessionId = data.session.id;
-                updateUI();
-                addOutput('System', 'Session created: ' + data.session.id, 'success');
-                location.reload(); // 刷新页面以更新会话列表
-              }
-            } catch (error) {
-              addOutput('Error', 'Failed to create session: ' + error.message, 'error');
-            }
-          }
-          
-          // 选择会话
-          function selectSession(sessionId) {
-            currentSessionId = sessionId;
-            updateUI();
-            addOutput('System', 'Selected session: ' + sessionId, 'success');
-          }
-          
-          // 执行命令
-          async function executeCommand() {
-            const input = document.getElementById('commandInput');
-            const command = input.value.trim();
-            if (!command || !currentSessionId) return;
-            
-            addOutput('Command', command, 'command');
-            input.value = '';
-            
-            try {
-              const response = await fetch('/api/console/sessions/' + currentSessionId + '/execute', {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ command })
-              });
-              const data = await response.json();
-              if (data.success) {
-                const result = data.result;
-                addOutput('Result', result.output || 'Command executed successfully', result.success ? 'success' : 'error');
-              } else {
-                addOutput('Error', data.error || 'Command execution failed', 'error');
-              }
-            } catch (error) {
-              addOutput('Error', 'Network error: ' + error.message, 'error');
-            }
-          }
-          
-          // 插入命令到输入框
-          function insertCommand(command) {
-            const input = document.getElementById('commandInput');
-            input.value = command;
-            input.focus();
-          }
-          
-          // 添加输出
-          function addOutput(type, message, className = '') {
-            const output = document.getElementById('output');
-            const line = document.createElement('div');
-            line.className = 'output-line';
-            
-            const timestamp = new Date().toLocaleTimeString();
-            line.innerHTML = '<span style="color: #9d9d9d;">[' + timestamp + ']</span> ' +
-                           '<span class="output-' + className + '">' + type + ':</span> ' +
-                           '<span class="output-result">' + message + '</span>';
-            
-            output.appendChild(line);
-            output.scrollTop = output.scrollHeight;
-          }
-          
-          // 清空输出
-          function clearOutput() {
-            document.getElementById('output').innerHTML = '';
-          }
-          
-          // 更新UI状态
-          function updateUI() {
-            const input = document.getElementById('commandInput');
-            const btn = document.getElementById('executeBtn');
-            const hasSession = currentSessionId !== null;
-            
-            input.disabled = !hasSession;
-            btn.disabled = !hasSession;
-            
-            // 更新会话选择状态
-            document.querySelectorAll('.session-item').forEach(item => {
-              item.classList.remove('active');
-            });
-            
-            if (hasSession) {
-              const activeItem = document.querySelector('[onclick="selectSession(\\'' + currentSessionId + '\\')"]');
-              if (activeItem) {
-                activeItem.classList.add('active');
-              }
-            }
-          }
-          
-          // 回车执行命令
-          document.getElementById('commandInput').addEventListener('keypress', function(e) {
-            if (e.key === 'Enter') {
-              executeCommand();
-            }
-          });
-          
-          // 初始化
-          updateUI();
-        </script>
-      </body>
-      </html>
-    `;
+  private resolveTemplatePath(name: string): string | null {
+    const filename = `${name}.html`;
+    const candidates = [
+      path.resolve(__dirname, 'templates', filename),
+      // 若运行在 dist/server 下，尝试回溯到 src 目录
+      path.resolve(__dirname, '../../src/server/templates', filename),
+      // 直接使用工作区绝对路径（开发环境）
+      path.resolve(process.cwd(), 'packages', 'main', 'src', 'server', 'templates', filename)
+    ];
+    for (const p of candidates) {
+      try { if (fs.existsSync(p)) return p; } catch {}
+    }
+    return null;
   }
+
+  /**
+   * 读取模板文件（带内存缓存与兜底内容）
+   */
+  private loadTemplate(name: string): string {
+    const cached = this.templatesCache[name];
+    if (cached) return cached;
+    const abs = this.resolveTemplatePath(name);
+    if (abs) {
+      try {
+        const content = fs.readFileSync(abs, 'utf-8');
+        this.templatesCache[name] = content;
+        return content;
+      } catch {}
+    }
+    // 未找到模板文件时抛出错误，禁止使用内联回退模板
+    throw new Error(`Template '${name}' not found`);
+  }
+
+  /**
+   * 渲染模板：用 {{KEY}} 进行占位与替换
+   */
+  private renderTemplate(name: string, placeholders: Record<string, string>): string {
+    let tpl = this.loadTemplate(name);
+    for (const key of Object.keys(placeholders)) {
+      const val = String(placeholders[key] ?? '');
+      const re = new RegExp(`\\{\\{\\s*${key}\\s*\\}\\}`, 'g');
+      tpl = tpl.replace(re, val);
+    }
+    return tpl;
+  }
+
+  /**
+   * 统一发送错误 HTML（使用 error 模板）
+   */
+  private sendErrorHtml(res: express.Response, status: number, title: string, message: string): express.Response {
+    try {
+      const html = this.renderTemplate('error', {
+        STATUS_CODE: String(status),
+        TITLE: this.escapeHtml(title),
+        MESSAGE: this.escapeHtml(message)
+      });
+      try {
+        res.status(status);
+        res.setHeader('Content-Type', 'text/html; charset=utf-8');
+        res.setHeader('Cache-Control', 'no-cache, no-store, must-revalidate');
+        res.setHeader('Pragma', 'no-cache');
+        res.setHeader('Expires', '0');
+      } catch {}
+      return res.send(html);
+    } catch (e) {
+      // 当错误模板缺失时，退回纯文本响应以避免服务崩溃（非 HTML）
+      try { res.status(status); } catch {}
+      return res.type('text/plain').send(`${status} ${title}\n${message}`);
+    }
+  }
+
 
   /**
    * 获取服务器状态

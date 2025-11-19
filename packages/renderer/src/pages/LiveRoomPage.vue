@@ -4,17 +4,23 @@
       <h2>直播房间管理</h2>
       <div class="header-actions">
         <t-button
+          class="room-action-btn"
           theme="primary"
           @click="showAddDialog = true"
         >
-          <t-icon name="add" />
+          <template #icon>
+            <t-icon name="add" />
+          </template>
           添加房间
         </t-button>
         <t-button
+          class="room-action-btn"
           variant="outline"
           @click="refreshRooms"
         >
-          <t-icon name="refresh" />
+          <template #icon>
+            <t-icon name="refresh" />
+          </template>
           刷新
         </t-button>
       </div>
@@ -135,10 +141,12 @@
             preparing: room.status === 'connecting'
           }"
         >
-          <div class="room-avatar">
+          <div class="room-cover">
             <img
-              :src="room.streamer?.avatar || '/default-avatar.png'"
-              :alt="room.streamer?.userName"
+              :src="room.coverUrl || '/default-cover.png'"
+              :alt="room.title || room.streamer?.userName"
+              loading="lazy"
+              @error="onCoverError"
             >
             <div
               class="status-indicator"
@@ -151,10 +159,7 @@
               {{ room.title || '未知标题' }}
             </div>
             <div class="room-streamer">
-              {{ room.streamer?.userName || '未知主播' }}
-            </div>
-            <div class="room-id">
-              房间ID: {{ room.liveId }}
+              {{ room.streamer?.userName || '未知主播' }}（UID: {{ room.liveId }}）
             </div>
             <div class="room-stats">
               <span class="viewer-count">
@@ -174,23 +179,33 @@
               >
                 {{ getStatusText(room.status) }}
               </span>
+              <span v-if="room.status === 'connected'" class="barrage-text">弹幕获取中</span>
             </div>
           </div>
           
           <div class="room-actions">
             <t-button 
+              v-if="room.status !== 'disconnected'"
               size="small" 
               :theme="room.status === 'connected' ? 'danger' : 'primary'"
               @click="toggleConnection(room)"
             >
-              {{ room.status === 'connected' ? '断开' : '连接' }}
+              {{ room.status === 'connected' ? '断开采集' : '连接采集' }}
             </t-button>
             <t-button
               size="small"
               variant="outline"
-              @click="viewRoomDetails(room)"
+              @click="router.push(`/live/danmu/${room.liveId}`)"
             >
-              详情
+              查看弹幕
+            </t-button>
+            <t-button
+              v-if="room.status !== 'disconnected'"
+              size="small"
+              variant="outline"
+              @click="openLivePage(room)"
+            >
+              进入直播间
             </t-button>
             <t-dropdown :options="getRoomMenuOptions(room)">
               <t-button
@@ -223,36 +238,21 @@
           label="房间ID"
           name="roomId"
         >
-          <t-input 
-            v-model="addForm.roomId" 
-            placeholder="请输入AcFun直播房间ID"
-            @blur="validateRoomId"
+          <t-select
+            v-model="addForm.roomId"
+            :options="hotOptions"
+            filterable
+            clearable
+            :loading="hotLoading"
+            placeholder="输入房间ID，或下拉选择热门直播"
+            @popup-visible-change="onSelectPopupVisible"
+            @focus="onSelectFocus"
           />
           <template #help>
             <span>可以输入完整的直播间链接或房间ID</span>
           </template>
         </t-form-item>
-        <t-form-item
-          label="优先级"
-          name="priority"
-        >
-          <t-slider 
-            v-model="addForm.priority" 
-            :min="0" 
-            :max="10" 
-            :step="1"
-            :marks="{ 0: '低', 5: '中', 10: '高' }"
-          />
-        </t-form-item>
-        <t-form-item
-          label="标签"
-          name="label"
-        >
-          <t-input 
-            v-model="addForm.label" 
-            placeholder="为房间添加标签（可选）"
-          />
-        </t-form-item>
+        
         <t-form-item
           label="自动连接"
           name="autoConnect"
@@ -351,8 +351,6 @@ const selectedRoom = computed<Room | null>(() => {
 // 添加房间表单
 const addForm = ref({
   roomId: '',
-  priority: 5,
-  label: '',
   autoConnect: false
 });
 
@@ -381,6 +379,8 @@ const refreshRooms = async () => {
   await roomStore.refreshRooms();
 };
 
+
+
 const getStatusText = (status: string) => {
   switch (status) {
     case 'connected': return '直播中';
@@ -400,6 +400,47 @@ const validateRoomId = () => {
       addForm.value.roomId = match[1];
     }
   }
+  // 仅保留数字
+  addForm.value.roomId = addForm.value.roomId.replace(/\D+/g, '');
+};
+
+const hotLives = ref<any[]>([]);
+const hotLoading = ref(false);
+const hotError = ref<string | null>(null);
+const hotOptions = computed(() => {
+  const list = hotLives.value || [];
+  return list.map((item: any) => {
+    const uid = item?.streamer?.userId ?? item?.owner?.userID ?? item?.userId;
+    const title = String(item?.title || '未知标题');
+    const name = String((item?.streamer && item.streamer.userName) || (item?.owner && item.owner.username) || '未知主播');
+    const viewers = typeof item?.onlineCount === 'number' ? item.onlineCount : (typeof item?.viewerCount === 'number' ? item.viewerCount : 0);
+    return { label: `${title} ｜ ${name} ｜ 观众 ${viewers}`, value: String(uid || '') };
+  });
+});
+const fetchHotLives = async () => {
+  try {
+    hotLoading.value = true;
+    hotError.value = null;
+    const res = await window.electronApi.http.get('/api/acfun/live/hot-lives', { page: 0, size: 20 });
+    if (res && res.success) {
+      const list = Array.isArray(res?.data?.lives) ? res.data.lives : [];
+      hotLives.value = Array.isArray(list) ? list : [];
+    } else {
+      hotError.value = String((res && res.error) || 'fetch_failed');
+      hotLives.value = [];
+    }
+  } catch (e: any) {
+    hotError.value = String(e?.message || 'network_error');
+    hotLives.value = [];
+  } finally {
+    hotLoading.value = false;
+  }
+};
+const onSelectPopupVisible = (visible: boolean) => {
+  if (visible) fetchHotLives();
+};
+const onSelectFocus = () => {
+  if (!hotLives.value.length) fetchHotLives();
 };
 
 const addRoom = async () => {
@@ -407,6 +448,13 @@ const addRoom = async () => {
   if (!valid) return false;
 
   try {
+    validateRoomId();
+    const inputId = addForm.value.roomId;
+    const existed = roomStore.getRoomById(inputId);
+    if (existed) {
+      try { window.electronApi.popup.toast('房间已存在，请不要重复添加'); } catch {}
+      return false;
+    }
     // 构建房间URL
     const roomUrl = `https://live.acfun.cn/live/${addForm.value.roomId}`;
     await roomStore.addRoom(roomUrl);
@@ -422,8 +470,6 @@ const addRoom = async () => {
 const resetAddForm = () => {
   addForm.value = {
     roomId: '',
-    priority: 5,
-    label: '',
     autoConnect: false
   };
   addFormRef.value?.clearValidate();
@@ -431,17 +477,12 @@ const resetAddForm = () => {
 
 const toggleConnection = async (room: Room) => {
   try {
-    // 确保存在控制台会话
-    if (!consoleStore.currentSession || !consoleStore.isConnected) {
-      await consoleStore.createSession();
-    }
-
     if (room.status === 'connected') {
-      // 断开连接
-      await consoleStore.disconnectRoom(room.liveId);
+      const res = await window.electronApi.room.disconnect(room.liveId);
+      if (!res?.success) console.warn('disconnect failed:', res?.error || res);
     } else {
-      // 连接房间
-      await consoleStore.connectRoom(room.liveId);
+      const res = await window.electronApi.room.connect(room.liveId);
+      if (!res?.success) console.warn('connect failed:', res?.error || res);
     }
     await refreshRooms();
   } catch (error) {
@@ -454,6 +495,16 @@ const viewRoomDetails = (room: Room) => {
   showDetailsDialog.value = true;
 };
 
+const openLivePage = (room: Room) => {
+  const url = `https://live.acfun.cn/live/${room.liveId}`;
+  window.electronApi.system.openExternal(url);
+};
+
+const onCoverError = (e: Event) => {
+  const target = e.target as HTMLImageElement;
+  if (target) target.src = '/default-cover.png';
+};
+
 const getRoomMenuOptions = (room: Room) => [
   {
     content: '查看弹幕',
@@ -464,11 +515,6 @@ const getRoomMenuOptions = (room: Room) => [
     content: '复制链接',
     value: 'copy',
     onClick: () => copyRoomLink(room)
-  },
-  {
-    content: '编辑设置',
-    value: 'edit',
-    onClick: () => editRoom(room)
   },
   {
     content: '删除房间',
@@ -572,6 +618,21 @@ onMounted(() => {
 .room-list-card {
   flex: 1;
   min-height: 0;
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+}
+
+.room-list-card :deep(.t-card__body) {
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  flex: 1;
+}
+
+.room-list-card :deep(.t-card__header),
+.room-list-card :deep(.t-card__actions) {
+  flex-shrink: 0;
 }
 
 .loading-state {
@@ -600,7 +661,8 @@ onMounted(() => {
   display: flex;
   flex-direction: column;
   gap: 12px;
-  max-height: 500px;
+  flex: 1;
+  min-height: 0;
   overflow-y: auto;
 }
 
@@ -631,16 +693,18 @@ onMounted(() => {
   border-color: var(--td-warning-color);
 }
 
-.room-avatar {
+.room-cover {
   position: relative;
-  width: 48px;
-  height: 48px;
+  width: 96px;
+  height: 60px;
+  border-radius: 8px;
+  overflow: hidden;
 }
 
-.room-avatar img {
+.room-cover img {
   width: 100%;
   height: 100%;
-  border-radius: 50%;
+  border-radius: 8px;
   object-fit: cover;
 }
 
@@ -682,7 +746,7 @@ onMounted(() => {
 }
 
 .room-streamer {
-  font-size: 14px;
+  font-size: 12px;
   color: var(--td-text-color-secondary);
   margin-bottom: 2px;
 }
@@ -714,6 +778,15 @@ onMounted(() => {
   font-weight: 500;
 }
 
+.barrage-text {
+  padding: 2px 6px;
+  border-radius: 4px;
+  font-size: 11px;
+  font-weight: 500;
+  background-color: var(--td-brand-color-1);
+  color: var(--td-brand-color);
+}
+
 .status-text.connected {
   background-color: var(--td-success-color-1);
   color: var(--td-success-color);
@@ -743,6 +816,10 @@ onMounted(() => {
   display: flex;
   flex-direction: column;
   gap: 20px;
+}
+
+.room-action-btn :deep(.t-button__content) {
+  align-items: center;
 }
 
 .detail-section h4 {

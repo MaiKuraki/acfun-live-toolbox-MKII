@@ -12,13 +12,89 @@ import { ensureWorkspacePackagesPresent } from './dependencyCheck';
 import { ConfigManager } from './config/ConfigManager';
 import { PluginManager } from './plugins/PluginManager';
 import { OverlayManager } from './plugins/OverlayManager';
+import { PluginWindowManager } from './plugins/PluginWindowManager';
 import { DiagnosticsService } from './logging/DiagnosticsService';
 import { getLogManager, LogManager } from './logging/LogManager';
 import { ConsoleManager } from './console/ConsoleManager';
 import { acfunDanmuModule } from './adapter/AcfunDanmuModule';
 import path from 'path';
+import * as fs from 'fs';
+
+const applyUserDataRedirect = () => {
+  try {
+    const defaultUserData = app.getPath('userData');
+    const confPath = path.join(defaultUserData, 'config.json');
+    if (fs.existsSync(confPath)) {
+      const raw = fs.readFileSync(confPath, 'utf8');
+      const parsed = JSON.parse(raw || '{}');
+      const dir = parsed['config.dir'];
+      if (typeof dir === 'string' && dir.trim().length > 0 && dir !== defaultUserData) {
+        try { app.setPath('userData', dir); } catch {}
+      }
+    }
+  } catch {}
+};
 
 async function main() {
+  applyUserDataRedirect();
+  try {
+    const lm = getLogManager();
+    const orig = { log: console.log, warn: console.warn, error: console.error, debug: console.debug, info: console.info };
+    
+    // Only intercept console methods after initial setup to avoid loops
+    setTimeout(() => {
+      console.log = (...args: any[]) => { 
+        try { 
+          const message = args.map(a => String(a)).join(' ');
+          // Avoid logging database connection messages to prevent loops
+          if (!message.includes('Database connected at:')) {
+            lm.addLog('main', message, 'info'); 
+          }
+        } catch {}
+        try { orig.log.apply(console, args); } catch {} 
+      };
+      
+      console.info = (...args: any[]) => { 
+        try { 
+          const message = args.map(a => String(a)).join(' ');
+          if (!message.includes('Database connected at:')) {
+            lm.addLog('main', message, 'info'); 
+          }
+        } catch {}
+        try { orig.info.apply(console, args); } catch {} 
+      };
+      
+      console.warn = (...args: any[]) => { 
+        try { 
+          const message = args.map(a => String(a)).join(' ');
+          if (!message.includes('Database connected at:')) {
+            lm.addLog('main', message, 'warn'); 
+          }
+        } catch {}
+        try { orig.warn.apply(console, args); } catch {} 
+      };
+      
+      console.error = (...args: any[]) => { 
+        try { 
+          const message = args.map(a => String(a)).join(' ');
+          if (!message.includes('Database connected at:')) {
+            lm.addLog('main', message, 'error'); 
+          }
+        } catch {}
+        try { orig.error.apply(console, args); } catch {} 
+      };
+      
+      console.debug = (...args: any[]) => { 
+        try { 
+          const message = args.map(a => String(a)).join(' ');
+          if (!message.includes('Database connected at:')) {
+            lm.addLog('main', message, 'debug'); 
+          }
+        } catch {}
+        try { orig.debug.apply(console, args); } catch {} 
+      };
+    }, 1000); // Delay interception to avoid early initialization loops
+  } catch {}
   // --- 0. Assert local workspace package integrity ---
   try {
     // 仅在开发模式校验本地工作区包；打包环境中跳过该检查
@@ -62,9 +138,10 @@ async function main() {
   // 初始化Overlay管理器
   const overlayManager = new OverlayManager();
   
-  const apiPort = parseInt(process.env.ACFRAME_API_PORT || '18299');
+  const apiPort = configManager.get<number>('server.port', parseInt(process.env.ACFRAME_API_PORT || '18299'));
   
   const tokenManager = TokenManager.getInstance();
+  await tokenManager.initialize();
   
   const pluginManager = new PluginManager({
     apiServer: null as any, // 临时设置，稍后更新
@@ -76,7 +153,6 @@ async function main() {
 
   // 初始化控制台管理器
   const consoleManager = new ConsoleManager({
-    apiServer: null as any, // 临时设置，稍后更新
     roomManager,
     pluginManager,
     databaseManager,
@@ -88,7 +164,6 @@ async function main() {
   
   // 更新管理器中的apiServer引用
   (pluginManager as any).apiServer = apiServer;
-  (consoleManager as any).apiServer = apiServer;
   // 向 ApiServer 注入 PluginManager 以支持统一静态托管
   apiServer.setPluginManager(pluginManager);
   
@@ -96,6 +171,7 @@ async function main() {
 
   // 预先实例化窗口管理器以供 IPC 处理程序使用（窗口创建仍在 app ready 后）
   const windowManager = new WindowManager(); // This will need refactoring
+  const pluginWindowManager = new PluginWindowManager();
 
   initializeIpcHandlers(
     roomManager,
@@ -104,6 +180,7 @@ async function main() {
     overlayManager,
     consoleManager,
     windowManager,
+    pluginWindowManager,
     configManager,
     logManager,
     diagnosticsService
@@ -158,6 +235,11 @@ async function main() {
   }
 
   windowManager.createWindow(); // Placeholder for creating the main UI
+
+  try {
+    const minimizeToTray = !!configManager.get<boolean>('ui.minimizeToTray', false);
+    windowManager.setMinimizeToTray(minimizeToTray);
+  } catch {}
 
   // 弹窗能力已移除：不再转发插件弹窗事件到渲染层。
 

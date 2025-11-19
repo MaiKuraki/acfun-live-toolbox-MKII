@@ -90,15 +90,12 @@ export class AcfunApiProxy {
     if (this.config.enableRateLimit) {
       router.use((req, res, next) => {
         const clientId = this.getClientId(req);
-        const limitResult = rateLimitManager.checkLimit(clientId, 'api_call');
+        const endpoint = `${req.method} ${req.path || ''}`;
+        const limitResult = rateLimitManager.checkLimit(clientId, endpoint);
         if (!limitResult.allowed) {
-          return res.status(429).json({
-            success: false,
-            error: 'Rate limit exceeded',
-            code: 429,
-            retryAfter: limitResult.retryAfter
-          });
+          return res.status(429).json({ success: false, error: 'Rate limit exceeded', code: 429, retryAfter: limitResult.retryAfter });
         }
+        (req as any).__endpoint = endpoint;
         next();
       });
     }
@@ -117,30 +114,26 @@ export class AcfunApiProxy {
     }
 
     // API代理路由
-    router.all('/*', async (req, res) => {
+    router.all('/*splat', async (req, res) => {
       try {
-        const apiPath: string = (req.params as any)[0] || '';
+        const splat = (req.params as any).splat;
+        const apiPath: string = Array.isArray(splat) ? splat.join('/') : (splat || '');
         
         // 处理特定的 API 端点
         const response = await this.handleSpecificEndpoint(req, apiPath);
         if (response) {
+          try { rateLimitManager.recordRequest(this.getClientId(req), (req as any).__endpoint, Boolean(response.success)); } catch {}
           return res.status(response.code || (response.success ? 200 : 500)).json(response);
         }
 
         // 通用 API 代理 - 不支持的端点
-        const proxyResponse: ApiResponse = {
-          success: false,
-          error: `Unsupported API endpoint: ${req.method} /${apiPath}`,
-          code: 404
-        };
+        const proxyResponse: ApiResponse = { success: false, error: `Unsupported API endpoint: ${req.method} /${apiPath}`, code: 404 };
+        try { rateLimitManager.recordRequest(this.getClientId(req), (req as any).__endpoint, false); } catch {}
         res.status(proxyResponse.code || (proxyResponse.success ? 200 : 500)).json(proxyResponse);
       } catch (error) {
         console.error('[AcfunApiProxy] Route error:', error);
-        res.status(500).json({
-          success: false,
-          error: 'Internal server error',
-          code: 500
-        });
+        try { rateLimitManager.recordRequest(this.getClientId(req), (req as any).__endpoint, false); } catch {}
+        res.status(500).json({ success: false, error: 'Internal server error', code: 500 });
       }
     });
 
@@ -459,6 +452,10 @@ export class AcfunApiProxy {
       switch (pathSegments[0]) {
         case 'permission':
           if (method === 'GET') {
+            const tokenInfo = this.acfunApi.httpClient.getValidatedTokenInfo();
+            if (!tokenInfo.tokenInfo) {
+              return { success: false, error: '未登录或token无效', code: 401 };
+            }
             const result = await this.acfunApi.live.checkLivePermission();
             return {
               success: result.success,
@@ -504,13 +501,92 @@ export class AcfunApiProxy {
 
         case 'stream-status':
           if (method === 'GET') {
-            const result = await this.acfunApi.live.getLiveStreamStatus();
-            return {
-              success: result.success,
-              data: result.data,
-              error: result.error,
-              code: result.success ? 200 : 400
-            };
+            try {
+              console.debug('[AcfunApiProxy][stream-status] incoming GET');
+              // 检查是否有有效的token信息
+              const tokenInfo = this.acfunApi.httpClient.getValidatedTokenInfo();
+              if (!tokenInfo.tokenInfo) {
+                console.warn('[AcfunApiProxy][stream-status] token invalid');
+                return {
+                  success: false,
+                  error: '未登录或token无效',
+                  code: 401
+                };
+              }
+              try {
+                const cookiesCount = Array.isArray(tokenInfo.tokenInfo.cookies) ? tokenInfo.tokenInfo.cookies.length : 0;
+                console.debug('[AcfunApiProxy][stream-status] token ok', {
+                  userID: tokenInfo.tokenInfo.userID,
+                  deviceID: tokenInfo.tokenInfo.deviceID,
+                  cookiesCount
+                });
+              } catch {}
+              
+              const result = await this.acfunApi.live.getLiveStreamStatus();
+              try {
+                console.debug('[AcfunApiProxy][stream-status] upstream resp', {
+                  success: result.success,
+                  error: result.error,
+                  data: result.data ? {
+                    liveID: (result.data as any).liveID,
+                    streamName: (result.data as any).streamName,
+                    title: (result.data as any).title
+                  } : null
+                });
+              } catch {}
+              const err = result.error || '';
+              return {
+                success: result.success,
+                data: result.data,
+                error: result.error,
+                code: result.success ? 200 : (err.includes('cookies') || err.includes('token')) ? 401 : 400
+              };
+            } catch (error: any) {
+              console.error('[AcfunApiProxy] Stream status error:', error);
+              return {
+                success: false,
+                error: error.message || 'Failed to get stream status',
+                code: 400
+              };
+            }
+          }
+          break;
+
+        case 'transcode-info':
+          if (method === 'GET') {
+            try {
+              const tokenInfo = this.acfunApi.httpClient.getValidatedTokenInfo();
+              if (!tokenInfo.tokenInfo) {
+                return {
+                  success: false,
+                  error: '未登录或token无效',
+                  code: 401
+                };
+              }
+              const streamName = String(req.query.streamName || '').trim();
+              if (!streamName) {
+                return {
+                  success: false,
+                  error: 'streamName is required',
+                  code: 400
+                };
+              }
+              const result = await this.acfunApi.live.getTranscodeInfo(streamName);
+              const err = result.error || '';
+              return {
+                success: result.success,
+                data: result.data,
+                error: result.error,
+                code: result.success ? 200 : (err.includes('cookies') || err.includes('token')) ? 401 : 400
+              };
+            } catch (error: any) {
+              console.error('[AcfunApiProxy] Transcode info error:', error);
+              return {
+                success: false,
+                error: error.message || 'Failed to get transcode info',
+                code: 400
+              };
+            }
           }
           break;
 
@@ -524,6 +600,25 @@ export class AcfunApiProxy {
                 code: 400
               };
             }
+
+            try {
+              const preview = typeof coverFile === 'string' ? coverFile.slice(0, 32) : '';
+              console.log('[AcfunApiProxy][START] params:', {
+                title,
+                streamName,
+                portrait: !!portrait,
+                panoramic: !!panoramic,
+                categoryID,
+                subCategoryID,
+              });
+              console.log('[AcfunApiProxy][START] coverFile meta:', {
+                type: typeof coverFile,
+                length: typeof coverFile === 'string' ? coverFile.length : 0,
+                head: preview,
+                isDataUri: typeof coverFile === 'string' && /^data:image\//i.test(coverFile),
+                isHttp: typeof coverFile === 'string' && /^https?:\/\//i.test(coverFile),
+              });
+            } catch {}
 
             const result = await this.acfunApi.live.startLiveStream(
               title,
@@ -587,22 +682,30 @@ export class AcfunApiProxy {
 
         case 'statistics':
           if (method === 'GET') {
-            const liveId = req.query.liveId as string;
-            if (!liveId) {
+            const userIdRaw = req.query.userId as string;
+            const userID = parseInt(String(userIdRaw || '')); 
+            if (!userID || Number.isNaN(userID)) {
               return {
                 success: false,
-                error: 'liveId is required',
+                error: 'userId is required',
                 code: 400
               };
             }
 
-            const result = await this.acfunApi.live.getLiveStatistics(liveId);
-            return {
-              success: result.success,
-              data: result.data,
-              error: result.error,
-              code: result.success ? 200 : 400
-            };
+            const userInfo = await this.acfunApi.live.getUserLiveInfo(userID);
+            if (userInfo && userInfo.success && userInfo.data) {
+              const d = userInfo.data;
+              const mapped = {
+                totalViewers: typeof d.onlineCount === 'number' ? d.onlineCount : 0,
+                peakViewers: 0,
+                totalComments: 0,
+                totalGifts: 0,
+                totalLikes: typeof d.likeCount === 'number' ? d.likeCount : 0,
+                revenue: 0
+              };
+              return { success: true, data: mapped, code: 200 };
+            }
+            return { success: false, error: userInfo?.error || 'fetch_failed', code: 400 };
           }
           break;
 
@@ -618,6 +721,30 @@ export class AcfunApiProxy {
             }
 
             const result = await this.acfunApi.live.getSummary(liveId);
+            return {
+              success: result.success,
+              data: result.data,
+              error: result.error,
+              code: result.success ? 200 : 400
+            };
+          }
+          break;
+
+        case 'watching-list':
+          if (method === 'GET') {
+            let liveId = String(req.query.liveId || '').trim();
+            const userIdRaw = req.query.userId as string;
+            const userID = parseInt(String(userIdRaw || ''));
+            if (!liveId && userID && !Number.isNaN(userID)) {
+              const ui = await this.acfunApi.live.getUserLiveInfo(userID);
+              if (ui && ui.success && ui.data && ui.data.liveID) {
+                liveId = String(ui.data.liveID);
+              }
+            }
+            if (!liveId) {
+              return { success: false, error: 'liveId or userId is required', code: 400 };
+            }
+            const result = await this.acfunApi.live.getWatchingList(liveId);
             return {
               success: result.success,
               data: result.data,

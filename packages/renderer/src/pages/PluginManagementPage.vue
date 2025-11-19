@@ -3,24 +3,14 @@
     <div class="page-header">
       <h2>插件管理</h2>
       <div class="header-actions">
-        <t-button
-          theme="primary"
-          @click="showInstallDialog = true"
-        >
-          <template #icon>
-            <t-icon name="add" />
-          </template>
-          安装插件
-        </t-button>
-        <t-button
-          variant="outline"
-          @click="refreshPlugins"
-        >
-          <template #icon>
-            <t-icon name="refresh" />
-          </template>
-          刷新
-        </t-button>
+        <t-dropdown :options="addPluginOptions">
+          <t-button theme="primary">
+            <template #icon>
+              <t-icon name="add" />
+            </template>
+            添加插件
+          </t-button>
+        </t-dropdown>
         <t-button
           variant="outline"
           @click="openPluginFolder"
@@ -30,15 +20,14 @@
           </template>
           插件目录
         </t-button>
-        <t-button
-          variant="outline"
-          @click="showDevToolsDialog = true"
-        >
-          <template #icon>
-            <t-icon name="code" />
-          </template>
-          添加调试插件
-        </t-button>
+        <t-dropdown :options="batchOpsOptions">
+          <t-button variant="outline">
+            <template #icon>
+              <t-icon name="save" />
+            </template>
+            批量操作
+          </t-button>
+        </t-dropdown>
       </div>
     </div>
 
@@ -254,24 +243,31 @@
           <t-form
             :data="pluginConfig"
             layout="vertical"
+            label-align="top"
           >
-            <t-form-item 
-              v-for="(config, key) in selectedPlugin.config" 
-              :key="key"
-              :label="config.label || key"
-            >
-              <component 
-                :is="getConfigComponent(config.type)"
-                v-model="pluginConfig[key]"
-                v-bind="getConfigProps(config)"
-              />
-              <template
-                v-if="config.description"
-                #help
+            <template v-for="(config, key, index) in currentPluginConfigSchema" :key="key">
+              <t-form-item
+                :label="config.label || key"
               >
-                <span>{{ config.description }}</span>
-              </template>
-            </t-form-item>
+                <component 
+                  :is="getConfigComponent(config.type)"
+                  v-model="pluginConfig[key]"
+                  v-bind="getConfigProps(config)"
+                />
+                <div v-if="config.type === 'file' || config.type === 'directory'" style="margin-top: 6px;">
+                  <t-button size="small" variant="outline" @click="pickPath(String(key), String(config.type))">
+                    {{ config.type === 'directory' ? '选择目录' : '选择文件' }}
+                  </t-button>
+                </div>
+                <template
+                  v-if="config.description"
+                  #help
+                >
+                  <span>{{ config.description }}</span>
+                </template>
+              </t-form-item>
+              <t-divider v-if="index < Object.keys(currentPluginConfigSchema).length - 1" />
+            </template>
           </t-form>
         </template>
         <template v-else>
@@ -288,6 +284,7 @@
       :close-on-overlay-click="true"
       :destroy-on-close="true"
       mode="full-screen"
+      :footer="false"
     >
       <PluginDetail 
         v-if="showDetailDialog && selectedPlugin" 
@@ -295,6 +292,9 @@
         @back="showDetailDialog = false"
         @pluginUpdated="async () => { await pluginStore.refreshPlugins(); }"
       />
+      <div class="dialog-footer-back">
+        <t-button theme="primary" variant="outline" @click="showDetailDialog = false">返回</t-button>
+      </div>
     </t-dialog>
 
     <!-- 调试工具对话框 -->
@@ -321,6 +321,11 @@ import { copyText } from '../utils/format';
 
 const pluginStore = usePluginStore();
 const router = useRouter();
+
+// 计算属性：当前插件的配置schema
+const currentPluginConfigSchema = computed(() => {
+  return selectedPlugin.value?.config || {};
+});
 
 // 响应式状态
 const searchKeyword = ref('');
@@ -372,6 +377,26 @@ const filteredPlugins = computed(() => {
 const refreshPlugins = async () => {
   await pluginStore.refreshPlugins();
 };
+
+let refreshTimer: any = null;
+onMounted(() => {
+  if (refreshTimer) try { clearInterval(refreshTimer); } catch {}
+  refreshTimer = setInterval(() => { try { refreshPlugins(); } catch {} }, 5000);
+});
+watch(() => showDetailDialog.value || showConfigDialog.value || showDevToolsDialog.value, (open) => {
+  // 当有对话框打开时暂停自动刷新，避免打断用户操作
+  try { if (open) { clearInterval(refreshTimer); refreshTimer = null; } else { refreshTimer = setInterval(() => { try { refreshPlugins(); } catch {} }, 5000); } } catch {}
+});
+
+const addPluginOptions = [
+  { content: '从文件安装', value: 'install', onClick: () => { showInstallDialog.value = true; } },
+  { content: '添加调试插件', value: 'debug', onClick: () => { showDevToolsDialog.value = true; } }
+];
+
+const batchOpsOptions = [
+  { content: '批量备份配置', value: 'backup', onClick: () => backupAllConfigs() },
+  { content: '批量导入配置', value: 'import', onClick: () => importAllConfigs() }
+];
 
 // 视图打开支持：为插件预解析主托管类型（ui/window），用于显示“查看”按钮
 const primaryHostingMap = ref<Record<string, 'ui' | 'window' | null>>({});
@@ -447,16 +472,16 @@ const viewPlugin = async (plugin: PluginInfo) => {
       console.warn('[plugin-view] 插件无 ui/window 托管入口，无法查看:', plugin.id);
       return;
     }
-    if (primary.type === 'ui') {
-      // 导航到框架页以加载 UI（匹配 router.ts: /plugins/:plugname）
-      router.push(`/plugins/${plugin.id}`);
-      return;
-    }
-    if (primary.type === 'window') {
-      // 弹窗能力不再实现：回退到 UI 路由
-      router.push(`/plugins/${plugin.id}`);
-      return;
-    }
+  if (primary.type === 'ui') {
+    // 导航到框架页以加载 UI（匹配 router.ts: /plugins/:plugname）
+    router.push(`/plugins/${plugin.id}`);
+    return;
+  }
+  if (primary.type === 'window') {
+    // 打开插件独立窗口（单实例），无需切换主窗口路由
+    await window.electronApi.plugin.window.open(plugin.id);
+    return;
+  }
   } catch (err) {
     console.error('[plugin-view] 查看插件失败:', err);
   }
@@ -567,7 +592,82 @@ const configurePlugin = async (plugin: PluginInfo) => {
   showConfigDialog.value = true;
 };
 
-const getPluginMenuOptions = (plugin: PluginInfo) => [
+  async function importPluginConfig(plugin: PluginInfo) {
+    try {
+      const pick = await window.electronApi.dialog.showOpenDialog({
+        properties: ['openFile'],
+        filters: [{ name: 'JSON', extensions: ['json'] }]
+      });
+      const file = (pick && pick.filePaths && pick.filePaths[0]) || '';
+      if (!file) return;
+      const content = await window.electronApi.fs.readFile(file);
+      const parsed = JSON.parse(String(content || '{}'));
+      validateSingleConfig(plugin, parsed);
+      const res = await window.electronApi.plugin.updateConfig(plugin.id, parsed);
+      if (res && (res as any).success) {
+        await pluginStore.refreshPlugins();
+        try { (await import('../services/globalPopup')).GlobalPopup.toast('配置已导入'); } catch {}
+      }
+    } catch (err) {
+      console.error('[plugin-config] 导入失败:', err);
+      try { (await import('../services/globalPopup')).GlobalPopup.alert('导入失败', String((err as Error)?.message || err)); } catch {}
+    }
+  }
+
+  function validateSingleConfig(plugin: PluginInfo, cfg: any) {
+    if (!cfg || typeof cfg !== 'object' || Array.isArray(cfg)) throw new Error('配置必须为对象');
+    const schema = (plugin.config || {}) as any;
+    for (const key of Object.keys(cfg)) {
+      const def = schema[key];
+      const val = cfg[key];
+      if (!def) continue; // 允许额外字段但忽略
+      const t = (def && def.type) || typeof (def.default ?? def.value);
+      if (t === 'boolean' && typeof val !== 'boolean') throw new Error(`字段 ${key} 需要布尔值`);
+      if (t === 'number' && typeof val !== 'number') throw new Error(`字段 ${key} 需要数字`);
+      if (t === 'select' || t === 'text' || t === 'string') { if (typeof val !== 'string') throw new Error(`字段 ${key} 需要字符串`); }
+    }
+  }
+
+  async function backupAllConfigs() {
+    const list = pluginStore.plugins;
+    const data: Record<string, any> = {};
+    for (const p of list) {
+      try {
+        const res = await window.electronApi.plugin.getConfig(p.id);
+        if (res && (res as any).success) data[p.id] = (res as any).data || {};
+      } catch {}
+    }
+    const blob = new Blob([JSON.stringify(data, null, 2)], { type: 'application/json' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = `plugins-config-backup.json`;
+    a.click();
+    URL.revokeObjectURL(url);
+  }
+
+  async function importAllConfigs() {
+    try {
+      const pick = await window.electronApi.dialog.showOpenDialog({ properties: ['openFile'], filters: [{ name: 'JSON', extensions: ['json'] }] });
+      const file = (pick && pick.filePaths && pick.filePaths[0]) || '';
+      if (!file) return;
+      const content = await window.electronApi.fs.readFile(file);
+      const parsed = JSON.parse(String(content || '{}'));
+      if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) throw new Error('批量导入文件必须为对象映射');
+      for (const p of pluginStore.plugins) {
+        const cfg = parsed[p.id];
+        if (!cfg) continue;
+        try { validateSingleConfig(p, cfg); await window.electronApi.plugin.updateConfig(p.id, cfg); } catch (e) { console.warn('[batch-import] 跳过', p.id, e); }
+      }
+      await pluginStore.refreshPlugins();
+      try { (await import('../services/globalPopup')).GlobalPopup.toast('批量导入完成'); } catch {}
+    } catch (err) {
+      console.error('[batch-import] 失败:', err);
+      try { (await import('../services/globalPopup')).GlobalPopup.alert('批量导入失败', String((err as Error)?.message || err)); } catch {}
+    }
+  }
+
+  const getPluginMenuOptions = (plugin: PluginInfo) => [
   {
     content: '查看详情',
     value: 'details',
@@ -576,7 +676,8 @@ const getPluginMenuOptions = (plugin: PluginInfo) => [
   {
     content: isInSidebar(plugin) ? '在侧边栏显示（已选）' : '在侧边栏显示',
     value: 'sidebar-display',
-    onClick: () => toggleSidebarCheckbox(plugin, !isInSidebar(plugin))
+    disabled: !plugin.enabled,
+    onClick: () => { if (!plugin.enabled) return; toggleSidebarCheckbox(plugin, !isInSidebar(plugin)); }
   },
   {
     content: '重新加载',
@@ -589,14 +690,19 @@ const getPluginMenuOptions = (plugin: PluginInfo) => [
     onClick: () => exportPluginConfig(plugin)
   },
   {
+    content: '导入配置',
+    value: 'import',
+    onClick: () => importPluginConfig(plugin)
+  },
+  {
     content: '卸载插件',
     value: 'uninstall',
     theme: 'error',
     onClick: () => uninstallPlugin(plugin)
   }
-];
+  ];
 
-const viewPluginDetails = (plugin: PluginInfo) => {
+  const viewPluginDetails = (plugin: PluginInfo) => {
   selectedPlugin.value = plugin;
   showDetailDialog.value = true;
 };
@@ -664,6 +770,7 @@ const resetInstallForm = () => {
   installForm.value = {
     filePath: ''
   };
+
   installFormRef.value?.clearValidate();
 };
 
@@ -708,12 +815,12 @@ const getConfigComponent = (type: string) => {
   }
 };
 
-const getConfigProps = (config: any) => {
-  const props: any = {};
-  
-  if (config.type === 'select' && config.options) {
-    props.options = config.options;
-  }
+  const getConfigProps = (config: any) => {
+    const props: any = {};
+    
+    if (config.type === 'select' && config.options) {
+      props.options = config.options;
+    }
   if (config.type === 'select' && !config.options) {
     console.warn('[plugin-config] 选择控件缺少 options 定义');
   }
@@ -724,13 +831,25 @@ const getConfigProps = (config: any) => {
     props.step = config.step;
   }
   
-  if (config.placeholder) {
-    props.placeholder = config.placeholder;
+    if (config.placeholder) {
+      props.placeholder = config.placeholder;
+    }
+    console.log('[plugin-config] 生成控件属性: type=', config?.type, 'propsKeys=', Object.keys(props));
+    
+    return props;
+  };
+
+  async function pickPath(fieldKey: string, type: string) {
+    try {
+      const props: string[] = type === 'directory' ? ['openDirectory'] : ['openFile'];
+      const res = await window.electronApi.dialog.showOpenDialog({ properties: props });
+      const p = (res && Array.isArray(res.filePaths) && res.filePaths[0]) || '';
+      if (!p) return;
+      pluginConfig.value[fieldKey] = p;
+    } catch (e) {
+      console.warn('[plugin-config] 选择路径失败:', e);
+    }
   }
-  console.log('[plugin-config] 生成控件属性: type=', config?.type, 'propsKeys=', Object.keys(props));
-  
-  return props;
-};
 
 const openPluginFolder = () => {
   // TODO: 打开插件目录
@@ -747,8 +866,8 @@ onMounted(() => {
   (async () => {
     try {
       const res = await window.electronApi.plugin.loadDevConfig();
-      if (res && 'success' in res && res.success) {
-        devConfigMap.value = (res.data as Record<string, any>) || {};
+      if (res && 'success' in res && (res as any).success) {
+        devConfigMap.value = (((res as any).data) as Record<string, any>) || {};
       } else {
         devConfigMap.value = {};
         if (res && (res as any).error) {
@@ -848,6 +967,12 @@ watch(filteredPlugins, async (list, prev) => {
   gap: 16px;
   max-height: 500px;
   overflow-y: auto;
+}
+
+.dialog-footer-back {
+  position: fixed;
+  right: 16px;
+  bottom: 16px;
 }
 
 .plugin-card {
@@ -1001,6 +1126,20 @@ watch(filteredPlugins, async (list, prev) => {
 .plugin-config {
   max-height: 400px;
   overflow-y: auto;
+}
+
+/* 配置表单：令标题与控件分行显示，长标题自动换行 */
+.plugin-config :deep(.t-form__item) {
+  display: block;
+}
+.plugin-config :deep(.t-form__label) {
+  display: block;
+  width: 100% !important;
+  white-space: normal;
+  margin-bottom: 6px;
+}
+.plugin-config :deep(.t-form__controls) {
+  display: block;
 }
 
 /* 响应式设计 */

@@ -1,8 +1,8 @@
-# AcFun Live Toolbox 插件 API 参考
+# ACLiveFrame 插件 API 参考
 
 ## 概述
 
-本文档详细描述了 AcFun Live Toolbox 插件系统提供的所有 API 接口。
+本文档详细描述了 ACLiveFrame 插件系统提供的所有 API 接口。
 
 说明：`auth` 与 `connection` 能力由宿主应用的统一 `TokenManager` 驱动，所有认证相关状态与 `AcFunLiveApi` 实例均通过单例管理，插件无需自行创建或维护 API/令牌。
 

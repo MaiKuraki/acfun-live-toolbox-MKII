@@ -133,7 +133,7 @@ export interface ConnectionError extends Error {
  * @emits circuit-breaker-opened - 熔断器开启时触发
  * @emits circuit-breaker-closed - 熔断器关闭时触发
  */
-export class ConnectionPoolManager extends EventEmitter {
+export class AcfunApiConnectionPool extends EventEmitter {
   /** 连接池配置 */
   private config: ConnectionPoolConfig;
   /** 连接映射表 */
@@ -299,7 +299,7 @@ export class ConnectionPoolManager extends EventEmitter {
     this.circuitBreakerOpenTime = null;
     this.consecutiveFailures = 0;
     this.stats.circuitBreakerOpen = false;
-    console.log('[ConnectionPool] Circuit breaker reset');
+    console.log('[AcfunApiConnectionPool] Circuit breaker reset');
   }
 
   /**
@@ -323,7 +323,7 @@ export class ConnectionPoolManager extends EventEmitter {
     this.circuitBreakerOpen = true;
     this.circuitBreakerOpenTime = new Date();
     this.stats.circuitBreakerOpen = true;
-    console.log('[ConnectionPool] Circuit breaker opened due to consecutive failures');
+    console.log('[AcfunApiConnectionPool] Circuit breaker opened due to consecutive failures');
   }
 
   /**
@@ -500,7 +500,7 @@ export class ConnectionPoolManager extends EventEmitter {
         
         if (!isHealthy) {
           this.stats.healthCheckFailures++;
-          console.log(`[ConnectionPool] Health check failed for connection ${connection.id}`);
+        console.log(`[AcfunApiConnectionPool] Health check failed for connection ${connection.id}`);
           
           // 如果连接不健康，尝试重新创建
           if (connection.retryCount < this.config.apiRetryCount) {
@@ -515,7 +515,7 @@ export class ConnectionPoolManager extends EventEmitter {
           connection.retryCount = 0;
         }
       } catch (error) {
-        console.error(`[ConnectionPool] Health check error for connection ${connection.id}:`, error);
+        console.error(`[AcfunApiConnectionPool] Health check error for connection ${connection.id}:`, error);
         this.stats.healthCheckFailures++;
         
         // 健康检查异常，标记为不健康
@@ -556,14 +556,14 @@ export class ConnectionPoolManager extends EventEmitter {
       const age = Date.now() - connection.createdAt;
       const maxAge = this.config.idleTimeout * 3;
       if (age > maxAge) {
-        console.log(`[ConnectionPool] Connection ${connection.id} is too old`);
+        console.log(`[AcfunApiConnectionPool] Connection ${connection.id} is too old`);
         return false;
       }
 
       // 检查是否长时间未使用
       const idleTime = Date.now() - connection.lastUsed;
       if (idleTime > this.config.idleTimeout) {
-        console.log(`[ConnectionPool] Connection ${connection.id} has been idle too long`);
+        console.log(`[AcfunApiConnectionPool] Connection ${connection.id} has been idle too long`);
         return false;
       }
       
@@ -579,7 +579,7 @@ export class ConnectionPoolManager extends EventEmitter {
    */
   private async recreateConnection(connection: PooledConnection): Promise<void> {
     try {
-      console.log(`[ConnectionPool] Recreating connection ${connection.id}`);
+      console.log(`[AcfunApiConnectionPool] Recreating connection ${connection.id}`);
       
       // 使用 TokenManager 提供的统一 API 实例
       const tokenManager = TokenManager.getInstance();
@@ -591,9 +591,9 @@ export class ConnectionPoolManager extends EventEmitter {
       connection.isHealthy = true;
       connection.lastUsed = Date.now();
       
-      console.log(`[ConnectionPool] Successfully recreated connection ${connection.id}`);
+      console.log(`[AcfunApiConnectionPool] Successfully recreated connection ${connection.id}`);
     } catch (error) {
-      console.error(`[ConnectionPool] Failed to recreate connection ${connection.id}:`, error);
+      console.error(`[AcfunApiConnectionPool] Failed to recreate connection ${connection.id}:`, error);
       connection.isHealthy = false;
       throw error;
     }
@@ -622,7 +622,7 @@ export class ConnectionPoolManager extends EventEmitter {
     }
 
     if (connectionsToDestroy.length > 0) {
-      console.log(`[ConnectionPool] Cleaned up ${connectionsToDestroy.length} idle connections`);
+      console.log(`[AcfunApiConnectionPool] Cleaned up ${connectionsToDestroy.length} idle connections`);
     }
   }
 
@@ -802,4 +802,4 @@ export class ConnectionPoolManager extends EventEmitter {
 }
 
 // 单例实例
-export const connectionPool = new ConnectionPoolManager();
+export const acfunApiConnectionPool = new AcfunApiConnectionPool();
