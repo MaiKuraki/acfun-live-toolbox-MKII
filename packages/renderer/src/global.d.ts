@@ -68,6 +68,17 @@ declare global {
         openExternal: (url: string) => Promise<{ success: boolean; error?: string }>;
         getUserDataDir: () => Promise<{ success: boolean; path?: string; error?: string }>;
         getReadmeSummary: () => Promise<{ success: boolean; summary?: string; error?: string }>;
+        getBuildInfo: () => Promise<any>;
+      };
+      popup: {
+        toast: (message: string, options?: any) => Promise<any>;
+        alert: (title: string, message: string, options?: any) => Promise<any>;
+        confirm: (title: string, message: string, options?: any) => Promise<any>;
+        respondConfirm: (requestId: string, result: boolean) => Promise<any>;
+      };
+      monitoring: {
+        queryPageStatus: (pluginId?: string) => Promise<any>;
+        subscribePageStatus: (pluginId: string, listener: (update: any) => void) => Promise<{ unsubscribe: () => Promise<void> }>;
       };
       systemExt: {
         setAutoStart: (enabled: boolean) => Promise<{ success: boolean; error?: string }>;
@@ -155,9 +166,9 @@ declare global {
           pluginId: string
         ) => Promise<
           | {
-              success: true;
-              data: { pluginId: string; config?: any; hotReloadEnabled?: boolean; debugActive?: boolean; lastConnection?: any };
-            }
+            success: true;
+            data: { pluginId: string; config?: any; hotReloadEnabled?: boolean; debugActive?: boolean; lastConnection?: any };
+          }
           | { success: false; error: string }
         >;
         startDebugSession: (config: any) => Promise<{ success: boolean; error?: string }>;
@@ -172,6 +183,10 @@ declare global {
           close: (pluginId: string) => Promise<{ success: boolean; error?: string }>;
           isOpen: (pluginId: string) => Promise<{ success: boolean; open: boolean; error?: string }>;
           list: () => Promise<{ success: boolean; windows: Array<{ pluginId: string; visible: boolean; focused: boolean }> } | { success: false; error: string }>;
+        };
+        process: {
+          execute: (pluginId: string, method: string, args?: any[]) => Promise<any>;
+          message: (pluginId: string, type: string, payload?: any) => Promise<any>;
         };
       };
       wujie: {

@@ -6,16 +6,8 @@ import { pluginLogger } from './PluginLogger';
  * 插件生命周期钩子类型
  */
 export type LifecycleHook = 
-  | 'beforeInstall'
-  | 'afterInstall'
-  | 'beforeEnable'
-  | 'afterEnable'
-  | 'beforeDisable'
-  | 'afterDisable'
-  | 'beforeUninstall'
-  | 'afterUninstall'
-  | 'beforeUpdate'
-  | 'afterUpdate'
+  | 'afterLoaded'
+  | 'beforeUnloaded'
   | 'onError'
   | 'onRecover'
   // 页面动作钩子（UI/Window/Overlay）
@@ -55,6 +47,7 @@ export interface LifecycleHookRegistration {
   handler: LifecycleHandler;
   priority: number;
   pluginId?: string; // 如果是插件注册的钩子
+  useSandbox?: boolean;
 }
 
 /**
@@ -75,11 +68,8 @@ export class PluginLifecycleManager extends EventEmitter {
   private initializeDefaultHooks(): void {
     // 为每个生命周期钩子初始化空数组
     const allHooks: LifecycleHook[] = [
-      'beforeInstall', 'afterInstall',
-      'beforeEnable', 'afterEnable',
-      'beforeDisable', 'afterDisable',
-      'beforeUninstall', 'afterUninstall',
-      'beforeUpdate', 'afterUpdate',
+      'afterLoaded',
+      'beforeUnloaded',
       'onError', 'onRecover'
     ];
 
@@ -98,6 +88,7 @@ export class PluginLifecycleManager extends EventEmitter {
       id?: string;
       priority?: number;
       pluginId?: string;
+      useSandbox?: boolean;
     } = {}
   ): string {
     const registration: LifecycleHookRegistration = {
@@ -105,7 +96,8 @@ export class PluginLifecycleManager extends EventEmitter {
       hook,
       handler,
       priority: options.priority || 0,
-      pluginId: options.pluginId
+      pluginId: options.pluginId,
+      useSandbox: options.useSandbox ?? !!options.pluginId
     };
 
     const hookList = this.hooks.get(hook) || [];
@@ -194,14 +186,7 @@ export class PluginLifecycleManager extends EventEmitter {
         const err = error instanceof Error ? error : new Error(String(error));
         results.push({ id: registration.id, success: false, error: err });
         pluginLogger.error(`生命周期钩子执行失败: ${hook} (ID: ${registration.id}) - ${err.message}`);
-        
-        // 发出错误事件
-        this.emit('hook.error', {
-          hook,
-          hookId: registration.id,
-          data: eventData,
-          error: err
-        });
+        this.emit('hook.error', { hook, hookId: registration.id, data: eventData, error: err });
       }
     }
 

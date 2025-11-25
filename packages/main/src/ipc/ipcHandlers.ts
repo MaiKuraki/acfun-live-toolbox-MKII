@@ -30,7 +30,8 @@ export function initializeIpcHandlers(
   pluginWindowManager: PluginWindowManager,
   configManager: ConfigManager, // Add ConfigManager to parameters
   logManager: LogManager,
-  diagnosticsService: DiagnosticsService
+  diagnosticsService: DiagnosticsService,
+  databaseManager: import('../persistence/DatabaseManager').DatabaseManager
 ) {
   console.log('[IPC] Initializing IPC handlers...');
   const dataManager = DataManager.getInstance();
@@ -348,22 +349,27 @@ export function initializeIpcHandlers(
         return { success: false, code: 'invalid_room_id', error: '房间ID无效' };
       }
 
-      // 通过用户直播信息获取基础数据
-      const userInfoRes = await acfunDanmuModule.getUserLiveInfo(Number(roomId));
-      if (!userInfoRes || userInfoRes.success !== true) {
-        return { success: false, code: 'fetch_failed', error: userInfoRes?.error || '获取房间信息失败' };
-      }
-
-      const data = userInfoRes.data || {};
-      const profile = data.profile || {};
-      const isLive = Boolean(data.liveID);
-      const liveId = data.liveID ? String(data.liveID) : undefined;
-
-      let viewerCount = typeof data.onlineCount === 'number' ? data.onlineCount : 0;
+      // 聚合多来源，容错
+      let data: any = {};
+      let profile: any = {};
+      let isLive = false;
+      let liveId: string | undefined = undefined;
+      let viewerCount = 0;
       let likeCount = 0;
       let ownerUserName: string | undefined;
       let titleFromRoomInfo: string | undefined;
       let streamerAvatar: string | undefined;
+
+      try {
+        const userInfoRes = await acfunDanmuModule.getUserLiveInfo(Number(roomId));
+        if (userInfoRes && userInfoRes.success === true) {
+          data = userInfoRes.data || {};
+          profile = data.profile || {};
+          isLive = Boolean(data.liveID);
+          liveId = data.liveID ? String(data.liveID) : undefined;
+          viewerCount = typeof data.onlineCount === 'number' ? data.onlineCount : viewerCount;
+        }
+      } catch {}
 
       if (liveId) {
         try {
@@ -373,15 +379,12 @@ export function initializeIpcHandlers(
             if (typeof s.viewerCount === 'number') viewerCount = s.viewerCount;
             if (typeof s.likeCount === 'number') likeCount = s.likeCount;
           }
-        } catch (e) {
-          console.warn('[ipc.room.details] getSummary failed:', e);
-        }
+        } catch {}
       }
 
       // 进一步尝试通过弹幕房间信息获取更准确的主播名称与基础信息
       try {
         const api = await acfunDanmuModule.getApiInstance();
-        // 某些实现中参数名为 liverUID，这里直接传入 roomId（用户UID）
         const roomInfoRes = await (api as any).danmu?.getLiveRoomInfo?.(roomId);
         if (roomInfoRes && roomInfoRes.success === true) {
           const ri = roomInfoRes.data || {};
@@ -396,10 +399,12 @@ export function initializeIpcHandlers(
           if (typeof ri.owner?.avatar === 'string' && ri.owner.avatar.trim().length > 0) {
             streamerAvatar = ri.owner.avatar;
           }
+          if (!liveId && typeof ri.liveID === 'string' && ri.liveID.trim().length > 0) {
+            liveId = ri.liveID;
+            isLive = true;
+          }
         }
-      } catch (e) {
-        console.warn('[ipc.room.details] getLiveRoomInfo failed:', e);
-      }
+      } catch {}
 
       // 进一步通过用户信息获取更准确的主播名称与头像
       try {
@@ -411,11 +416,60 @@ export function initializeIpcHandlers(
           const avatarCandidate = typeof ud.avatar === 'string' ? ud.avatar.trim() : '';
           if (nameCandidate.length > 0) ownerUserName = nameCandidate;
           if (avatarCandidate.length > 0) streamerAvatar = avatarCandidate;
+          if (!profile || Object.keys(profile).length === 0) profile = ud;
         }
-      } catch (e) {
-        console.warn('[ipc.room.details] user.getUserInfo failed:', e);
-      }
+      } catch {}
 
+      const clean = (u: any) => {
+        if (!u || typeof u !== 'string') return '';
+        const s = String(u).trim().replace(/[`'\"]/g, '');
+        return /^https?:\/\//i.test(s) ? s : '';
+      };
+      const coverUrlFinal = (() => {
+        const fromLive = clean((data as any).liveCover);
+        if (fromLive) return fromLive;
+        const fromData = clean((data as any).coverUrl);
+        if (fromData) return fromData;
+        const fromAvatar = clean(streamerAvatar || profile.avatar);
+        return fromAvatar || '';
+      })();
+      const statusFinal = isLive ? 'open' : 'closed';
+      const streamerNameFinal = ownerUserName || (typeof profile.nickname === 'string' ? profile.nickname : (typeof profile.userName === 'string' ? profile.userName : `主播${roomId}`));
+      const streamerUidFinal = profile.userID ? String(profile.userID) : roomId;
+      const categoryId = (data as any)?.categoryID ?? (data as any)?.categoryId ?? null;
+      const categoryName = (data as any)?.categoryName ?? null;
+      const subCategoryId = (data as any)?.subCategoryID ?? (data as any)?.subCategoryId ?? null;
+      const subCategoryName = (data as any)?.subCategoryName ?? null;
+      try {
+        const db = databaseManager.getDb();
+        const stmt = db.prepare(`
+          INSERT INTO rooms_meta (
+            room_id, streamer_name, streamer_user_id,
+            title, cover_url, status, is_live,
+            viewer_count, online_count, like_count, live_cover,
+            category_id, category_name, sub_category_id, sub_category_name,
+            updated_at
+          ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
+        `);
+        stmt.run(
+          roomId,
+          streamerNameFinal || null,
+          streamerUidFinal || null,
+          typeof data.title === 'string' ? data.title : (titleFromRoomInfo || `直播间 ${roomId}`),
+          coverUrlFinal,
+          statusFinal,
+          isLive ? 1 : 0,
+          typeof viewerCount === 'number' ? viewerCount : 0,
+          typeof viewerCount === 'number' ? viewerCount : 0,
+          typeof likeCount === 'number' ? likeCount : 0,
+          (data as any)?.liveCover || null,
+          categoryId != null ? String(categoryId) : '',
+          categoryName != null ? String(categoryName) : '',
+          subCategoryId != null ? String(subCategoryId) : '',
+          subCategoryName != null ? String(subCategoryName) : '',
+          () => { try { stmt.finalize(); } catch {} }
+        );
+      } catch {}
       return {
         success: true,
         data: {
@@ -423,28 +477,14 @@ export function initializeIpcHandlers(
           liveId,
           title: typeof data.title === 'string' ? data.title : (titleFromRoomInfo || `直播间 ${roomId}`),
           isLive,
-          status: isLive ? 'open' : 'closed',
+          status: statusFinal,
           startTime: data.liveStartTime ? Number(new Date(data.liveStartTime)) : undefined,
           viewerCount,
           likeCount,
-          coverUrl: (() => {
-            const clean = (u: any) => {
-              if (!u || typeof u !== 'string') return '';
-              const s = String(u).trim().replace(/[`'\"]/g, '');
-              return /^https?:\/\//i.test(s) ? s : '';
-            };
-            const fromLive = clean((data as any).liveCover);
-            if (fromLive) return fromLive;
-            const fromData = clean((data as any).coverUrl);
-            if (fromData) return fromData;
-            const fromAvatar = clean(streamerAvatar || profile.avatar);
-            return fromAvatar || '';
-          })(),
+          coverUrl: coverUrlFinal,
           streamer: {
-            userId: profile.userID ? String(profile.userID) : roomId,
-            userName: (typeof profile.nickname === 'string' && profile.nickname.trim().length > 0)
-              ? profile.nickname
-              : (ownerUserName || (typeof profile.userName === 'string' ? profile.userName : `主播${roomId}`)),
+            userId: streamerUidFinal,
+            userName: streamerNameFinal,
             avatar: streamerAvatar || (typeof profile.avatar === 'string' ? profile.avatar : ''),
             level: typeof profile.level === 'number' ? profile.level : 0
           }
@@ -588,8 +628,11 @@ export function initializeIpcHandlers(
     if (h) { try { clearInterval(h); } catch {} pluginToastTicker.delete(pluginId); }
   };
 
+  // 结果缓存（按插件+方法）
+  const _procResultCache = new Map<string, { data: any; ts: number }>();
   ipcMain.handle('plugin.process.execute', async (_event, pluginId: string, method: string, args?: any[]) => {
     try {
+      try { console.log('[IPC] plugin.process.execute start', { pluginId, method, argsLen: Array.isArray(args) ? args.length : 0 }); } catch {}
       const pm = (pluginManager as any).processManager as any;
       if (!pm) return { success: false, error: 'process_manager_not_available' };
       // 按需启动插件进程
@@ -603,29 +646,30 @@ export function initializeIpcHandlers(
             path.join(((process as any).resourcesPath || process.cwd()), 'plugins', String(info.id))
           ];
           const bundledRoot = bundledRootCandidates.find(p => { try { return fs.existsSync(p); } catch { return false; } });
-          const preferBundled = !!bundledRoot && isDev && (info.manifest as any)?.test === true;
+          const preferBundled = !!bundledRoot && (info.manifest as any)?.test === true;
           const mainPath = preferBundled ? path.join(bundledRoot!, info.manifest.main) : path.join(info.installPath, info.manifest.main);
           await pm.startPluginProcess?.(String(pluginId), mainPath);
         }
       } catch {}
-      // 避免在插件初始化执行期间立即调用导致 BUSY 错误：必要时稍候并重试
       const execArgs = Array.isArray(args) ? args : [];
-      const maxAttempts = 5;
+      const cacheKey = `${String(pluginId)}:${String(method)}`;
+      // 更稳的退避策略
+      const maxAttempts = 10;
       let attempt = 0;
       let lastErr: any = null;
-      // 若刚启动过进程，给一个短暂缓冲时间
-      try { await new Promise(r => setTimeout(r, 200)); } catch {}
+      try { await new Promise(r => setTimeout(r, 500)); } catch {}
+      let res: any = undefined;
       while (attempt < maxAttempts) {
         try {
-          const result = await pm.executeInPlugin(String(pluginId), String(method), execArgs);
+          res = await pm.executeInPlugin(String(pluginId), String(method), execArgs);
           lastErr = null;
-          var res = result;
           break;
         } catch (e: any) {
           const msg = String(e?.message || e);
           lastErr = e;
           if (msg.includes('status: busy')) {
-            await new Promise(r => setTimeout(r, 200));
+            const wait = 200 + attempt * 200; // 递增等待
+            await new Promise(r => setTimeout(r, wait));
             attempt++;
             continue;
           }
@@ -635,7 +679,15 @@ export function initializeIpcHandlers(
       if (lastErr && !String(lastErr?.message || lastErr).includes('status: busy')) {
         throw lastErr;
       }
-      // 辅助：根据方法名控制ticker（保持跨窗口持续）
+      // 缓存结果
+      try { _procResultCache.set(cacheKey, { data: res, ts: Date.now() }); } catch {}
+      // 忙碌耗尽：返回缓存而非抛错
+      if (lastErr && String(lastErr?.message || lastErr).includes('status: busy')) {
+        const cached = _procResultCache.get(cacheKey);
+        try { console.warn('[IPC] plugin.process.execute busy', { pluginId, method, attempts: maxAttempts }); } catch {}
+        return { success: true, data: cached ? cached.data : undefined, stale: true, error: 'busy' };
+      }
+      // 辅助：根据方法名控制ticker
       try {
         if (String(method) === 'enableTicker') {
           const msg = (args && args[0]) || 'Ticker: toast';
@@ -646,8 +698,20 @@ export function initializeIpcHandlers(
           stopTicker(String(pluginId));
         }
       } catch {}
+      try {
+        const summary = (() => {
+          try {
+            if (method === 'getStatus' && res && typeof res === 'object') {
+              return { connected: !!res.connected, connecting: !!res.connecting, running: !!res.running, lastError: res.lastError || '', lastAttempt: res.lastAttempt || '' };
+            }
+            return undefined;
+          } catch { return undefined; }
+        })();
+        console.log('[IPC] plugin.process.execute done', { pluginId, method, stale: false, summary });
+      } catch {}
       return { success: true, data: res };
     } catch (err: any) {
+      try { console.error('[IPC] plugin.process.execute fail', { pluginId, method, error: err?.message || String(err) }); } catch {}
       return { success: false, error: err?.message || String(err) };
     }
   });

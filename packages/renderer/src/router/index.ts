@@ -1,4 +1,5 @@
 import { createRouter, createWebHashHistory, type RouteRecordRaw } from 'vue-router';
+import { reportReadonlyUpdate } from '../utils/readonlyReporter'
 
 // 导入布局组件
 const LayoutShell = () => import('../layouts/LayoutShell.vue');
@@ -224,5 +225,11 @@ router.beforeEach((to, _from, next) => {
   
   next();
 });
+
+router.afterEach((to) => {
+  try {
+    reportReadonlyUpdate({ ui: { routePath: to.fullPath, pageName: String(to.name || ''), pageTitle: String((to.meta as any)?.title || '') } })
+  } catch {}
+})
 
 export default router;

@@ -1,6 +1,6 @@
 import { defineStore } from 'pinia';
 import { ref, computed, watch } from 'vue';
-import { reportReadonlyUpdate } from '../utils/readonlyReporter';
+import { reportReadonlyUpdate, reportReadonlyInit } from '../utils/readonlyReporter';
 import type { UserInfo } from 'acfunlive-http-api';
 
 // 渲染层最小账户信息结构，去除无用字段（medal、managerType等）
@@ -26,7 +26,7 @@ export type ExtendedUserInfo = UserInfo & {
 function sanitizeAvatarUrl(url: string | undefined | null): string {
   if (!url || typeof url !== 'string') return '';
   // 移除所有引号/反引号，并裁剪空白
-  let cleaned = String(url).trim().replace(/[`'\"]/g, '');
+  const cleaned = String(url).trim().replace(/[`'\\"]/g, '');
   if (!/^https?:\/\//i.test(cleaned)) return '';
   return cleaned;
 }
@@ -112,9 +112,34 @@ export const useAccountStore = defineStore('account', () => {
       } catch (error) {
         console.warn('Startup auth check error:', error);
       }
+      try {
+        const s = await window.electronApi.http.get('/api/acfun/auth/status');
+        const authed = !!(s && s.success && s.data && s.data.authenticated);
+        if (!authed) {
+          userInfo.value = null;
+          fullUserInfo.value = null;
+          loginState.value.isLoggedIn = false;
+          localStorage.removeItem('userInfo');
+          reportReadonlyUpdate({ account: { isLoggedIn: false, profile: null } });
+        }
+      } catch {}
     } catch (error) {
       console.error('Failed to load user info:', error);
     }
+  }
+
+  async function syncAuthStatus() {
+    try {
+      const s = await window.electronApi.http.get('/api/acfun/auth/status');
+      const authed = !!(s && s.success && s.data && s.data.authenticated);
+      if (!authed) {
+        userInfo.value = null;
+        fullUserInfo.value = null;
+        loginState.value.isLoggedIn = false;
+        localStorage.removeItem('userInfo');
+        reportReadonlyUpdate({ account: { isLoggedIn: false, profile: null } });
+      }
+    } catch {}
   }
 
 
@@ -277,6 +302,13 @@ export const useAccountStore = defineStore('account', () => {
 
   // 初始化时加载用户信息
   loadUserInfo();
+  try { syncAuthStatus(); } catch {}
+  try {
+    const profile = userInfo.value
+      ? { userID: userInfo.value.userID, nickname: userInfo.value.nickname, avatar: userInfo.value.avatar }
+      : null;
+    reportReadonlyInit({ account: { isLoggedIn: loginState.value.isLoggedIn, profile } });
+  } catch {}
 
   // 变更订阅：登录状态与最小用户档案变化时，调用统一只读上报
   watch(

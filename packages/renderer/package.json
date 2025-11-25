@@ -12,18 +12,19 @@
   "dependencies": {
     "echarts": "^6.0.0",
     "pinia": "^3.0.3",
-    "tdesign-vue-next": "^1.13.2",
     "tdesign-icons-vue-next": "^0.2.2",
+    "tdesign-vue-next": "^1.13.2",
     "vue": "^3.5.13",
     "vue-router": "4",
     "wujie-vue3": "^1.0.28"
   },
   "devDependencies": {
+    "@types/node": "22.15.30",
     "@vitejs/plugin-vue": "^6.0.0",
     "@vue/tsconfig": "^0.7.0",
-    "acfunlive-http-api": "github:ACFUN-FOSS/acfundanmu.js",
-    "typescript": "~5.8.3",
-    "vite": "^7.0.0",
+    "acfunlive-http-api": "github:ACFUN-FOSS/acfundanmu.js#main",
+    "typescript": "5.9.3",
+    "vite": "7.1.12",
     "vue-tsc": "^2.2.8"
   },
   "main": "./dist/index.html",

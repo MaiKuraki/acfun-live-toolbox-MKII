@@ -609,6 +609,14 @@ export class AcfunAdapter extends EventEmitter {
       // 启动弹幕服务 - 使用标准的 startDanmu 方法
       if (this.api.danmu && typeof this.api.danmu.startDanmu === 'function') {
         const result = await this.api.danmu.startDanmu(this.config.roomId, (event: any) => {
+          try {
+            const t = String((event && (event.type || event.action || event.messageType)) || '');
+            const tsIn = Number(event?.timestamp || event?.sendTime || Date.now());
+            const userIdIn = event?.userId ?? event?.userInfo?.userID ?? event?.user?.id ?? null;
+            const userNameIn = event?.username ?? event?.userInfo?.nickname ?? event?.user?.name ?? null;
+            const contentIn = event?.content ?? event?.comment?.content ?? event?.message ?? event?.text ?? null;
+            console.info('[Adapter] callback event type=' + t + ' keys=' + Object.keys(event || {}).join(',') + ' user=' + String(userNameIn || '') + '(' + String(userIdIn || '') + ')' + ' content="' + String(contentIn || '') + '" ts=' + String(tsIn));
+          } catch {}
           // 处理弹幕事件回调
           this.handleDanmuEvent(event);
         });
@@ -675,6 +683,15 @@ export class AcfunAdapter extends EventEmitter {
     }
 
     try {
+      try {
+        const t = String((event && (event.type || event.action || event.messageType)) || '');
+        console.info('[Adapter] inbound type=' + t + ' keys=' + Object.keys(event || {}).join(','));
+      } catch {}
+
+      if (event && event.danmuInfo) {
+        this.processDanmuInfo(event.danmuInfo, event);
+        return;
+      }
       // 根据事件类型分发处理
       switch (event.type) {
         case 'comment':
@@ -693,6 +710,78 @@ export class AcfunAdapter extends EventEmitter {
         case 'follow':
           this.handleFollowMessage(event);
           break;
+        case 'bananaCount': {
+          const summary = String(event?.data ?? event?.count ?? '');
+          this.emitUnifiedEvent('bananaCount', { timestamp: Number(event?.timestamp || Date.now()), content: summary, roomId: this.config.roomId, raw: event });
+          break;
+        }
+        case 'displayInfo': {
+          const d = event?.data || {};
+          const summary = 'watchingCount=' + String(d.watchingCount ?? '') + ', likeCount=' + String(d.likeCount ?? '') + ', likeDelta=' + String(d.likeDelta ?? '');
+          this.emitUnifiedEvent('displayInfo', { timestamp: Number(event?.timestamp || Date.now()), content: summary, roomId: this.config.roomId, raw: event });
+          break;
+        }
+        case 'topUsers': {
+          const arr = Array.isArray(event?.data) ? event.data : [];
+          const summary = 'count=' + String(arr.length);
+          this.emitUnifiedEvent('topUsers', { timestamp: Number(event?.timestamp || Date.now()), content: summary, roomId: this.config.roomId, raw: event });
+          break;
+        }
+        case 'recentComment': {
+          const comments = Array.isArray(event?.data) ? event.data : [];
+          for (const c of comments) {
+            const ts = Number(c?.danmuInfo?.sendTime || Date.now());
+            const userId = c?.danmuInfo?.userInfo?.userID ?? null;
+            const userName = c?.danmuInfo?.userInfo?.nickname ?? null;
+            const content = c?.content ?? '';
+            this.handleDanmuMessage({ timestamp: ts, userId, userInfo: { userID: Number(userId) || 0, nickname: String(userName || '') }, content, roomId: this.config.roomId, raw: c });
+          }
+          break;
+        }
+        case 'redpackList': {
+          const arr = Array.isArray(event?.data) ? event.data : [];
+          const summary = 'count=' + String(arr.length);
+          this.emitUnifiedEvent('redpackList', { timestamp: Number(event?.timestamp || Date.now()), content: summary, roomId: this.config.roomId, raw: event });
+          break;
+        }
+        case 'chatCall': {
+          this.emitUnifiedEvent('chatCall', { timestamp: Number(event?.timestamp || Date.now()), content: 'chatCall', roomId: this.config.roomId, raw: event });
+          break;
+        }
+        case 'chatAccept': {
+          this.emitUnifiedEvent('chatAccept', { timestamp: Number(event?.timestamp || Date.now()), content: 'chatAccept', roomId: this.config.roomId, raw: event });
+          break;
+        }
+        case 'chatReady': {
+          this.emitUnifiedEvent('chatReady', { timestamp: Number(event?.timestamp || Date.now()), content: 'chatReady', roomId: this.config.roomId, raw: event });
+          break;
+        }
+        case 'chatEnd': {
+          this.emitUnifiedEvent('chatEnd', { timestamp: Number(event?.timestamp || Date.now()), content: 'chatEnd', roomId: this.config.roomId, raw: event });
+          break;
+        }
+        case 'kickedOut': {
+          const summary = String(event?.data ?? event?.reason ?? '');
+          this.emitUnifiedEvent('kickedOut', { timestamp: Number(event?.timestamp || Date.now()), content: summary, roomId: this.config.roomId, raw: event });
+          break;
+        }
+        case 'violationAlert': {
+          const summary = String(event?.data ?? event?.message ?? '');
+          this.emitUnifiedEvent('violationAlert', { timestamp: Number(event?.timestamp || Date.now()), content: summary, roomId: this.config.roomId, raw: event });
+          break;
+        }
+        case 'managerState': {
+          const summary = String(event?.data ?? '');
+          this.emitUnifiedEvent('managerState', { timestamp: Number(event?.timestamp || Date.now()), content: summary, roomId: this.config.roomId, raw: event });
+          break;
+        }
+        case 'end': {
+          this.emitUnifiedEvent('end', { timestamp: Number(event?.timestamp || Date.now()), content: 'live_ended', roomId: this.config.roomId, raw: event });
+          break;
+        }
+        case 'ZtLiveScActionSignal':
+          this.handleActionSignal(event);
+          break;
         case 'error':
           this.handleConnectionError(new Error(event.message || 'Danmu service error'));
           break;
@@ -700,10 +789,108 @@ export class AcfunAdapter extends EventEmitter {
           if (this.config.debug) {
             console.log('[AcfunAdapter] Unknown danmu event type:', event.type, event);
           }
+          // 宽泛回退：按常见结构尝试解析
+          try {
+            if (event && (event.signalType || (Array.isArray(event?.payload) && event.payload[0]?.signalType))) {
+              if (Array.isArray(event?.payload)) {
+                for (const it of event.payload) {
+                  this.handleActionSignal({ ...event, ...it, signalType: it?.signalType });
+                }
+              } else {
+                this.handleActionSignal(event);
+              }
+              break;
+            }
+            const hasText = (event?.content ?? event?.comment?.content ?? event?.message ?? event?.text) != null;
+            const hasUser = (event?.userId ?? event?.userInfo?.userID ?? event?.user?.id) != null;
+            if (hasText && hasUser) {
+              const ts = Number(event?.timestamp || event?.sendTime || Date.now());
+              const userId = event?.userId ?? event?.userInfo?.userID ?? event?.user?.id;
+              const userName = event?.username ?? event?.userInfo?.nickname ?? event?.user?.name;
+              const content = event?.content ?? event?.comment?.content ?? event?.message ?? event?.text;
+              this.handleDanmuMessage({ timestamp: ts, userId, userInfo: { userID: Number(userId) || 0, nickname: String(userName || '') }, content });
+              break;
+            }
+          } catch (e) {
+            console.warn('[Adapter] Fallback parse failed:', e);
+          }
           break;
       }
     } catch (error) {
       console.error('[AcfunAdapter] Error handling danmu event:', error);
+    }
+  }
+
+  private processDanmuInfo(di: any, parent?: any): void {
+    try {
+      const tHint = String(parent?.type || parent?.action || parent?.messageType || parent?.signalType || '');
+      const st = String(di?.type || di?.signalType || tHint || '');
+      const ts = Number(di?.timestamp || parent?.timestamp || Date.now());
+      const merge = (objA: any, objB: any) => ({ ...(objA || {}), ...(objB || {}) });
+      if (Array.isArray(di?.payload) && di.payload.length > 0) {
+        for (const it of di.payload) {
+          const merged = merge(it, parent);
+          this.handleActionSignal({ ...merged, signalType: String(merged?.signalType || st || tHint), parentType: tHint, timestamp: Number(merged?.timestamp || ts), raw: parent || di });
+        }
+        return;
+      }
+      const merged = merge(di, parent);
+      const userId = merged?.userId ?? merged?.user?.id ?? merged?.userInfo?.userID ?? null;
+      const userName = merged?.username ?? merged?.user?.name ?? merged?.userInfo?.nickname ?? null;
+      // 内容优先礼物名与数量
+      const giftName = merged?.giftDetail?.name ?? merged?.giftName ?? merged?.gift?.name ?? null;
+      const giftCount = merged?.count ?? merged?.giftDetail?.count ?? null;
+      const likeVal = merged?.likeCount ?? merged?.likeDelta ?? merged?.totalLike ?? null;
+      const baseText = merged?.content ?? merged?.comment?.content ?? merged?.message ?? merged?.text ?? null;
+      const content = giftName ? String(giftName) + (giftCount ? ' x' + String(giftCount) : '') + (merged?.value ? ' (value ' + String(merged.value) + ')' : '')
+        : (likeVal != null ? 'like ' + String(likeVal) : baseText);
+      this.handleActionSignal({ ...merged, signalType: st || tHint, parentType: tHint, timestamp: ts, userId, userInfo: { userID: Number(userId) || 0, nickname: String(userName || '') }, content, raw: parent || di });
+    } catch (e) {
+      console.error('[AcfunAdapter] Error processing danmuInfo:', e);
+    }
+  }
+
+  private handleActionSignal(event: any): void {
+    try {
+      let st = String(event?.signalType || event?.data?.signalType || event?.payload?.signalType || '');
+      const ts = Number(event?.timestamp || event?.sendTime || Date.now());
+      const userId = event?.userId ?? event?.user?.id ?? event?.userInfo?.userID ?? event?.payload?.[0]?.userId ?? null;
+      const userName = event?.username ?? event?.user?.name ?? event?.userInfo?.nickname ?? event?.payload?.[0]?.userName ?? null;
+      const content = event?.content ?? event?.comment?.content ?? event?.payload?.[0]?.comment?.content ?? event?.message ?? event?.text ?? null;
+      console.info('[Adapter] ActionSignal type=' + st + ' room=' + String(this.config.roomId) + ' user=' + String(userName || '') + '(' + String(userId || '') + ')' + ' content="' + String(content || '') + '" ts=' + String(ts));
+      if (!st) {
+        try {
+          if (event?.comment || event?.content || event?.text) st = 'comment';
+          else if (event?.giftDetail || event?.giftId || event?.giftName || event?.gift) st = 'gift';
+          else if (typeof event?.likeCount === 'number' || typeof event?.likeDelta === 'number' || typeof event?.totalLike === 'number') st = 'like';
+          else if ((event?.userId || event?.userInfo) && !event?.comment && !event?.gift && !event?.content) st = String(event?.parentType || 'like');
+        } catch {}
+      }
+      if (String(st).toLowerCase().includes('comment')) {
+        this.handleDanmuMessage({ timestamp: ts, userId, userInfo: { userID: Number(userId) || 0, nickname: String(userName || '') }, content, raw: event });
+        return;
+      }
+      if (String(st).toLowerCase().includes('gift')) {
+        this.handleGiftMessage({ timestamp: ts, userId, userInfo: { userID: Number(userId) || 0, nickname: String(userName || '') }, content, raw: event });
+        return;
+      }
+      if (String(st).toLowerCase().includes('like')) {
+        this.handleLikeMessage({ timestamp: ts, userId, userInfo: { userID: Number(userId) || 0, nickname: String(userName || '') }, content, raw: event });
+        return;
+      }
+      if (String(st).toLowerCase().includes('enter')) {
+        this.handleEnterMessage({ timestamp: ts, userId, userInfo: { userID: Number(userId) || 0, nickname: String(userName || '') }, content, raw: event });
+        return;
+      }
+      if (String(st).toLowerCase().includes('follow')) {
+        this.handleFollowMessage({ timestamp: ts, userId, userInfo: { userID: Number(userId) || 0, nickname: String(userName || '') }, content, raw: event });
+        return;
+      }
+      if (this.config.debug) {
+        console.info('[Adapter] ActionSignal unmapped type=' + st);
+      }
+    } catch (e) {
+      console.error('[AcfunAdapter] Error handling action signal:', e);
     }
   }
 
@@ -866,7 +1053,7 @@ export class AcfunAdapter extends EventEmitter {
    */
   private emitUnifiedEvent(type: NormalizedEventType, message: any): void {
     try {
-      const raw = message;
+      const raw = message?.raw ?? message;
       const ts = Number(message?.timestamp ?? message?.sendTime ?? Date.now());
       const userIdRaw = message?.userId ?? message?.userInfo?.userID;
       const userNameRaw = message?.username ?? message?.userInfo?.nickname;

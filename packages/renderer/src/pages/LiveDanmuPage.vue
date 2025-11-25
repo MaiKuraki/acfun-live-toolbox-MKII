@@ -1,12 +1,14 @@
+<!-- eslint-disable vue/no-v-model-argument -->
 <template>
   <div class="live-danmu-page">
-    <div class="page-header">
+  <div class="page-header">
       <h2>弹幕管理</h2>
       <div class="header-actions">
+        <span class="current-room-label">当前房间：</span>
         <t-select 
           v-model="selectedRoomId" 
           placeholder="选择房间"
-          style="width: 240px;"
+          style="width: 200px;"
           @change="switchRoom"
           filterable
         >
@@ -17,10 +19,23 @@
             :label="`${room.streamerName} (${room.roomId})`"
           />
         </t-select>
+        <t-button theme="primary" @click="onSubmit" :loading="loadingDanmu">
+          查询
+        </t-button>
+        <t-button
+          variant="outline"
+          @click="exportDanmu"
+          :loading="exportingDanmu"
+        >
+          <div style="display: flex; align-items: center; gap: 4px;">
+            <t-icon name="download" />
+            导出
+          </div>
+        </t-button>
       </div>
     </div>
 
-    <!-- 弹幕列表 -->
+    <t-loading :loading="loadingDanmu" :preventScrollThrough="true">
     <t-card
       class="danmu-list-card"
       title="弹幕列表"
@@ -29,69 +44,67 @@
       <template #header>
         <div class="danmu-card-header">
           <div class="danmu-card-title">弹幕列表</div>
-          <div class="danmu-filters">
-            <div class="filter-group">
-              <t-select
-                v-model="selectedEventTypes"
-                multiple
-                placeholder="事件类型"
-                style="width: 180px;"
-                :min-collapsed-num="1"
-              >
-                <t-option value="danmaku" label="弹幕" />
-                <t-option value="gift" label="礼物" />
-                <t-option value="like" label="点赞" />
-                <t-option value="enter" label="进入" />
-                <t-option value="follow" label="关注" />
-                <t-option value="system" label="系统" />
-              </t-select>
-            </div>
-            
-            <div class="filter-group">
-              <t-select
-                v-model="keywordFilters"
-                multiple
-                placeholder="关键词过滤"
-                style="width: 180px;"
-                :min-collapsed-num="1"
-                allow-create
-                @create="addKeywordFilter"
-              />
-            </div>
-            
-            <div class="filter-group">
-              <t-input 
-                v-model="userFilter" 
-                placeholder="用户过滤（用户名/UID）" 
-                clearable
-                style="width: 140px;"
-              />
-            </div>
-            <div class="header-actions">
-              <t-button
-                variant="outline"
-                @click="exportDanmu"
-                :loading="exportingDanmu"
-              >
-                <div style="display: flex; align-items: center; gap: 4px;">
-                  <t-icon name="download" />
-                  导出
-                </div>
-              </t-button>
-            </div>
-          </div>
-        </div>
-        <div class="keyword-tags" v-if="keywordFilters.length > 0">
-          <t-tag
-            v-for="keyword in keywordFilters"
-            :key="keyword"
-            closable
-            @close="removeKeywordFilter(keyword)"
-            size="small"
+          <t-form
+            ref="formRef"
+            :data="formData"
+            label-width="calc(2em + 48px)"
+            label-align="right"
+            layout="inline"
+            scroll-to-first-error="smooth"
+            @reset="onReset"
+            @submit="onSubmit"
           >
-            {{ keyword }}
-          </t-tag>
+            <div class="filters-grid">
+              <!-- 第一行：直播日期、类型（统一宽度 240px） -->
+              <t-form-item label="直播日期" name="date">
+                <t-date-picker
+                  v-model="formData.date"
+                  placeholder="选择直播日期"
+                  :disable-date="disableDate"
+                  style="width: 260px;"
+                />
+              </t-form-item>
+
+              <t-form-item label="弹幕类型" name="types">
+                <t-select
+                  v-model="formData.types"
+                  multiple
+                  placeholder="事件类型"
+                  style="width: 260px;"
+                  :min-collapsed-num="1"
+                >
+                  <t-option value="danmaku" label="弹幕" />
+                  <t-option value="gift" label="礼物" />
+                  <t-option value="like" label="点赞" />
+                  <t-option value="enter" label="进入直播间" />
+                  <t-option value="follow" label="关注" />
+                  <t-option value="system" label="系统" />
+                </t-select>
+              </t-form-item>
+
+              <!-- 第二行：关键词1（左）、用户（右） -->
+              <t-form-item label="关键词" name="keyword1">
+                <t-input v-model="formData.keyword1" placeholder="请输入关键词" style="width: 260px;" />
+              </t-form-item>
+
+            <t-form-item label="用户" name="users">
+              <t-select-input
+                v-model="formData.users"
+                :options="userOptions"
+                :input-props="{ placeholder: '搜索用户以添加筛选' }"
+                allow-input
+                clearable
+                @input-change="onUserSearch"
+                @popup-visible-change="onUserPopupVisible"
+                :popup-visible="userPopupVisible"
+                @change="onUserSelect"
+                style="width: 100%;"
+              />
+            </t-form-item>
+            </div>
+          </t-form>
         </div>
+        
       </template>
       <div
         v-if="!selectedRoomId"
@@ -104,13 +117,7 @@
         <p>请先选择一个房间</p>
       </div>
 
-      <div
-        v-else-if="loadingDanmu"
-        class="loading-state"
-      >
-        <t-loading />
-        <span>正在加载弹幕数据...</span>
-      </div>
+      
 
       <div
         v-else-if="filteredDanmu.length === 0"
@@ -123,61 +130,29 @@
         <p>暂无弹幕数据</p>
       </div>
 
-      <div
-        v-else
-        ref="danmuListRef"
-        class="danmu-list"
-      >
-        <div 
-          v-for="danmu in filteredDanmu" 
-          :key="danmu.id"
-          class="danmu-item"
-          :class="`danmu-${danmu.type}`"
-          @click="showDanmuDetails(danmu)"
-        >
-          <div class="danmu-time">
-            {{ formatTime(danmu.timestamp) }}
-          </div>
-          <div class="danmu-content">
-            <component 
-              :is="getDanmuComponent(danmu.type)" 
-              :event="danmu"
-            />
-          </div>
-          <div class="danmu-actions">
-            <t-button
-              size="small"
-              variant="text"
-              @click.stop="copyDanmu(danmu)"
-            >
-              <t-icon name="copy" />
-            </t-button>
-            <t-button
-              size="small"
-              variant="text"
-              theme="danger"
-              @click.stop="deleteDanmu(danmu)"
-            >
-              <t-icon name="delete" />
-            </t-button>
-          </div>
-        </div>
+      <div class="table-fixed-container" v-else>
+        <t-base-table
+          row-key="id"
+          :columns="tableColumns"
+          :data="filteredDanmu"
+          size="small"
+          bordered
+          hover
+        />
       </div>
       
       <!-- 分页组件放在底部 -->
-      <div class="pagination-footer" v-if="selectedRoomId && !loadingDanmu && allFilteredDanmu.length > 0">
-        <div class="pagination-controls">
-          <span class="danmu-count">{{ allFilteredDanmu.length }} 条弹幕</span>
-          <t-pagination
+      <div class="pagination-footer" v-if="selectedRoomId && !loadingDanmu && totalCount > 0">
+         <t-pagination
             v-model="currentPage"
-            :total="allFilteredDanmu.length"
+            :total="totalCount"
             :page-size="pageSize"
             @change="handlePageChange"
             size="small"
           />
-        </div>
       </div>
     </t-card>
+    </t-loading>
 
     <!-- 弹幕详情对话框 -->
     <t-dialog 
@@ -222,16 +197,13 @@
 </template>
 
 <script setup lang="ts">
-import { ref, computed, onMounted, onUnmounted, nextTick, watch } from 'vue';
+import { ref, computed, onMounted, watch, h } from 'vue';
 import { useRoute } from 'vue-router';
 import { useRoomStore } from '../stores/room';
 import { MessagePlugin } from 'tdesign-vue-next';
 
 // 弹幕组件
-import CommentEvent from '../components/events/CommentEvent.vue';
-import GiftEvent from '../components/events/GiftEvent.vue';
-import LikeEvent from '../components/events/LikeEvent.vue';
-import SystemEvent from '../components/events/SystemEvent.vue';
+ 
 
 const route = useRoute();
 const roomStore = useRoomStore();
@@ -239,7 +211,7 @@ const roomStore = useRoomStore();
 // 响应式状态
 const selectedRoomId = ref<string>('');
 const danmuList = ref<any[]>([]);
-const danmuListRef = ref<HTMLElement>();
+ 
 const showDetailsDialog = ref(false);
 const selectedDanmu = ref<any>(null);
 const loadingDanmu = ref(false);
@@ -247,8 +219,16 @@ const exportingDanmu = ref(false);
 
 // 过滤器状态
 const selectedEventTypes = ref<string[]>(['danmaku', 'gift', 'like', 'enter', 'follow', 'system']);
-const keywordFilters = ref<string[]>([]);
-const userFilter = ref('');
+const formRef = ref();
+const formData = ref<{ types: string[]; keyword: string; users: string | number | null; date: string | null }>({
+  types: selectedEventTypes.value,
+  keyword: '',
+  users: null,
+  date: null
+});
+const userOptions = ref<Array<{ label: string; value: string }>>([]);
+const disableDate = ref<any>(null);
+const userPopupVisible = ref(false);
 
 // 分页状态
 const currentPage = ref(1);
@@ -258,93 +238,20 @@ const totalCount = ref(0);
 // 历史房间列表
 const historicalRooms = ref<Array<{roomId: string, streamerName: string}>>([]);
 
-// 自动刷新定时器
-let autoRefreshTimer: NodeJS.Timeout | null = null;
+ 
 
-// WebSocket 连接
-let ws: WebSocket | null = null;
-let reconnectTimer: NodeJS.Timeout | null = null;
+// 计算属性：直接使用后端分页结果
+const filteredDanmu = computed(() => danmuList.value);
 
-// 计算属性
-const allFilteredDanmu = computed(() => {
-  let filtered = danmuList.value;
-
-  // 类型过滤
-  if (selectedEventTypes.value.length > 0) {
-    filtered = filtered.filter(danmu => {
-      const danmuType = danmu.type === 'comment' ? 'danmaku' : danmu.type;
-      return selectedEventTypes.value.includes(danmuType);
-    });
-  }
-
-  // 关键词过滤（多关键词，满足任意一个即可）
-  if (keywordFilters.value.length > 0) {
-    filtered = filtered.filter(danmu => {
-      const content = (danmu.content || '').toLowerCase();
-      const userName = (danmu.userName || '').toLowerCase();
-      return keywordFilters.value.some(keyword => 
-        content.includes(keyword.toLowerCase()) ||
-        userName.includes(keyword.toLowerCase())
-      );
-    });
-  }
-
-  // 用户过滤（支持用户名和UID）
-  if (userFilter.value) {
-    const filter = userFilter.value.toLowerCase();
-    filtered = filtered.filter(danmu => {
-      const userName = (danmu.userName || '').toLowerCase();
-      const userId = (danmu.userId || '').toLowerCase();
-      return userName.includes(filter) || userId.includes(filter);
-    });
-  }
-
-  return filtered.slice().reverse(); // 只反转，不切片
-});
-
-const filteredDanmu = computed(() => {
-  const filtered = allFilteredDanmu.value;
-  
-  // 分页处理
-  const startIndex = (currentPage.value - 1) * pageSize.value;
-  const endIndex = startIndex + pageSize.value;
-  
-  return filtered.slice(startIndex, endIndex); // 分页切片
-});
-
-const commentCount = computed(() => 
-  danmuList.value.filter(d => d.type === 'comment' || d.type === 'danmaku').length
-);
-
-const giftCount = computed(() => 
-  danmuList.value.filter(d => d.type === 'gift').length
-);
-
-const likeCount = computed(() => 
-  danmuList.value.filter(d => d.type === 'like').length
-);
+// 已移除未使用的统计计算，避免冗余代码
 
 // 方法
 const loadHistoricalRooms = async () => {
   try {
-    // 获取历史房间列表（从SQLite数据库）
-    const response = await fetch('/api/events/rooms');
-    
-    // 检查响应内容类型
-    const contentType = response.headers.get('content-type');
-    if (response.ok && contentType && contentType.includes('application/json')) {
-      const data = await response.json();
-      historicalRooms.value = data.rooms || [];
-    } else {
-      // 如果响应不是JSON，使用本地存储
-      const stored = localStorage.getItem('historicalRooms');
-      if (stored) {
-        historicalRooms.value = JSON.parse(stored);
-      }
-    }
+    const data = await window.electronApi.http.get('/api/events/rooms');
+    historicalRooms.value = (data && data.rooms) ? data.rooms : [];
   } catch (error) {
     console.error('加载历史房间失败:', error);
-    // 回退到本地存储
     const stored = localStorage.getItem('historicalRooms');
     if (stored) {
       historicalRooms.value = JSON.parse(stored);
@@ -355,49 +262,49 @@ const loadHistoricalRooms = async () => {
 const switchRoom = async (roomId: string) => {
   selectedRoomId.value = roomId;
   danmuList.value = [];
-  try {
-    const status = await window.electronApi.room.status(roomId);
-    if ('error' in status || String(status?.status || '') !== 'connected') {
-      try { await window.electronApi.room.connect(roomId); } catch (e) { console.warn('connect room failed:', e); }
-    }
-  } catch {}
+  await loadAvailableDates(roomId);
   await loadHistoricalDanmu(roomId);
-  connectWebSocket();
 };
 
 const loadHistoricalDanmu = async (roomId: string, page: number = 1) => {
   if (!roomId) return;
-  
   loadingDanmu.value = true;
   try {
-    const params = new URLSearchParams({
+    const allTypes = ['danmaku','gift','like','enter','follow','system'];
+    const hasAllTypes = formData.value.types.length === allTypes.length && allTypes.every(t => formData.value.types.includes(t));
+    const params: Record<string, any> = {
       room_id: roomId,
-      pageSize: pageSize.value.toString(),
-      page: page.toString()
-    });
-
-    // 添加类型过滤
-    if (selectedEventTypes.value.length > 0) {
-      params.append('type', selectedEventTypes.value.join(','));
+      pageSize: pageSize.value,
+      page
+    };
+    if (!hasAllTypes && formData.value.types.length > 0) {
+      params.type = formData.value.types.join(',');
     }
-
-    const response = await fetch(`/api/events?${params}`);
-    if (response.ok) {
-      const data = await response.json();
-      danmuList.value = (data.items || []).map((item: any) => ({
-        id: item.id || `${item.ts}_${Math.random()}`,
-        type: item.event_type === 'danmaku' ? 'comment' : item.event_type,
-        timestamp: item.ts,
-        userId: item.user_id,
-        userName: item.user_name,
-        content: item.content,
-        ...item
-      }));
-      totalCount.value = data.total || data.items?.length || 0;
-      currentPage.value = page;
-    } else {
-      console.error('加载历史弹幕失败:', response.statusText);
+    if (formData.value.keyword1 && String(formData.value.keyword1).trim().length > 0) {
+      params.q = String(formData.value.keyword1).trim();
     }
+    if (formData.value.users) {
+      params.user_id = String(formData.value.users);
+    }
+    if (formData.value.date) {
+      const d = new Date(formData.value.date);
+      const from = new Date(d.getFullYear(), d.getMonth(), d.getDate(), 0, 0, 0, 0).getTime();
+      const to = new Date(d.getFullYear(), d.getMonth(), d.getDate(), 23, 59, 59, 999).getTime();
+      params.from_ts = from;
+      params.to_ts = to;
+    }
+    const data = await window.electronApi.http.get('/api/events', params);
+    danmuList.value = (data.items || []).map((item: any) => ({
+      id: item.id || `${item.ts}_${Math.random()}`,
+      type: item.event_type === 'danmaku' ? 'comment' : item.event_type,
+      timestamp: item.ts,
+      userId: item.user_id,
+      userName: item.user_name,
+      content: item.content,
+      ...item
+    }));
+    totalCount.value = data.total || data.items?.length || 0;
+    currentPage.value = page;
   } catch (error) {
     console.error('加载历史弹幕失败:', error);
   } finally {
@@ -405,85 +312,7 @@ const loadHistoricalDanmu = async (roomId: string, page: number = 1) => {
   }
 };
 
-const connectWebSocket = () => {
-  if (ws) {
-    ws.close();
-  }
-
-  if (!selectedRoomId.value) return;
-
-  const ports = [8080, 8081, 8082];
-  let currentPortIndex = 0;
-
-  const tryConnect = () => {
-    const port = ports[currentPortIndex];
-    ws = new WebSocket(`ws://localhost:${port}/ws`);
-
-    ws.onopen = () => {
-      console.log(`WebSocket connected on port ${port}`);
-      // 订阅特定房间的弹幕
-      ws?.send(JSON.stringify({
-        type: 'subscribe',
-        roomId: selectedRoomId.value
-      }));
-    };
-
-    ws.onmessage = (event) => {
-      try {
-        const data = JSON.parse(event.data);
-        if (data.type === 'danmu' && data.roomId === selectedRoomId.value) {
-          handleDanmu(data.data);
-        }
-      } catch (error) {
-        console.error('WebSocket message parse error:', error);
-      }
-    };
-
-    ws.onclose = () => {
-      console.log('WebSocket disconnected');
-      scheduleReconnect();
-    };
-
-    ws.onerror = (error) => {
-      console.error('WebSocket error:', error);
-      currentPortIndex = (currentPortIndex + 1) % ports.length;
-      scheduleReconnect();
-    };
-  };
-
-  tryConnect();
-};
-
-const scheduleReconnect = () => {
-  if (reconnectTimer) return;
-  reconnectTimer = setTimeout(() => {
-    reconnectTimer = null;
-    connectWebSocket();
-  }, 2000);
-};
-
-const handleDanmu = (danmuData: any) => {
-  const danmu = {
-    id: danmuData.id || `${Date.now()}_${Math.random()}`,
-    type: danmuData.event_type || danmuData.type || 'system',
-    timestamp: danmuData.timestamp || Date.now(),
-    userId: danmuData.user_id || danmuData.userId || '',
-    userName: danmuData.user_name || danmuData.userName || '',
-    content: danmuData.content || danmuData.message || '',
-    ...danmuData
-  };
-
-  danmuList.value.push(danmu);
-  // 更新房间活动时间
-  if (selectedRoomId.value) {
-    roomStore.touchRoomActivity(selectedRoomId.value, danmu.timestamp);
-  }
-  
-  // 限制弹幕数量
-  if (danmuList.value.length > 1000) {
-    danmuList.value.splice(0, 100);
-  }
-};
+ 
 
 const exportDanmu = async () => {
   if (!selectedRoomId.value) return;
@@ -494,6 +323,16 @@ const exportDanmu = async () => {
       room_id: selectedRoomId.value,
       filename: `danmu_${selectedRoomId.value}_${new Date().toISOString().slice(0, 10)}.csv`
     });
+    const allTypes = ['danmaku','gift','like','enter','follow','system'];
+    const hasAll = formData.value.types.length === allTypes.length && allTypes.every(t => formData.value.types.includes(t));
+    if (!hasAll && formData.value.types.length > 0) params.set('type', formData.value.types.join(','));
+    if (formData.value.date) {
+      const d = new Date(formData.value.date);
+      const from = new Date(d.getFullYear(), d.getMonth(), d.getDate(), 0, 0, 0, 0).getTime();
+      const to = new Date(d.getFullYear(), d.getMonth(), d.getDate(), 23, 59, 59, 999).getTime();
+      params.set('from_ts', String(from));
+      params.set('to_ts', String(to));
+    }
 
     const response = await fetch(`/api/export?${params}`);
     if (response.ok) {
@@ -510,50 +349,39 @@ const exportDanmu = async () => {
     }
   } catch (error) {
     console.error('导出失败:', error);
-    // 回退到前端导出
-    const data = JSON.stringify(danmuList.value, null, 2);
-    const blob = new Blob([data], { type: 'application/json' });
-    const url = URL.createObjectURL(blob);
-    const a = document.createElement('a');
-    a.href = url;
-    a.download = `danmu_${selectedRoomId.value}_${new Date().toISOString().slice(0, 10)}.json`;
-    a.click();
-    URL.revokeObjectURL(url);
+    MessagePlugin.error('导出失败');
   } finally {
     exportingDanmu.value = false;
   }
 };
 
-const copyDanmu = (danmu: any) => {
-  const text = danmu.content || JSON.stringify(danmu);
-  navigator.clipboard.writeText(text);
-  MessagePlugin.success('已复制到剪贴板');
+const formatYMD = (d: Date) => {
+  const y = d.getFullYear();
+  const m = String(d.getMonth() + 1).padStart(2, '0');
+  const da = String(d.getDate()).padStart(2, '0');
+  return `${y}-${m}-${da}`;
 };
 
-const deleteDanmu = (danmu: any) => {
-  const index = danmuList.value.findIndex(d => d.id === danmu.id);
-  if (index > -1) {
-    danmuList.value.splice(index, 1);
+const loadAvailableDates = async (roomId?: string) => {
+  try {
+    const params: any = {};
+    if (roomId) params.room_id = roomId;
+    const data = await window.electronApi.http.get('/api/events/dates', params);
+    const set = new Set<string>(((data && data.dates) || []).map((s: any) => String(s)));
+    disableDate.value = (date: Date) => !set.has(formatYMD(date));
+  } catch {
+    disableDate.value = null;
   }
 };
+
+ 
 
 const showDanmuDetails = (danmu: any) => {
   selectedDanmu.value = danmu;
   showDetailsDialog.value = true;
 };
 
-const addKeywordFilter = (keyword: string) => {
-  if (keyword && !keywordFilters.value.includes(keyword)) {
-    keywordFilters.value.push(keyword);
-  }
-};
-
-const removeKeywordFilter = (keyword: string) => {
-  const index = keywordFilters.value.indexOf(keyword);
-  if (index > -1) {
-    keywordFilters.value.splice(index, 1);
-  }
-};
+ 
 
 const handlePageChange = (pageInfo: { current: number; pageSize: number }) => {
   currentPage.value = pageInfo.current;
@@ -563,19 +391,60 @@ const handlePageChange = (pageInfo: { current: number; pageSize: number }) => {
   }
 };
 
-const getDanmuComponent = (type: string) => {
-  switch (type) {
-    case 'comment':
-    case 'danmaku':
-      return CommentEvent;
-    case 'gift':
-      return GiftEvent;
-    case 'like':
-      return LikeEvent;
-    default:
-      return SystemEvent;
+const onUserSearch = async (val: string) => {
+  const q = (val || '').trim();
+  if (!q) {
+    userOptions.value = [];
+    userPopupVisible.value = false;
+    return;
+  }
+  try {
+    const data = await window.electronApi.http.get('/api/users/search', { keyword: q, page: 1, pageSize: 10, room_id: selectedRoomId.value });
+    userOptions.value = (data.items || []).map((u: any) => ({ label: u.name || String(u.id), value: String(u.id) }));
+    userPopupVisible.value = (userOptions.value.length > 0);
+  } catch {}
+};
+
+const loadUsersList = async (roomId?: string) => {
+  try {
+    const params: any = { limit: 200 };
+    if (roomId) params.room_id = roomId;
+    const data = await window.electronApi.http.get('/api/users', params);
+    userOptions.value = (data.items || []).map((u: any) => ({ label: u.name || String(u.id), value: String(u.id) }));
+  } catch { userOptions.value = []; }
+};
+
+const onUserPopupVisible = async (visible: boolean) => {
+  if (visible) {
+    await loadUsersList(selectedRoomId.value);
+    userPopupVisible.value = (userOptions.value.length > 0);
   }
 };
+
+const onUserSelect = async (val: any) => {
+  try {
+    userPopupVisible.value = false;
+    formData.value.users = Array.isArray(val) ? (val[0]?.value ?? val[0]) : (val?.value ?? val);
+    await onSubmit();
+  } catch {}
+};
+
+const onSubmit = async () => {
+  if (!selectedRoomId.value) return;
+  currentPage.value = 1;
+  await loadHistoricalDanmu(selectedRoomId.value, 1);
+};
+
+const onReset = () => {
+  formData.value.types = ['danmaku', 'gift', 'like', 'enter', 'follow', 'system'];
+  formData.value.keyword1 = '';
+  formData.value.users = null;
+  formData.value.date = null;
+};
+
+ 
+
+ 
 
 const getDanmuTypeText = (type: string) => {
   switch (type) {
@@ -598,11 +467,33 @@ const formatDetailTime = (timestamp: number) => {
   return new Date(timestamp).toLocaleString();
 };
 
+const contentText = (d: any) => {
+  const t = d.type === 'comment' ? 'danmaku' : d.type;
+  if (t === 'like') return '点了一个❤️';
+  if (t === 'enter') return '进入了直播间';
+  if (t === 'follow') return '关注了主播';
+  if (t === 'gift') {
+    const count = d.gift_count || d.count || 1;
+    const name = d.gift_name || d.name || '礼物';
+    return `送了${count}个${name}`;
+  }
+  if (t === 'system') return String(d.content || d.message || '系统通知');
+  return String(d.content || '');
+};
+
+const tableColumns = [
+  { colKey: 'timestamp', title: '时间', width: 140, cell: (_h: any, { row }: any) => formatTime(row.timestamp) },
+  { colKey: 'type', title: '类型', width: 100, cell: (_h: any, { row }: any) => getDanmuTypeText(row.type) },
+  { colKey: 'userName', title: '用户', width: 160, cell: (_h: any, { row }: any) => String(row.userName || row.userId || '') },
+  { colKey: 'content', title: '内容', cell: (_h: any, { row }: any) => h('span', { class: 'content-ellipsis', title: contentText(row) }, contentText(row)) },
+  { colKey: 'ops', title: '操作', width: 80, cell: (_h: any, { row }: any) => h('span', { class: 'ops-icon', title: '查看详情', onClick: () => showDanmuDetails(row) }, '🔍') }
+];
+
 // 监听过滤器变化，重新加载数据
-watch([selectedEventTypes, keywordFilters, userFilter], () => {
+watch([() => formData.value.types, () => formData.value.keyword, () => formData.value.users, () => formData.value.date], async () => {
   if (selectedRoomId.value) {
-    currentPage.value = 1; // 重置到第一页
-    // 不需要重新加载数据，因为计算属性会自动更新
+    currentPage.value = 1;
+    await loadHistoricalDanmu(selectedRoomId.value, 1);
   }
 });
 
@@ -613,6 +504,8 @@ watch(() => route.params.roomId, (roomId) => {
     switchRoom(roomId);
   }
 }, { immediate: true });
+
+ 
 
 // 生命周期
 onMounted(async () => {
@@ -625,14 +518,7 @@ onMounted(async () => {
   }
 });
 
-onUnmounted(() => {
-  if (ws) {
-    ws.close();
-  }
-  if (reconnectTimer) {
-    clearTimeout(reconnectTimer);
-  }
-});
+
 </script>
 
 <style scoped>
@@ -668,14 +554,16 @@ onUnmounted(() => {
   overflow-x: auto;
 }
 
+.filters-grid {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  grid-column-gap: 16px;
+  grid-row-gap: 12px;
+  width: 100%;
+}
+
 .keyword-tags {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 8px;
-  padding: 8px 16px;
-  border-top: 1px solid var(--td-border-level-1-color);
-  background-color: var(--td-bg-color-container);
-  margin: 0 -16px;
+  /* 已不再使用关键词标签展示，删除冗余样式 */
 }
 
 .page-header {
@@ -694,6 +582,13 @@ onUnmounted(() => {
   display: flex;
   gap: 8px;
   align-items: center;
+}
+.current-room-label { color: var(--td-text-color-secondary); }
+
+.half-col { flex: 1 1 50%; }
+.form-row-break {
+  flex-basis: 100%;
+  height: 0;
 }
 
 .filter-card {
@@ -727,12 +622,7 @@ onUnmounted(() => {
 
 /* 删除label，使用placeholder 承担提示文案 */
 
-.keyword-tags {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 8px;
-  margin-left: 80px;
-}
+/* 删除重复的 .keyword-tags 样式定义 */
 
 .danmu-list-card {
   flex: 1;
@@ -740,6 +630,11 @@ onUnmounted(() => {
   display: flex;
   flex-direction: column;
   overflow: hidden;
+}
+
+.table-fixed-container {
+  height: 410px;
+  overflow: auto;
 }
 
 .danmu-count {
@@ -812,6 +707,25 @@ onUnmounted(() => {
   flex: 1;
   min-width: 0;
 }
+
+.content-cell {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+.content-ellipsis {
+  display: inline-block;
+  max-width: 100%;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.view-detail {
+  color: var(--td-brand-color);
+  cursor: pointer;
+  user-select: none;
+}
+.ops-icon { cursor: pointer; color: var(--td-brand-color); }
 
 .danmu-actions {
   display: flex;

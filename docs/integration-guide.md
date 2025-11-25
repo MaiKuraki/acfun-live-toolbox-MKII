@@ -228,6 +228,23 @@ await fetch(`/api/plugins/${pluginId}/overlay/messages`, {
 });
 ```
 
+### 窗口与弹窗集成（HTTP）
+
+- 目标窗口解析顺序：`windowId`/`pluginId`（Body）→ `X-Plugin-ID`（Header）→ 主窗口
+- 弹窗接口：
+  - `POST /api/popup` 在主窗或指定插件窗弹出 `toast|alert|confirm`
+  - 示例：
+    - 主窗 toast
+      - `curl -X POST -H "Content-Type: application/json" -d '{"action":"toast","message":"操作成功"}' http://127.0.0.1:18299/api/popup`
+    - 插件窗 alert（obs-assistant）
+      - `curl -X POST -H "Content-Type: application/json" -H "X-Plugin-ID: obs-assistant" -d '{"action":"alert","title":"提示","message":"请检查设置"}' http://127.0.0.1:18299/api/popup`
+- 窗口控制接口：
+  - `POST /api/windows/show|focus|close`（Body：`windowId` 或 `pluginId`；不传默认主窗）
+  - `GET /api/windows/list` 返回 `{ windowId, visible, focused }` 列表（主窗 `windowId: "main"`）
+  - `GET /api/windows/self` 返回调用方窗口标识（优先 `X-Plugin-ID`，否则 `main`）
+
+> 说明：`confirm` 的确认结果通过渲染层 IPC 异步回传，HTTP 返回 `{ success: true }`。
+
 ### Overlay 页面订阅 SSE 示例
 
 ```javascript

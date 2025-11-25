@@ -32,7 +32,6 @@ import { getApiBase, buildPluginPageUrl } from '../utils/hosting';
 
 const pluginStore = usePluginStore();
 const route = useRoute();
-let storeSource: EventSource | null = null;
 const bus: any = (WujieVue as any)?.bus;
 const busHandlers: Record<string, any> = {};
 
@@ -132,68 +131,9 @@ async function resolveWujieUIConfig() {
   }
 }
 
-function emitToChild(payload: any) {
-  try {
-    const pid = String(pluginId.value || '');
-    // 通用频道（所有插件 UI 订阅）
-    bus?.$emit?.('plugin-event', payload);
-    // 插件前缀频道（可选增强）
-    if (pid && payload?.eventType) {
-      const type = String(payload.eventType);
-      if (type === 'readonly-store') bus?.$emit?.(`plugin:${pid}:store-update`, payload);
-      if (type === 'lifecycle') bus?.$emit?.(`plugin:${pid}:lifecycle`, payload);
-    }
-  } catch (e) {
-    try { console.warn('[PluginFramePage] bus emit failed:', e); } catch {}
-  }
-}
+function emitToChild(_payload: any) {}
 
-function subscribeReadonlyStore() {
-  if (!isElectronRenderer()) return;
-  try {
-    const base = getApiBase();
-    const url = new URL('/sse/renderer/readonly-store', base).toString();
-    storeSource = new EventSource(url);
-    try { console.log('[PluginFramePage] SSE(store) connect'); } catch {}
-
-    storeSource.addEventListener('readonly-store-init', (ev: MessageEvent) => {
-      try {
-        const data = JSON.parse(ev.data || '{}');
-        (window as any).__WUJIE_SHARED.readonlyStore = (window as any).__WUJIE_SHARED.readonlyStore || {};
-        for (const k in data) {
-          try { (window as any).__WUJIE_SHARED.readonlyStore[k] = (data as any)[k]; } catch {}
-        }
-        emitToChild({ type: 'plugin-event', eventType: 'readonly-store', event: 'readonly-store-init', payload: data });
-      } catch (e) { console.warn('[PluginFramePage] store init parse failed:', e); }
-    });
-
-    storeSource.addEventListener('readonly-store-update', (ev: MessageEvent) => {
-      try {
-        const data = JSON.parse(ev.data || '{}');
-        (window as any).__WUJIE_SHARED.readonlyStore = (window as any).__WUJIE_SHARED.readonlyStore || {};
-        for (const k in data) {
-          try {
-            const prev = (window as any).__WUJIE_SHARED.readonlyStore[k] || {};
-            (window as any).__WUJIE_SHARED.readonlyStore[k] = { ...prev, ...(data as any)[k] };
-          } catch {}
-        }
-        emitToChild({ type: 'plugin-event', eventType: 'readonly-store', event: 'readonly-store-update', payload: data });
-      } catch (e) { console.warn('[PluginFramePage] store update parse failed:', e); }
-    });
-
-    storeSource.addEventListener('heartbeat', (ev: MessageEvent) => {
-      try { console.log('[PluginFramePage] SSE(store) heartbeat', ev && (ev as any).data); } catch {}
-    });
-
-    storeSource.onerror = () => {
-      try { console.warn('[PluginFramePage] SSE(store) error, reconnecting...'); } catch {}
-      try { storeSource?.close(); } catch {}
-      setTimeout(() => subscribeReadonlyStore(), 3000);
-    };
-  } catch (err) {
-    console.warn('[PluginFramePage] subscribe readonly-store failed:', err);
-  }
-}
+function subscribeReadonlyStore() {}
 
 
 
@@ -233,9 +173,6 @@ function registerBusHandlers() {
   // 子页初始化：请求重新建立只读仓库 SSE，并下发初始化消息与生命周期事件
   const onReady = () => {
     try { console.log('[PluginFramePage] bus ready'); } catch {}
-    try { storeSource?.close(); } catch {}
-    // 重新建立 SSE，确保收到 readonly-store-init
-    subscribeReadonlyStore();
     emitInitMessage();
     sendLifecycleEvent('ready');
   };
@@ -298,6 +235,19 @@ function registerBusHandlers() {
     };
     (async () => {
       try {
+        if (command === 'process.execute') {
+          try {
+            const payload = (data as any)?.payload || {};
+            const method = String(payload.method || '');
+            const args = Array.isArray(payload.args) ? payload.args : [];
+            const res = await (window as any).electronApi?.plugin?.process?.execute?.(pluginId.value, method, args);
+            const ok = !!(res && (res.ok === undefined || res.ok === true));
+            respond(ok, res, (res as any)?.error);
+          } catch (e) {
+            respond(false, null, (e as Error).message);
+          }
+          return;
+        }
         if (command === 'get-api-base') {
           try {
             const base = getApiBase();
@@ -405,14 +355,10 @@ function registerBusHandlers() {
 onMounted(() => {
   try { console.log('[PluginFramePage] mounted', { pluginId: pluginId.value }); } catch {}
   registerBusHandlers();
-  // 订阅主进程只读仓库（初始拉取，后续增量）
-  subscribeReadonlyStore();
+  // 框架页不再负责只读仓库与生命周期/overlay事件的广播与订阅
 });
 
 onUnmounted(() => {
-  if (storeSource) {
-    try { storeSource.close(); } catch {}
-  }
   // 解绑 bus 事件，避免内存泄漏
   try {
     if (busHandlers.onReady) {

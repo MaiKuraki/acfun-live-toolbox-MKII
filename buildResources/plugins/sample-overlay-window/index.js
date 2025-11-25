@@ -604,7 +604,7 @@ async function onWarning(ctx = {}) {
 
 // ===== 插件导出 =====
 
-export default {
+module.exports = {
   // 基础功能
   init,
   cleanup,

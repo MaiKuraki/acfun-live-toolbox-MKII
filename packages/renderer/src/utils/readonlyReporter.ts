@@ -39,15 +39,9 @@ function sanitize(obj: any): any {
 
 function isElectronRenderer(): boolean {
   try {
-    const hasNode = typeof process !== 'undefined' && typeof (process as any).versions === 'object';
-    const isElectronVersion = hasNode && !!(process as any).versions?.electron;
-    const protocol = typeof window !== 'undefined' && window.location ? window.location.protocol : '';
-    const isFile = protocol === 'file:';
-    const ua = (typeof navigator !== 'undefined' && (navigator as any).userAgent) ? String((navigator as any).userAgent) : '';
-    const isElectronUA = /electron/i.test(ua);
     const hasPreloadApi = typeof (window as any).electronApi !== 'undefined';
-    // 结合 URL 与是否有 Node/Electron 或 preload 暴露来判断渲染进程
-    return (isElectronVersion || hasPreloadApi) && (isFile || isElectronUA);
+    const hasElectron = typeof process !== 'undefined' && !!(process as any).versions?.electron;
+    return !!(hasPreloadApi || hasElectron);
   } catch {
     return false;
   }
@@ -67,7 +61,6 @@ function createReporter(): Reporter {
     const payload = sanitize(pending);
     pending = {};
     timer = null;
-    if (!isElectronRenderer()) return;
     try {
       const base = getApiBase();
       const url = new URL('/api/renderer/readonly-store', base).toString();

@@ -49,7 +49,7 @@
           </t-menu-item>
           <t-menu-item
             value="live-create"
-            @click="navigateTo('/live/create')"
+            @click="navigateToLiveCreate()"
           >
             <template #icon>
               <t-icon name="edit-1" />
@@ -151,6 +151,7 @@ import { useRouter, useRoute } from 'vue-router';
 import { resolvePrimaryHostingType } from '../utils/hosting';
 import { usePluginStore } from '../stores/plugin';
 import { useSidebarStore } from '../stores/sidebar';
+import { reportReadonlyUpdate } from '../utils/readonlyReporter'
 
 interface DynamicPlugin {
   id: string;
@@ -158,6 +159,7 @@ interface DynamicPlugin {
   version: string;
   icon?: string;
   status: 'active' | 'inactive' | 'error' | 'loading';
+  enabled?: boolean;
   route?: string;
   sidebarDisplay?: {
     show: boolean;
@@ -227,15 +229,57 @@ function handleMenuChange(value: string) {
   console.log('Menu changed:', value);
 }
 
-function navigateTo(path: string) {
-  router.push(path);
+async function navigateTo(path: string) {
+  try {
+    await router.push(path);
+  } catch {}
+  try {
+    const rt = router.currentRoute.value as any;
+    const routePath = String(rt?.fullPath || path);
+    const pageName = String(rt?.name || '');
+    const pageTitle = String((rt?.meta as any)?.title || '');
+    reportReadonlyUpdate({ ui: { routePath, pageName, pageTitle } });
+  } catch {}
+}
+
+async function navigateToLiveCreate() {
+  try {
+    const res = await window.electronApi.http.get('/api/acfun/auth/status');
+    const ok = !!(res && res.success);
+    const authed = ok && !!(res.data && res.data.authenticated);
+    if (!authed) {
+      try {
+        const resp: any = await window.electronApi.popup.confirm('提示', '要直播请先登录', { confirmBtn: '去登录', cancelBtn: '关闭' });
+        const go = resp?.result === true || resp === true;
+        if (go) {
+          try { await router.push({ path: '/home', query: { qrLogin: '1', t: Date.now() } }); } catch {}
+        }
+      } catch {}
+      return;
+    }
+  } catch {}
+  try { await router.push('/live/create'); } catch {}
+  try {
+    const rt = router.currentRoute.value as any;
+    const routePath = String(rt?.fullPath || '/live/create');
+    const pageName = String(rt?.name || '');
+    const pageTitle = String((rt?.meta as any)?.title || '');
+    reportReadonlyUpdate({ ui: { routePath, pageName, pageTitle } });
+  } catch {}
 }
 
 async function openPlugin(plugin: DynamicPlugin) {
   if (plugin.status !== 'active' || !plugin.enabled) return;
   // 若存在自定义路由，优先使用
   if (plugin.route) {
-    router.push(plugin.route);
+    try { await router.push(plugin.route); } catch {}
+    try {
+      const rt = router.currentRoute.value as any;
+      const routePath = String(rt?.fullPath || plugin.route || '');
+      const pageName = String(rt?.name || '');
+      const pageTitle = String((rt?.meta as any)?.title || '');
+      reportReadonlyUpdate({ ui: { routePath, pageName, pageTitle } });
+    } catch {}
     return;
   }
 
@@ -243,7 +287,14 @@ async function openPlugin(plugin: DynamicPlugin) {
     const primary = await resolvePrimaryHostingType(plugin.id);
     if (primary.type === 'ui') {
       // 直接进入 UI 页框架路由（router.ts: /plugins/:plugname）
-      router.push(`/plugins/${plugin.id}`);
+      try { await router.push(`/plugins/${plugin.id}`); } catch {}
+      try {
+        const rt = router.currentRoute.value as any;
+        const routePath = String(rt?.fullPath || `/plugins/${plugin.id}`);
+        const pageName = String(rt?.name || '');
+        const pageTitle = String((rt?.meta as any)?.title || '');
+        reportReadonlyUpdate({ ui: { routePath, pageName, pageTitle } });
+      } catch {}
       return;
     }
     if (primary.type === 'window') {
@@ -256,7 +307,14 @@ async function openPlugin(plugin: DynamicPlugin) {
   }
 
   // 默认回退：进入框架路由（router.ts: /plugins/:plugname）
-  router.push(`/plugins/${plugin.id}`);
+  try { await router.push(`/plugins/${plugin.id}`); } catch {}
+  try {
+    const rt = router.currentRoute.value as any;
+    const routePath = String(rt?.fullPath || `/plugins/${plugin.id}`);
+    const pageName = String(rt?.name || '');
+    const pageTitle = String((rt?.meta as any)?.title || '');
+    reportReadonlyUpdate({ ui: { routePath, pageName, pageTitle } });
+  } catch {}
 }
 
 function handleIconError(plugin: DynamicPlugin) {
@@ -381,11 +439,19 @@ onMounted(() => {
   height: 20px;
   border-radius: var(--td-radius-small);
   object-fit: cover;
+  margin-right: 8px;
 }
 
 .plugin-default-icon {
   font-size: 16px;
   color: var(--td-text-color-placeholder);
+}
+
+/* 统一 TDesign 菜单图标容器的间距与对齐，使图标与文本不黏连 */
+:deep(.t-menu__item .t-menu__icon) {
+  margin-right: 8px;
+  display: flex;
+  align-items: center;
 }
 
 .plugin-details {
@@ -460,9 +526,11 @@ onMounted(() => {
 .plugin-list::-webkit-scrollbar-thumb:hover {
   background-color: var(--td-scrollbar-hover-color);
 }
-</style>
+
+/* 禁用项样式（需放在 <style> 内） */
 .plugin-item.disabled,
 :deep(.t-menu-item.disabled) {
   opacity: 0.5;
   pointer-events: none;
 }
+</style>

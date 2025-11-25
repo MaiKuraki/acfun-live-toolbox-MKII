@@ -36,6 +36,7 @@ export interface PluginManifest {
   test?: boolean;
   icon?: string;
   main: string;
+  libs?: string[];
   permissions?: string[];
   minAppVersion?: string;
   maxAppVersion?: string;
@@ -71,6 +72,7 @@ export interface PluginManifest {
     route?: string;
     html?: string;
   };
+  runtime?: never;
 }
 
 export interface PluginInfo {
@@ -122,6 +124,8 @@ export class PluginManager extends TypedEventEmitter<PluginManagerEvents> {
   private plugins: Map<string, PluginInfo> = new Map();
   private pluginsDir: string;
   private hotReloadWatchers: Map<string, FSWatcher> = new Map();
+  private dataManager = DataManager.getInstance();
+  private pendingInitAfterLoaded: Set<string> = new Set();
 
   constructor(opts: {
     apiServer: ApiServer;
@@ -169,7 +173,7 @@ export class PluginManager extends TypedEventEmitter<PluginManagerEvents> {
     this.setupLifecycleEvents();
     this.setupHotReloadEvents();
     this.setupPerformanceOptimizations();
-    this.loadInstalledPlugins();
+    // defer plugin loading until API server is ready
   }
 
   private setupProcessManagerEvents(): void {
@@ -180,6 +184,12 @@ export class PluginManager extends TypedEventEmitter<PluginManagerEvents> {
         plugin.status = 'enabled';
         pluginLogger.info('Plugin process started successfully', pluginId);
       }
+      try { this.processManager.executeInPlugin(pluginId, 'afterloaded', [], undefined, { optional: true }); } catch {}
+      try {
+        const { SseQueueService } = require('../server/SseQueueService');
+        const channel = `plugin:${pluginId}:overlay`;
+        SseQueueService.getInstance().queueOrPublish(channel, { event: 'plugin-after-loaded', payload: { ts: Date.now() } }, { ttlMs: 2 * 60 * 1000, persist: true, meta: { kind: 'lifecycle' } });
+      } catch {}
     });
 
     this.processManager.on('process.stopped', ({ pluginId, reason }) => {
@@ -219,48 +229,8 @@ export class PluginManager extends TypedEventEmitter<PluginManagerEvents> {
   }
 
   private setupLifecycleEvents(): void {
-    // 设置生命周期钩子
-    pluginLifecycleManager.registerHook('beforeInstall', async (data) => {
-      pluginLogger.info('Plugin installation starting', data.pluginId);
-      // 插件是自包含的，无需检查依赖关系
-    });
+    // 设置生命周期钩子（afterLoaded 通过进程启动事件触发，不再需要注册）
 
-    pluginLifecycleManager.registerHook('afterInstall', async (data) => {
-      pluginLogger.info('Plugin installation completed', data.pluginId);
-      // 插件是自包含的，无需更新依赖图
-    });
-
-    pluginLifecycleManager.registerHook('beforeEnable', async (data) => {
-      pluginLogger.info('Plugin enabling starting', data.pluginId);
-      // 插件是自包含的，无需检查依赖
-    });
-
-    pluginLifecycleManager.registerHook('afterEnable', async (data) => {
-      pluginLogger.info('Plugin enabled successfully', data.pluginId);
-    });
-
-    pluginLifecycleManager.registerHook('beforeDisable', async (data) => {
-      pluginLogger.info('Plugin disabling starting', data.pluginId);
-      // 插件是自包含的，无需检查依赖
-    });
-
-    pluginLifecycleManager.registerHook('afterDisable', async (data) => {
-      pluginLogger.info('Plugin disabled successfully', data.pluginId);
-    });
-
-    pluginLifecycleManager.registerHook('beforeUninstall', async (data) => {
-      pluginLogger.info('Plugin uninstallation starting', data.pluginId);
-      // 确保插件已禁用
-      const plugin = this.plugins.get(data.pluginId);
-      if (plugin && plugin.enabled) {
-        await this.disablePlugin(data.pluginId);
-      }
-    });
-
-    pluginLifecycleManager.registerHook('afterUninstall', async (data) => {
-      pluginLogger.info('Plugin uninstallation completed', data.pluginId);
-      // 插件是自包含的，无需更新依赖图
-    });
 
     pluginLifecycleManager.registerHook('onError', async (data) => {
       pluginLogger.error('Plugin error occurred', data.pluginId);
@@ -274,6 +244,12 @@ export class PluginManager extends TypedEventEmitter<PluginManagerEvents> {
           data.context
         );
       }
+      try { await this.processManager.executeInPlugin(data.pluginId, 'onError', [data.error, data.context]); } catch {}
+      try {
+        const { SseQueueService } = require('../server/SseQueueService');
+        const channel = `plugin:${data.pluginId}:overlay`;
+        SseQueueService.getInstance().queueOrPublish(channel, { event: 'plugin-error', payload: { message: data.error?.message, context: data.context } }, { ttlMs: 2 * 60 * 1000, persist: true, meta: { kind: 'lifecycle' } });
+      } catch {}
     });
 
     // 监听更新器事件
@@ -300,11 +276,6 @@ export class PluginManager extends TypedEventEmitter<PluginManagerEvents> {
   private setupErrorHandling(): void {
     const dm = DataManager.getInstance();
     pluginErrorHandler.on('plugin-error', (err: any) => {
-      try {
-        const pluginId = String(err?.pluginId || 'unknown');
-        const channel = `plugin:${pluginId}:overlay`;
-        dm.publish(channel, { overlayId: undefined, event: 'runtime-error', payload: { error: String(err?.message || '') } }, { ttlMs: 5 * 60 * 1000, persist: true, meta: { kind: 'lifecycle' } });
-      } catch {}
       try {
         const entry = { level: 'error', source: 'plugin', pluginId: String(err?.pluginId || ''), message: String(err?.message || ''), timestamp: Date.now() };
         dm.publish('system:logs', entry, { ttlMs: 10 * 60 * 1000, persist: true, meta: { kind: 'log' } });
@@ -390,6 +361,7 @@ export class PluginManager extends TypedEventEmitter<PluginManagerEvents> {
 
   private setupPerformanceOptimizations(): void {
     // 设置性能监控事件
+    const _criticalCounts: Map<string, number> = new Map();
     pluginPerformanceMonitor.on('performance-alert', (alert) => {
       pluginLogger.warn(`Performance alert for plugin ${alert.pluginId}`, alert.pluginId, {
         alertType: alert.type,
@@ -398,10 +370,15 @@ export class PluginManager extends TypedEventEmitter<PluginManagerEvents> {
         value: alert.value,
         threshold: alert.threshold
       });
-      
-      // 如果是严重的性能问题，考虑暂停插件
       if (alert.severity === 'critical') {
-        this.suspendPlugin(alert.pluginId, `Performance issue: ${alert.message}`);
+        const c = (_criticalCounts.get(alert.pluginId) || 0) + 1;
+        _criticalCounts.set(alert.pluginId, c);
+        if (c >= 2) {
+          this.suspendPlugin(alert.pluginId, `Performance issue: ${alert.message}`);
+          _criticalCounts.set(alert.pluginId, 0);
+        }
+      } else {
+        _criticalCounts.set(alert.pluginId, 0);
       }
     });
 
@@ -499,7 +476,7 @@ export class PluginManager extends TypedEventEmitter<PluginManagerEvents> {
     }
   }
 
-  private loadInstalledPlugins(): void {
+  public loadInstalledPlugins(): void {
     pluginLogger.info('Loading installed plugins');
     
     try {
@@ -571,6 +548,7 @@ export class PluginManager extends TypedEventEmitter<PluginManagerEvents> {
              }
              const configKey = `plugins.${pluginId}`;
              const pluginConfig = this.configManager.get(configKey, { enabled: false, installedAt: Date.now() });
+            // 删除 beforeLoaded 钩子与对应 SSE 发布
              
              const pluginInfo: PluginInfo = {
                id: pluginId,
@@ -587,6 +565,7 @@ export class PluginManager extends TypedEventEmitter<PluginManagerEvents> {
             
             this.plugins.set(pluginId, pluginInfo);
             pluginLogger.info(`Loaded plugin: ${mergedManifest.name} v${mergedManifest.version}`, pluginId);
+            // 加载阶段不再触发 afterLoaded 或执行同名函数；仅记录插件加载日志
           } else {
             pluginLogger.warn(`Plugin directory missing manifest.json`, pluginId, { pluginPath });
           }
@@ -723,12 +702,6 @@ export class PluginManager extends TypedEventEmitter<PluginManagerEvents> {
       pluginLogger.info(`Installing plugin: ${manifest.name} v${manifest.version}`, pluginId);
       this.emit('plugin.install.progress', { id: manifest.id, progress: 50, message: '验证插件清单...' });
 
-      // 执行 beforeInstall 生命周期钩子
-      await pluginLifecycleManager.executeHook('beforeInstall', {
-        pluginId: manifest.id,
-        manifest,
-        context: { filePath, overwrite, enable }
-      });
 
       // 检查插件是否已存在
       if (this.plugins.has(manifest.id) && !overwrite) {
@@ -776,12 +749,6 @@ export class PluginManager extends TypedEventEmitter<PluginManagerEvents> {
       // 重置该插件的错误计数
       pluginErrorHandler.resetRetryCount(manifest.id);
       
-      // 执行 afterInstall 生命周期钩子
-      await pluginLifecycleManager.executeHook('afterInstall', {
-        pluginId: manifest.id,
-        manifest,
-        context: { filePath, overwrite, enable }
-      });
       
       pluginLogger.info(`Successfully installed plugin: ${manifest.name} v${manifest.version}`, pluginId);
       this.emit('plugin.install.progress', { id: manifest.id, progress: 100, message: '安装完成' });
@@ -851,12 +818,6 @@ export class PluginManager extends TypedEventEmitter<PluginManagerEvents> {
     }
 
     try {
-      // 执行 beforeUninstall 生命周期钩子
-      await pluginLifecycleManager.executeHook('beforeUninstall', {
-        pluginId,
-        manifest: plugin.manifest,
-        context: { action: 'uninstall' }
-      });
 
       // 插件是自包含的，无需检查依赖关系
 
@@ -881,12 +842,6 @@ export class PluginManager extends TypedEventEmitter<PluginManagerEvents> {
       // 从内存中移除
       this.plugins.delete(pluginId);
 
-      // 执行 afterUninstall 生命周期钩子
-      await pluginLifecycleManager.executeHook('afterUninstall', {
-        pluginId,
-        manifest: plugin.manifest,
-        context: { action: 'uninstall' }
-      });
 
       this.emit('plugin.uninstalled', { id: pluginId });
     } catch (error: any) {
@@ -912,9 +867,7 @@ export class PluginManager extends TypedEventEmitter<PluginManagerEvents> {
       throw new Error(`插件 ${pluginId} 不存在`);
     }
 
-    if (plugin.enabled) {
-      return; // 已经启用
-    }
+    // 不按“目标启用态”早退；仅以进程存在作为幂等条件
 
     // 幂等保护：如果进程已存在（启动中/运行中），直接视为启用完成
     const existingProcess = this.processManager.getProcessInfo(pluginId);
@@ -933,12 +886,9 @@ export class PluginManager extends TypedEventEmitter<PluginManagerEvents> {
       plugin.status = 'enabled';
       plugin.lastError = undefined;
 
-      // 保存配置
       const configKey = `plugins.${pluginId}`;
-      this.configManager.set(configKey, {
-        enabled: true,
-        installedAt: plugin.installedAt
-      });
+      const current = (this.configManager.get(configKey, {}) || {}) as Record<string, any>;
+      this.configManager.set(configKey, { ...current, enabled: true, installedAt: plugin.installedAt });
 
       pluginLogger.info('启用跳过：检测到插件进程已存在，直接标记为启用', pluginId);
       return;
@@ -957,12 +907,6 @@ export class PluginManager extends TypedEventEmitter<PluginManagerEvents> {
         0 // normal priority
       );
       
-      // 执行 beforeEnable 生命周期钩子
-      await pluginLifecycleManager.executeHook('beforeEnable', {
-        pluginId,
-        manifest: plugin.manifest,
-        context: { action: 'enable' }
-      });
       
       // 检查依赖
       // await this.checkDependencies(plugin.manifest);
@@ -976,18 +920,12 @@ export class PluginManager extends TypedEventEmitter<PluginManagerEvents> {
         plugin.status = 'enabled';
         plugin.lastError = undefined;
 
-        const configKey = `plugins.${pluginId}`;
-        this.configManager.set(configKey, {
-          enabled: true,
-          installedAt: plugin.installedAt
-        });
+        {
+          const configKey = `plugins.${pluginId}`;
+          const current = (this.configManager.get(configKey, {}) || {}) as Record<string, any>;
+          this.configManager.set(configKey, { ...current, enabled: true, installedAt: plugin.installedAt });
+        }
 
-        // 执行 afterEnable 生命周期钩子
-        await pluginLifecycleManager.executeHook('afterEnable', {
-          pluginId,
-          manifest: plugin.manifest,
-          context: { action: 'enable' }
-        });
 
         this.emit('plugin.enabled', { id: pluginId });
         pluginLogger.info('Enabled static-hosted plugin without process', pluginId, { pluginId });
@@ -995,7 +933,24 @@ export class PluginManager extends TypedEventEmitter<PluginManagerEvents> {
       }
       
       // 启动插件进程
-      const pluginMainPath = path.join(plugin.installPath, plugin.manifest.main);
+      let pluginMainPath = path.join(plugin.installPath, plugin.manifest.main);
+      {
+        const isDev = process.env.NODE_ENV === 'development' || !(process as any).isPackaged;
+        const isTest = !!((plugin.manifest as any)?.test);
+        if (isDev && isTest) {
+          try {
+            const bundledCandidates = [
+              path.join(process.cwd(), 'buildResources', 'plugins', pluginId, plugin.manifest.main),
+              path.join(process.resourcesPath || process.cwd(), 'plugins', pluginId, plugin.manifest.main)
+            ];
+            const bundledMain = bundledCandidates.find(p => fs.existsSync(p));
+            if (bundledMain) {
+              pluginMainPath = bundledMain;
+              pluginLogger.info('开发模式下测试插件使用捆绑主入口', pluginId, { file: plugin.manifest.main });
+            }
+          } catch {}
+        }
+      }
       if (!fs.existsSync(pluginMainPath)) {
         try {
           const candidates = [
@@ -1014,7 +969,30 @@ export class PluginManager extends TypedEventEmitter<PluginManagerEvents> {
           throw repairErr instanceof Error ? repairErr : new Error(String(repairErr));
         }
       }
-      await this.processManager.startPluginProcess(pluginId, pluginMainPath);
+      {
+        const candidates = [
+          path.join(process.cwd(), 'buildResources', 'plugins', pluginId),
+          path.join(process.resourcesPath || process.cwd(), 'plugins', pluginId)
+        ];
+        const bundledRoot = candidates.find(p => fs.existsSync(p));
+        if (bundledRoot && (plugin.manifest as any)?.test === true) {
+          try {
+            const installedMain = pluginMainPath;
+            const content = fs.readFileSync(installedMain, 'utf-8');
+            const ok = content.includes('getStatus') && content.includes('init') && content.includes('cleanup');
+            if (!ok) {
+              fs.cpSync(bundledRoot, plugin.installPath, { recursive: true });
+              pluginLogger.info('启用前修复安装目录为捆绑版', pluginId);
+            }
+          } catch {
+            try {
+              fs.cpSync(bundledRoot, plugin.installPath, { recursive: true });
+              pluginLogger.info('启用前修复安装目录为捆绑版', pluginId);
+            } catch {}
+          }
+        }
+      }
+      await this.processManager.startPluginProcess(pluginId, pluginMainPath, {}, plugin.manifest as any);
 
       // 更新状态
       plugin.enabled = true;
@@ -1022,18 +1000,12 @@ export class PluginManager extends TypedEventEmitter<PluginManagerEvents> {
       plugin.lastError = undefined;
 
       // 保存配置
-      const configKey = `plugins.${pluginId}`;
-      this.configManager.set(configKey, {
-        enabled: true,
-        installedAt: plugin.installedAt
-      });
+      {
+        const configKey = `plugins.${pluginId}`;
+        const current = (this.configManager.get(configKey, {}) || {}) as Record<string, any>;
+        this.configManager.set(configKey, { ...current, enabled: true, installedAt: plugin.installedAt });
+      }
 
-      // 执行 afterEnable 生命周期钩子
-      await pluginLifecycleManager.executeHook('afterEnable', {
-        pluginId,
-        manifest: plugin.manifest,
-        context: { action: 'enable' }
-      });
 
       // 自动启用热重载（开发模式下）
       if (process.env.NODE_ENV === 'development') {
@@ -1109,21 +1081,15 @@ export class PluginManager extends TypedEventEmitter<PluginManagerEvents> {
       // 同步状态与配置
       plugin.status = 'disabled';
       plugin.lastError = undefined;
-      const configKey = `plugins.${pluginId}`;
-      this.configManager.set(configKey, {
-        enabled: false,
-        installedAt: plugin.installedAt
-      });
+      {
+        const configKey = `plugins.${pluginId}`;
+        const current = (this.configManager.get(configKey, {}) || {}) as Record<string, any>;
+        this.configManager.set(configKey, { ...current, enabled: false, installedAt: plugin.installedAt });
+      }
       return; // 已经禁用（或残留已清理）
     }
 
     try {
-      // 执行 beforeDisable 生命周期钩子
-      await pluginLifecycleManager.executeHook('beforeDisable', {
-        pluginId,
-        manifest: plugin.manifest,
-        context: { action: 'disable' }
-      });
 
       // 停止插件进程（若存在）
       const running = this.processManager.getProcessInfo(pluginId);
@@ -1154,20 +1120,10 @@ export class PluginManager extends TypedEventEmitter<PluginManagerEvents> {
       plugin.status = 'disabled';
       plugin.lastError = undefined;
 
-      // 保存配置
       const configKey = `plugins.${pluginId}`;
-      this.configManager.set(configKey, {
-        enabled: false,
-        installedAt: plugin.installedAt
-      });
+      const current = (this.configManager.get(configKey, {}) || {}) as Record<string, any>;
+      this.configManager.set(configKey, { ...current, enabled: false, installedAt: plugin.installedAt });
 
-      // 执行 afterDisable 生命周期钩子
-      await pluginLifecycleManager.executeHook('afterDisable', {
-        pluginId,
-        manifest: plugin.manifest,
-        plugin: plugin,
-        context: { action: 'disable' }
-      });
 
       // 禁用热重载
       try {
@@ -1269,11 +1225,27 @@ export class PluginManager extends TypedEventEmitter<PluginManagerEvents> {
         }
       }
 
-      // 验证主文件存在（仅当声明了 main 时）
+      // 验证主文件存在（CommonJS 入口）
       if (hasProcessMain) {
         const mainFilePath = path.join(pluginDir, manifest.main);
         if (!fs.existsSync(mainFilePath)) {
           throw new Error(`插件主文件 ${manifest.main} 不存在`);
+        }
+      }
+
+      // 验证依赖脚本列表（libs）
+      if ((manifest as any).libs !== undefined) {
+        if (!Array.isArray((manifest as any).libs)) {
+          throw new Error('libs 必须为字符串数组');
+        }
+        for (const rel of (manifest as any).libs as string[]) {
+          if (typeof rel !== 'string' || !rel.trim()) {
+            throw new Error('libs 项必须为非空字符串');
+          }
+          const abs = path.join(pluginDir, rel);
+          if (!fs.existsSync(abs)) {
+            throw new Error(`libs 文件不存在: ${rel}`);
+          }
         }
       }
 

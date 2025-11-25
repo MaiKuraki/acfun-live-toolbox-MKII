@@ -24,6 +24,8 @@ export default [
         clearTimeout: 'readonly',
         clearInterval: 'readonly',
         HTMLElement: 'readonly',
+        HTMLDivElement: 'readonly',
+        getComputedStyle: 'readonly',
         HTMLInputElement: 'readonly',
         NodeJS: 'readonly',
         WebSocket: 'readonly',
@@ -61,6 +63,8 @@ export default [
            clearTimeout: 'readonly',
            clearInterval: 'readonly',
            HTMLElement: 'readonly',
+           HTMLDivElement: 'readonly',
+           getComputedStyle: 'readonly',
            HTMLInputElement: 'readonly',
            NodeJS: 'readonly',
            WebSocket: 'readonly',
@@ -98,7 +102,10 @@ export default [
       'vue/max-attributes-per-line': 'off',
       'vue/attribute-hyphenation': 'off',
       'no-empty': 'warn',
-      'no-case-declarations': 'warn'
+      'no-case-declarations': 'warn',
+      '@typescript-eslint/no-require-imports': 'off',
+      'no-var': 'off',
+      'no-useless-escape': 'off'
     }
   },
   {

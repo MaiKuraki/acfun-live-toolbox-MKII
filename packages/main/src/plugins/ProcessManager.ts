@@ -85,7 +85,8 @@ export class ProcessManager extends TypedEventEmitter<ProcessManagerEvents> {
   public async startPluginProcess(
     pluginId: string, 
     pluginPath: string,
-    options: { autoRestart?: boolean } = {}
+    options: { autoRestart?: boolean } = {},
+    manifest?: any
   ): Promise<PluginProcessInfo> {
     if (this.processes.has(pluginId)) {
       throw new Error(`Plugin process ${pluginId} is already running`);
@@ -96,7 +97,8 @@ export class ProcessManager extends TypedEventEmitter<ProcessManagerEvents> {
     }
 
     try {
-      const workerId = await this.workerPool.createWorker(pluginId, pluginPath);
+      const sandboxConfig = this.buildSandboxConfig(pluginId, manifest);
+      const workerId = await this.workerPool.createWorker(pluginId, pluginPath, sandboxConfig);
       const channelId = `${pluginId}-${workerId}`;
 
       const processInfo: PluginProcessInfo = {
@@ -118,8 +120,7 @@ export class ProcessManager extends TypedEventEmitter<ProcessManagerEvents> {
         this.communicationChannel.createChannel(channelId, pluginId, workerInfo.worker);
       }
 
-      // Initialize plugin
-      await this.executeInPlugin(pluginId, 'init', []);
+      try { console.log('[ProcessManager] starting plugin', { pluginId, pluginPath }); } catch {}
       
       processInfo.status = 'running';
       this.emit('process.started', { pluginId, processInfo });
@@ -134,6 +135,28 @@ export class ProcessManager extends TypedEventEmitter<ProcessManagerEvents> {
     }
   }
 
+  private buildSandboxConfig(pluginId: string, manifest?: any): any {
+    const roots = [
+      path.resolve(process.cwd(), 'packages', 'main'),
+      path.resolve(process.cwd()),
+      path.resolve((process as any).resourcesPath || process.cwd(), 'app.asar'),
+      path.resolve((process as any).resourcesPath || process.cwd(), 'app'),
+    ];
+    const libs = Array.isArray((manifest as any)?.libs) ? (manifest as any).libs : [];
+    return {
+      console: 'redirect',
+      require: {
+        external: true,
+        builtin: ['path','fs','child_process','crypto','os','events','http','https'],
+        root: roots,
+      },
+      libs,
+      sandbox: {
+        pluginId
+      }
+    };
+  }
+
   public async stopPluginProcess(pluginId: string, reason: string = 'manual'): Promise<void> {
     const processInfo = this.processes.get(pluginId);
     if (!processInfo) {
@@ -142,6 +165,16 @@ export class ProcessManager extends TypedEventEmitter<ProcessManagerEvents> {
 
     try {
       processInfo.status = 'stopping';
+
+      try {
+        await this.executeInPlugin(pluginId, 'beforeUnloaded', [], 5000, { optional: true });
+      } catch (_e) {}
+
+      try {
+        const { SseQueueService } = require('../server/SseQueueService');
+        const channel = `plugin:${pluginId}:overlay`;
+        SseQueueService.getInstance().queueOrPublish(channel, { event: 'plugin-before-unloaded', payload: { ts: Date.now() } }, { ttlMs: 2 * 60 * 1000, persist: true, meta: { kind: 'lifecycle' } });
+      } catch {}
 
       // Execute cleanup in plugin
       try {
@@ -173,7 +206,8 @@ export class ProcessManager extends TypedEventEmitter<ProcessManagerEvents> {
     pluginId: string, 
     method: string, 
     args: any[] = [],
-    timeout?: number
+    timeout?: number,
+    options?: { optional?: boolean }
   ): Promise<any> {
     const processInfo = this.processes.get(pluginId);
     if (!processInfo) {
@@ -188,32 +222,68 @@ export class ProcessManager extends TypedEventEmitter<ProcessManagerEvents> {
       }
     }
 
-    try {
-      const result = await this.workerPool.executeInWorker(
-        processInfo.workerId, 
-        method, 
-        args, 
-        timeout
-      );
+    let attempts = 0;
+    const maxAttempts = 8;
+    let lastErr: any = null;
+    while (attempts < maxAttempts) {
+      try {
+        const result = await this.workerPool.executeInWorker(
+          processInfo.workerId,
+          method,
+          args,
+          timeout,
+          options && options.optional
+        );
+        processInfo.executionCount++;
+        processInfo.lastActivity = Date.now();
+        return result;
+      } catch (error: any) {
+        const msg = String(error?.message || error);
+        lastErr = error;
+        if (options && options.optional) {
+          if (msg.toLowerCase().includes('method') && msg.toLowerCase().includes('not') && msg.toLowerCase().includes('found')) {
+            return undefined;
+          }
+          if (msg.toLowerCase().includes('not found on plugin or sandbox')) {
+            return undefined;
+          }
+        }
+        // 忙碌/短时不可用：退避重试
+        if (msg.includes('status: busy') || msg.includes('not available')) {
+          await new Promise(r => setTimeout(r, 200 + attempts * 200));
+          attempts++;
+          continue;
+        }
+        break;
+      }
+    }
 
-      processInfo.executionCount++;
-      processInfo.lastActivity = Date.now();
-
-      return result;
-    } catch (error: any) {
-      processInfo.errorCount++;
-      pluginLogger.error('Plugin execution error', pluginId, error instanceof Error ? error : new Error(String(error)), { method });
-
+    // 非忙碌错误或重试耗尽：记录错误并抛出
+    const errObj = lastErr instanceof Error ? lastErr : new Error(String(lastErr));
+    const msgStr = String(errObj.message || 'error');
+    if (options && options.optional) {
+      if (msgStr.toLowerCase().includes('method') && msgStr.toLowerCase().includes('not') && msgStr.toLowerCase().includes('found')) {
+        return undefined;
+      }
+      if (msgStr.toLowerCase().includes('not found on plugin or sandbox')) {
+        return undefined;
+      }
+    }
+    processInfo.errorCount++;
+    if (msgStr.includes('status: busy') || msgStr.includes('not available')) {
+      // 忙碌耗尽：记录为警告，避免刷屏错误日志
+      pluginLogger.warn('Plugin worker busy during execute', pluginId, { method, attempts: maxAttempts });
+    } else {
+      pluginLogger.error('Plugin execution error', pluginId, errObj, { method });
       await pluginErrorHandler.handleError(
         pluginId,
         ErrorType.RUNTIME_ERROR,
-        error instanceof Error ? error.message : String(error),
-        error instanceof Error ? error : new Error(String(error)),
+        errObj.message,
+        errObj,
         { method, args }
       );
-
-      throw error;
     }
+    throw errObj;
   }
 
   public async sendMessageToPlugin(

@@ -1,6 +1,6 @@
 import { defineStore } from 'pinia'
 import { ref, computed, watch } from 'vue'
-import { reportReadonlyUpdate } from '../utils/readonlyReporter'
+import { reportReadonlyUpdate, reportReadonlyInit } from '../utils/readonlyReporter'
 
 export interface UiState {
   sidebarCollapsed: boolean
@@ -90,6 +90,16 @@ export const useUiStore = defineStore('ui', () => {
 
   // 初始化
   loadFromStorage()
+  try {
+    reportReadonlyInit({
+      ui: {
+        theme: theme.value,
+        sidebarCollapsed: sidebarCollapsed.value,
+        isFullscreen: isFullscreen.value,
+        windowSize: windowSize.value,
+      }
+    })
+  } catch {}
 
   // 监听主题变化，应用到document
   watch(theme, (newTheme) => {

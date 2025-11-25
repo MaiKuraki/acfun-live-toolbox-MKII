@@ -90,7 +90,7 @@
           >
             <div class="log-time">
               <t-icon name="time" />
-              <span class="ts">{{ formatTs(log.timestamp ?? (log as any).ts) }}</span>
+              <span class="ts">{{ formatTs(log.timestamp ?? log.ts) }}</span>
             </div>
             <div class="log-level">
               <t-tag 
@@ -221,7 +221,7 @@ const isLong = (l: LogEntry) => {
 }
 
 // Memoized message truncation for performance
-const truncateMessage = (message: string, maxLength: number = 160) => {
+const truncateMessage = (message: string | undefined, maxLength: number = 160) => {
   try {
     const msg = String(message || '')
     return msg.length > maxLength ? msg.substring(0, maxLength) + '...' : msg

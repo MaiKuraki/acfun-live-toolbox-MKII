@@ -3,6 +3,7 @@ import cors from 'cors';
 import helmet from 'helmet';
 import compression from 'compression';
 import morgan from 'morgan';
+import { getLogManager } from '../logging/LogManager';
 import { createServer, Server } from 'http';
 import * as fs from 'fs';
 import * as path from 'path';
@@ -14,8 +15,11 @@ import { DatabaseManager } from '../persistence/DatabaseManager';
 import { DiagnosticsService } from '../logging/DiagnosticsService';
 import { OverlayManager } from '../plugins/OverlayManager';
 import { IPluginManager, IConsoleManager } from '../types/contracts';
+import { WindowManager } from '../bootstrap/WindowManager';
+import { PluginWindowManager } from '../plugins/PluginWindowManager';
 import { ConfigManager } from '../config/ConfigManager';
 import { AcfunApiProxy } from './AcfunApiProxy';
+import { TokenManager } from './TokenManager';
 import { NormalizedEventType } from '../types';
 import { DataManager, IDataManager } from '../persistence/DataManager';
 import PluginPageStatusManager from '../persistence/PluginPageStatusManager';
@@ -51,6 +55,8 @@ export class ApiServer {
   private pluginManager?: IPluginManager;
   private dataManager: IDataManager;
   private templatesCache: Record<string, string> = {};
+  private windowManager?: WindowManager;
+  private pluginWindowManager?: PluginWindowManager;
 
   constructor(config: ApiServerConfig = { port: 1299 }, databaseManager: DatabaseManager, diagnosticsService: DiagnosticsService, overlayManager: OverlayManager, consoleManager: IConsoleManager) {
     this.config = {
@@ -69,7 +75,7 @@ export class ApiServer {
     this.diagnosticsService = diagnosticsService;
     this.overlayManager = overlayManager;
     this.consoleManager = consoleManager;
-    this.acfunApiProxy = new AcfunApiProxy();
+    this.acfunApiProxy = new AcfunApiProxy({}, TokenManager.getInstance(), databaseManager);
     this.dataManager = DataManager.getInstance();
 
     this.configureMiddleware();
@@ -82,6 +88,12 @@ export class ApiServer {
    */
   public setPluginManager(pm: IPluginManager): void {
     this.pluginManager = pm;
+    try { this.acfunApiProxy.setPluginManager(pm); } catch {}
+  }
+
+  public setWindowManagers(windowManager: WindowManager, pluginWindowManager: PluginWindowManager): void {
+    this.windowManager = windowManager;
+    this.pluginWindowManager = pluginWindowManager;
   }
 
   /**
@@ -91,9 +103,10 @@ export class ApiServer {
     // 安全中间件
     if (this.config.enableHelmet) {
       this.app.use(helmet({
-        contentSecurityPolicy: false, // 允许内联脚本，适用于 Electron 应用
+        contentSecurityPolicy: false,
         crossOriginEmbedderPolicy: false,
-        frameguard: false // 允许被 iframe 嵌入，避免 X-Frame-Options: SAMEORIGIN 拒载
+        frameguard: false,
+        crossOriginResourcePolicy: { policy: 'cross-origin' }
       }));
     }
 
@@ -120,9 +133,25 @@ export class ApiServer {
       this.app.use(compression({ filter: shouldCompress }));
     }
 
-    // 日志中间件
     if (this.config.enableLogging) {
-      this.app.use(morgan('combined'));
+      const logManager = getLogManager();
+      this.app.use(morgan('combined', {
+        skip: (req: express.Request, res: express.Response) => {
+          if (process.env.ACFRAME_DEBUG_LOGS === '1') return false;
+          const url = req.originalUrl || req.url || '';
+          if (url.startsWith('/api/renderer/readonly-store') || url.indexOf('/renderer/readonly-store') >= 0) return true;
+          const status = res.statusCode || 0;
+          if (status < 400) return true;
+          const ua = String(req.headers['user-agent'] || '');
+          if (ua.includes('ACLiveFrame')) return true;
+          return false;
+        },
+        stream: {
+          write: (msg: string) => {
+            try { logManager.addLog('http', String(msg || '').trim(), 'info'); } catch {}
+          }
+        }
+      }));
     }
 
     // 解析中间件
@@ -150,6 +179,9 @@ export class ApiServer {
             { method: 'GET', path: '/api/health', description: 'Server health check' },
             { method: 'GET', path: '/api/plugins', description: 'List installed plugins' },
             { method: 'GET', path: '/api/events', description: 'Query events with pagination' },
+            { method: 'GET', path: '/api/events/dates', description: 'List available event dates' },
+            { method: 'GET', path: '/api/users', description: 'List known users' },
+            { method: 'GET', path: '/api/users/search', description: 'Search users by keyword' },
             { method: 'GET', path: '/api/stats/events', description: 'Event statistics' },
             { method: 'GET', path: '/api/diagnostics', description: 'System diagnostics' },
             { method: 'GET', path: '/api/logs', description: 'Application logs' },
@@ -213,6 +245,14 @@ export class ApiServer {
           ],
           overlay: [
             { method: 'GET', path: '/api/overlay/:overlayId', description: 'Get overlay data by ID' }
+          ],
+          window: [
+            { method: 'POST', path: '/api/popup', description: 'Show global popup on main or plugin window' },
+            { method: 'POST', path: '/api/windows/show', description: 'Show and focus target window (main or plugin window)' },
+            { method: 'POST', path: '/api/windows/focus', description: 'Focus target window (main or plugin window)' },
+            { method: 'POST', path: '/api/windows/close', description: 'Close target window (main or plugin window)' },
+            { method: 'GET', path: '/api/windows/list', description: 'List plugin windows state' },
+            { method: 'GET', path: '/api/windows/self', description: 'Get caller window identity (pluginId or main)' }
           ]
         }
       });
@@ -294,6 +334,37 @@ export class ApiServer {
       } catch (error) {
         next(error);
       }
+    });
+
+    // GET /api/events/dates - 返回事件存在的日期集合
+    this.app.get('/api/events/dates', async (req: express.Request, res: express.Response, next: express.NextFunction) => {
+      try {
+        const roomId = (req.query.room_id as string) || undefined;
+        const dates = await this.queryService.getEventDates(roomId);
+        return res.json({ dates });
+      } catch (error) { next(error); }
+    });
+
+    // GET /api/users - 列出已知用户
+    this.app.get('/api/users', async (req: express.Request, res: express.Response, next: express.NextFunction) => {
+      try {
+        const limit = req.query.limit ? Math.max(1, Math.min(1000, parseInt(String(req.query.limit)))) : 200;
+        const roomId = (req.query.room_id as string) || undefined;
+        const items = await this.queryService.listUsers(limit, roomId);
+        return res.json({ items, total: items.length });
+      } catch (error) { next(error); }
+    });
+
+    // GET /api/users/search - 用户搜索
+    this.app.get('/api/users/search', async (req: express.Request, res: express.Response, next: express.NextFunction) => {
+      try {
+        const keyword = String(req.query.keyword || '').trim();
+        const page = req.query.page ? Math.max(1, parseInt(String(req.query.page))) : 1;
+        const pageSize = req.query.pageSize ? Math.max(1, Math.min(200, parseInt(String(req.query.pageSize)))) : 20;
+        const roomId = (req.query.room_id as string) || undefined;
+        const result = await this.queryService.searchUsers(keyword, page, pageSize, roomId);
+        return res.json(result);
+      } catch (error) { next(error); }
     });
 
     // GET /api/stats/events - 聚合事件统计
@@ -440,6 +511,125 @@ export class ApiServer {
       req.on('close', cleanup);
     });
 
+    // Popup: POST /api/popup
+    this.app.post('/api/popup', async (req: express.Request, res: express.Response) => {
+      try {
+        const headerPluginId = String(req.get('X-Plugin-ID') || '').trim();
+        const { action, title, message, options, windowId } = (req.body || {}) as { action?: string; title?: string; message?: string; options?: any; windowId?: string };
+        const targetPluginId = String(windowId || headerPluginId || '').trim();
+        const act = String(action || '').trim();
+        if (!act || !message) {
+          return res.status(400).json({ success: false, error: 'INVALID_PARAMS' });
+        }
+        const payload: any = act === 'toast'
+          ? { action: 'toast', payload: { message, options } }
+          : act === 'alert'
+            ? { action: 'alert', payload: { title: String(title || ''), message, options } }
+            : act === 'confirm'
+              ? { action: 'confirm', payload: { title: String(title || ''), message, options } }
+              : null;
+        if (!payload) {
+          return res.status(400).json({ success: false, error: 'UNSUPPORTED_ACTION' });
+        }
+        let ok = false;
+        if (targetPluginId) {
+          ok = !!this.pluginWindowManager?.send(targetPluginId, 'renderer-global-popup', payload);
+        } else {
+          const win = this.windowManager?.getMainWindow();
+          if (win && !win.isDestroyed()) { try { win.webContents.send('renderer-global-popup', payload); ok = true; } catch {} }
+        }
+        if (!ok) {
+          return res.status(404).json({ success: false, error: 'WINDOW_NOT_FOUND' });
+        }
+        return res.json({ success: true });
+      } catch (error: any) {
+        return res.status(500).json({ success: false, error: error?.message || 'POPUP_FAILED' });
+      }
+    });
+
+    const resolveWindow = (req: express.Request): { main?: boolean; pluginId?: string } => {
+      const headerPluginId = String(req.get('X-Plugin-ID') || '').trim();
+      const { windowId, pluginId } = (req.body || {}) as any;
+      const target = String(windowId || pluginId || headerPluginId || '').trim();
+      if (target) return { pluginId: target };
+      return { main: true };
+    };
+
+    // Window control: show
+    this.app.post('/api/windows/show', async (req: express.Request, res: express.Response) => {
+      try {
+        const target = resolveWindow(req);
+        if (target.pluginId) {
+          const r = await this.pluginWindowManager?.focus(target.pluginId);
+          const ok = !!(r && (r as any).success);
+          return ok ? res.json({ success: true }) : res.status(404).json({ success: false, error: 'WINDOW_NOT_FOUND' });
+        }
+        const win = this.windowManager?.getMainWindow();
+        if (win && !win.isDestroyed()) { try { win.show(); win.focus(); } catch {} return res.json({ success: true }); }
+        return res.status(404).json({ success: false, error: 'MAIN_WINDOW_NOT_FOUND' });
+      } catch (error: any) {
+        return res.status(500).json({ success: false, error: error?.message || 'SHOW_FAILED' });
+      }
+    });
+
+    // Window control: focus
+    this.app.post('/api/windows/focus', async (req: express.Request, res: express.Response) => {
+      try {
+        const target = resolveWindow(req);
+        if (target.pluginId) {
+          const r = await this.pluginWindowManager?.focus(target.pluginId);
+          const ok = !!(r && (r as any).success);
+          return ok ? res.json({ success: true }) : res.status(404).json({ success: false, error: 'WINDOW_NOT_FOUND' });
+        }
+        const win = this.windowManager?.getMainWindow();
+        if (win && !win.isDestroyed()) { try { win.show(); win.focus(); } catch {} return res.json({ success: true }); }
+        return res.status(404).json({ success: false, error: 'MAIN_WINDOW_NOT_FOUND' });
+      } catch (error: any) {
+        return res.status(500).json({ success: false, error: error?.message || 'FOCUS_FAILED' });
+      }
+    });
+
+    // Window control: close
+    this.app.post('/api/windows/close', async (req: express.Request, res: express.Response) => {
+      try {
+        const { pluginId } = resolveWindow(req);
+        if (pluginId) {
+          const r = await this.pluginWindowManager?.close(pluginId);
+          const ok = !!(r && (r as any).success);
+          return ok ? res.json({ success: true }) : res.status(404).json({ success: false, error: 'WINDOW_NOT_FOUND' });
+        }
+        const win = this.windowManager?.getMainWindow();
+        if (win && !win.isDestroyed()) { try { win.close(); } catch {} return res.json({ success: true }); }
+        return res.status(404).json({ success: false, error: 'MAIN_WINDOW_NOT_FOUND' });
+      } catch (error: any) {
+        return res.status(500).json({ success: false, error: error?.message || 'CLOSE_FAILED' });
+      }
+    });
+
+    // Window list
+    this.app.get('/api/windows/list', async (_req: express.Request, res: express.Response) => {
+      try {
+        const list = await this.pluginWindowManager?.list();
+        const main = this.windowManager?.getMainWindow();
+        const mainState = main && !main.isDestroyed() ? { windowId: 'main', visible: main.isVisible(), focused: main.isFocused() } : { windowId: 'main', visible: false, focused: false };
+        const windows = Array.isArray((list as any)?.windows) ? (list as any).windows.map((w: any) => ({ windowId: w.pluginId, visible: !!w.visible, focused: !!w.focused })) : [];
+        return res.json({ success: true, windows: [mainState, ...windows] });
+      } catch (error: any) {
+        return res.status(500).json({ success: false, error: error?.message || 'LIST_FAILED' });
+      }
+    });
+
+    // Window self identity
+    this.app.get('/api/windows/self', async (req: express.Request, res: express.Response) => {
+      try {
+        const headerPluginId = String(req.get('X-Plugin-ID') || '').trim();
+        const windowId = headerPluginId || 'main';
+        return res.json({ success: true, windowId });
+      } catch (error: any) {
+        return res.status(500).json({ success: false, error: error?.message || 'SELF_FAILED' });
+      }
+    });
+
     
     this.app.get('/api/logs', (req: express.Request, res: express.Response, next: express.NextFunction) => {
       try {
@@ -566,6 +756,42 @@ export class ApiServer {
       }
     });
 
+    // GET /api/plugins/:pluginId/config - 读取插件已保存配置（只读）
+    this.app.get('/api/plugins/:pluginId/config', (req: express.Request, res: express.Response) => {
+      try {
+        const pluginId = String(req.params.pluginId || '').trim();
+        if (!pluginId) {
+          return res.status(400).json({ success: false, error: 'INVALID_PLUGIN_ID' });
+        }
+        let conf: Record<string, any> | null = null;
+        let fromStore: Record<string, any> | null = null;
+        try {
+          const userData = app.getPath('userData');
+          const filePath = path.join(userData, 'config.json');
+          const raw = fs.readFileSync(filePath, 'utf-8');
+          const json = JSON.parse(raw || '{}');
+          const plugins = (json && typeof json === 'object' ? (json as any).plugins : null) || null;
+          const obs = plugins && typeof plugins === 'object' ? (plugins as any)[pluginId] : null;
+          const data = obs && typeof obs === 'object' ? (obs as any).config : null;
+          if (data && typeof data === 'object') {
+            conf = data as Record<string, any>;
+          }
+        } catch {}
+        try {
+          const cfg = new ConfigManager();
+          fromStore = (cfg.get(`plugins.${pluginId}.config`, {}) || {}) as Record<string, any>;
+        } catch {}
+        if (!conf || (conf && Object.keys(conf).length === 0)) {
+          conf = fromStore || {};
+        } else if (fromStore && Object.keys(fromStore).length > 0) {
+          conf = { ...fromStore, ...conf };
+        }
+        res.json({ success: true, data: conf || {} });
+      } catch (error) {
+        res.status(500).json({ success: false, error: (error as Error).message });
+      }
+    });
+
     // AcFun API 代理路由 - 将所有 /api/acfun/* 请求代理到 AcfunApiProxy
     this.app.use('/api/acfun', this.acfunApiProxy.createRoutes());
 
@@ -663,6 +889,7 @@ export class ApiServer {
               res.setHeader('Pragma', 'no-cache');
               res.setHeader('Expires', '0');
               res.setHeader('Surrogate-Control', 'no-store');
+              res.setHeader('Cross-Origin-Resource-Policy', 'cross-origin');
             } catch {}
             return res.sendFile(finalResolved);
           };
@@ -841,6 +1068,13 @@ export class ApiServer {
         }
       };
 
+      try {
+        const ov = this.overlayManager.getOverlay(overlayId);
+        const pluginId = ov?.pluginId || 'unknown';
+        const channel = `plugin:${pluginId}:overlay`;
+        try { (require('./SseQueueService') as any).SseQueueService.getInstance().markReady(channel); } catch {}
+      } catch {}
+
       const cleanup = () => {
         try {
           this.overlayManager.off('overlay-updated', onUpdated as any);
@@ -889,6 +1123,7 @@ export class ApiServer {
       console.log('[ApiServer#SSE /sse/plugins/:pluginId/overlay] connect', { pluginId, lastEventId });
 
       const channel = `plugin:${pluginId}:overlay`;
+      try { (require('./SseQueueService') as any).SseQueueService.getInstance().markReady(channel); } catch {}
       const statusManager = PluginPageStatusManager.getInstance();
       const clientId = `${Math.random().toString(36).slice(2)}${Date.now().toString(36)}`;
 
@@ -932,7 +1167,16 @@ export class ApiServer {
 
       // 回放自 lastEventId 之后的记录
       try {
-        const recent = this.dataManager.getRecent(channel, lastEventId);
+        let recent = this.dataManager.getRecent(channel, lastEventId);
+        if (!lastEventId) {
+          const picked: any[] = [];
+          const seen = new Set<string>();
+          for (let i = recent.length - 1; i >= 0; i--) {
+            const kind = recent[i]?.meta?.kind ?? 'message';
+            if (!seen.has(kind)) { seen.add(kind); picked.push(recent[i]); }
+          }
+          recent = picked.reverse();
+        }
         for (const rec of recent) sendRecord(rec);
       } catch {}
 
@@ -976,14 +1220,18 @@ export class ApiServer {
           // 广播：枚举该插件的所有 overlay，并为每个 overlayId 发布一条消息
           const overlays = this.overlayManager.getAllOverlays().filter(ov => String(ov?.pluginId || '') === String(pluginId));
           const ids: string[] = [];
+          const { SseQueueService } = require('./SseQueueService');
+          const sq = SseQueueService.getInstance();
           for (const ov of overlays) {
-            const rec = this.dataManager.publish(channel, { overlayId: ov.id, event, payload }, { ttlMs, persist: persist !== false, meta: { kind: 'message' } });
-            ids.push(rec.id);
+            const recOrQueued = sq.queueOrPublish(channel, { overlayId: ov.id, event, payload }, { ttlMs, persist: persist !== false, meta: { kind: 'message' } });
+            if (recOrQueued && recOrQueued.id) ids.push(recOrQueued.id);
           }
           return res.json({ success: true, count: ids.length, ids });
         } else {
-          const record = this.dataManager.publish(channel, { overlayId: id, event, payload }, { ttlMs, persist: persist !== false, meta: { kind: 'message' } });
-          return res.json({ success: true, id: record.id });
+          const { SseQueueService } = require('./SseQueueService');
+          const sq = SseQueueService.getInstance();
+          const record = sq.queueOrPublish(channel, { overlayId: id, event, payload }, { ttlMs, persist: persist !== false, meta: { kind: 'message' } });
+          return res.json({ success: true, id: record && record.id });
         }
       } catch (error: any) {
         console.error('[ApiServer] enqueue plugin overlay message failed:', error);
@@ -997,8 +1245,8 @@ export class ApiServer {
         const ov = msg?.overlayId ? this.overlayManager.getOverlay(msg.overlayId) : undefined;
         const pluginId = ov?.pluginId || 'unknown';
         const channel = `plugin:${pluginId}:overlay`;
-        console.log('[ApiServer#publish] overlay-message', { pluginId, channel, overlayId: msg?.overlayId, event: msg?.event });
-        this.dataManager.publish(channel, msg, { ttlMs: 5 * 60 * 1000, persist: true, meta: { kind: 'message' } });
+        try { if ((this.dataManager as any).hasSubscribers(channel)) { console.log('[ApiServer#publish] overlay-message', { pluginId, channel, overlayId: msg?.overlayId, event: msg?.event }); } } catch {}
+      try { (require('./SseQueueService') as any).SseQueueService.getInstance().queueOrPublish(channel, msg, { ttlMs: 5 * 60 * 1000, persist: true, meta: { kind: 'message' } }); } catch {}
       } catch (e) {
         console.warn('[ApiServer] publish overlay-message failed:', e);
       }
@@ -1008,8 +1256,8 @@ export class ApiServer {
         if (!ov || !ov.id) return;
         const pluginId = ov?.pluginId || 'unknown';
         const channel = `plugin:${pluginId}:overlay`;
-        console.log('[ApiServer#publish] overlay-updated', { pluginId, channel, overlayId: ov?.id });
-        this.dataManager.publish(channel, { overlayId: ov.id, event: 'overlay-updated', payload: ov }, { ttlMs: 5 * 60 * 1000, persist: true, meta: { kind: 'update' } });
+        try { if ((this.dataManager as any).hasSubscribers(channel)) { console.log('[ApiServer#publish] overlay-updated', { pluginId, channel, overlayId: ov?.id }); } } catch {}
+      try { (require('./SseQueueService') as any).SseQueueService.getInstance().queueOrPublish(channel, { overlayId: ov.id, event: 'overlay-updated', payload: ov }, { ttlMs: 5 * 60 * 1000, persist: true, meta: { kind: 'update' } }); } catch {}
       } catch (e) {
         console.warn('[ApiServer] publish overlay-updated failed:', e);
       }
@@ -1019,8 +1267,8 @@ export class ApiServer {
         const ov = this.overlayManager.getOverlay(overlayId);
         const pluginId = ov?.pluginId || 'unknown';
         const channel = `plugin:${pluginId}:overlay`;
-        console.log('[ApiServer#publish] overlay-closed', { pluginId, channel, overlayId });
-        this.dataManager.publish(channel, { overlayId, event: 'overlay-closed' }, { ttlMs: 60 * 1000, persist: true, meta: { kind: 'closed' } });
+        try { if ((this.dataManager as any).hasSubscribers(channel)) { console.log('[ApiServer#publish] overlay-closed', { pluginId, channel, overlayId }); } } catch {}
+      try { (require('./SseQueueService') as any).SseQueueService.getInstance().queueOrPublish(channel, { overlayId, event: 'overlay-closed' }, { ttlMs: 60 * 1000, persist: true, meta: { kind: 'closed' } }); } catch {}
       } catch (e) {
         console.warn('[ApiServer] publish overlay-closed failed:', e);
       }
@@ -1030,8 +1278,8 @@ export class ApiServer {
         const ov = act?.overlay;
         const pluginId = ov?.pluginId || 'unknown';
         const channel = `plugin:${pluginId}:overlay`;
-        console.log('[ApiServer#publish] overlay-action', { pluginId, channel, overlayId: act?.overlayId, action: act?.action });
-        this.dataManager.publish(channel, { overlayId: act?.overlayId, event: 'overlay-action', payload: { action: act?.action, data: act?.data } }, { ttlMs: 2 * 60 * 1000, persist: true, meta: { kind: 'action' } });
+        try { if ((this.dataManager as any).hasSubscribers(channel)) { console.log('[ApiServer#publish] overlay-action', { pluginId, channel, overlayId: act?.overlayId, action: act?.action }); } } catch {}
+      try { (require('./SseQueueService') as any).SseQueueService.getInstance().queueOrPublish(channel, { overlayId: act?.overlayId, event: 'overlay-action', payload: { action: act?.action, data: act?.data } }, { ttlMs: 2 * 60 * 1000, persist: true, meta: { kind: 'action' } }); } catch {}
       } catch (e) {
         console.warn('[ApiServer] publish overlay-action failed:', e);
       }
@@ -1094,8 +1342,52 @@ export class ApiServer {
       }
     });
 
-    // SSE: GET /sse/renderer/readonly-store - 订阅渲染层只读仓库（主进程统一分发）
-    this.app.get('/sse/renderer/readonly-store', (req: express.Request, res: express.Response) => {
+    this.app.get('/api/renderer/readonly-store/list', (req: express.Request, res: express.Response) => {
+      try {
+        const channel = 'renderer:readonly-store';
+        const recent = this.dataManager.getRecent(channel) || [];
+        const set = new Set<string>();
+        for (const rec of recent) {
+          const outer = (rec && (rec.payload ?? rec)) as any;
+          const data = outer && (outer.payload ?? outer);
+          if (!data || typeof data !== 'object' || Array.isArray(data)) continue;
+          for (const key of Object.keys(data)) { set.add(key); }
+        }
+        return res.json({ success: true, keys: Array.from(set) });
+      } catch (error: any) {
+        return res.status(500).json({ success: false, error: error?.message || 'LIST_FAILED' });
+      }
+    });
+
+    this.app.post('/api/renderer/readonly-store/snapshot', (req: express.Request, res: express.Response) => {
+      try {
+        const keys = ((req.body || {}) as any).keys as string[];
+        if (!Array.isArray(keys) || keys.length === 0) {
+          return res.status(400).json({ success: false, error: 'INVALID_KEYS' });
+        }
+        const allow = new Set<string>(keys.map(k => String(k)));
+        const channel = 'renderer:readonly-store';
+        const recent = this.dataManager.getRecent(channel) || [];
+        const snapshot: Record<string, any> = {};
+        for (const rec of recent) {
+          const outer = (rec && (rec.payload ?? rec)) as any;
+          const data = outer && (outer.payload ?? outer);
+          if (!data || typeof data !== 'object' || Array.isArray(data)) continue;
+          for (const key of Object.keys(data)) {
+            if (!allow.has(key)) continue;
+            const val = (data as any)[key];
+            if (val === undefined) continue;
+            snapshot[key] = val;
+          }
+        }
+        try { if ('plugin' in snapshot) delete (snapshot as any).plugin; } catch {}
+        return res.json({ success: true, data: snapshot });
+      } catch (error: any) {
+        return res.status(500).json({ success: false, error: error?.message || 'SNAPSHOT_FAILED' });
+      }
+    });
+
+    this.app.get('/sse/renderer/readonly-store/subscribe', (req: express.Request, res: express.Response) => {
       // 标准 SSE 头
       res.setHeader('Content-Type', 'text/event-stream');
       res.setHeader('Cache-Control', 'no-cache');
@@ -1103,8 +1395,15 @@ export class ApiServer {
       res.setHeader('X-Accel-Buffering', 'no');
       try { (res as any).flushHeaders?.(); } catch {}
       try { res.write(':\n\n'); } catch {}
-      console.log('[ApiServer#SSE /sse/renderer/readonly-store] connect');
-
+      console.log('[ApiServer#SSE /sse/renderer/readonly-store/subscribe] connect');
+      const rawKeys = String((req.query.keys || '') as any).trim();
+      if (!rawKeys) {
+        try { res.write('event: error\n'); res.write('data: {"error":"INVALID_KEYS"}\n\n'); } catch {}
+        try { res.end(); } catch {}
+        return;
+      }
+      const keys = rawKeys.split(',').map(s => s.trim()).filter(Boolean);
+      const allow = new Set<string>(keys);
       const channel = 'renderer:readonly-store';
           const sendRecord = (rec: any) => {
             try {
@@ -1118,8 +1417,11 @@ export class ApiServer {
               // 过滤顶层 plugin 字段
               const dataObj = (payload && payload.payload) ? { ...(payload.payload || {}) } : {};
               try { if (dataObj && typeof dataObj === 'object' && 'plugin' in dataObj) delete (dataObj as any).plugin; } catch {}
-              res.write(`event: ${evt}\n`);
-              res.write(`data: ${JSON.stringify(dataObj)}\n\n`);
+          const filtered: Record<string, any> = {};
+          for (const k of Object.keys(dataObj)) { if (allow.has(k)) filtered[k] = (dataObj as any)[k]; }
+          if (Object.keys(filtered).length === 0) { return; }
+          res.write(`event: ${evt}\n`);
+          res.write(`data: ${JSON.stringify(filtered)}\n\n`);
             } catch (e) {
               console.warn('[ApiServer] SSE(renderer store) send failed:', e);
             }
@@ -1136,12 +1438,14 @@ export class ApiServer {
           for (const key of Object.keys(data)) {
             const val = (data as any)[key];
             if (val === undefined) continue;
-            snapshot[key] = val;
+            if (allow.has(key)) snapshot[key] = val;
           }
         }
         if ('plugin' in snapshot) delete (snapshot as any).plugin;
-        res.write('event: readonly-store-init\n');
-        res.write(`data: ${JSON.stringify(snapshot)}\n\n`);
+        if (Object.keys(snapshot).length > 0) {
+          res.write('event: readonly-store-init\n');
+          res.write(`data: ${JSON.stringify(snapshot)}\n\n`);
+        }
       } catch {}
 
       // 订阅后续更新
@@ -1159,10 +1463,28 @@ export class ApiServer {
         try { unsubscribe(); } catch {}
         try { clearInterval(heartbeat); } catch {}
         try { res.end(); } catch {}
-        console.log('[ApiServer#SSE /sse/renderer/readonly-store] disconnect');
+        console.log('[ApiServer#SSE /sse/renderer/readonly-store/subscribe] disconnect');
       };
       req.on('close', cleanup);
     });
+
+    try {
+      const onReadonlyUpdate = (rec: any) => {
+        try {
+          const payload = rec?.payload?.payload;
+          const evt = rec?.payload?.event;
+          const ui = payload?.ui;
+          if (evt === 'readonly-store-update' && ui && (ui.routePath || ui.pageName || ui.pageTitle)) {
+            const plugins = this.pluginManager?.getInstalledPlugins().filter(p => p.enabled) || [];
+            for (const p of plugins) {
+              const channel = `plugin:${p.id}:overlay`;
+              this.dataManager.publish(channel, { event: 'route-changed', payload: { routePath: ui.routePath, pageName: ui.pageName, pageTitle: ui.pageTitle } }, { ttlMs: 10000, persist: false, meta: { kind: 'ui' } });
+            }
+          }
+        } catch {}
+      };
+      this.dataManager.subscribe('renderer:readonly-store', onReadonlyUpdate as any, undefined);
+    } catch {}
 
     // POST /api/overlay/create - 创建一个 Overlay（替代渲染层 preload 创建）
     this.app.post('/api/overlay/create', async (req: express.Request, res: express.Response) => {

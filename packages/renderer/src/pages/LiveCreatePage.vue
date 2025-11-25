@@ -1,3 +1,4 @@
+<!-- eslint-disable vue/no-v-model-argument -->
 <template>
   <div class="live-create-page">
     <!-- 权限验证状态 -->
@@ -54,7 +55,7 @@
                     filterable
                     clearable
                     aria-label="直播分类选择器"
-                    @change="(value, context) => console.log('[LiveCreateDraft] cascader change:', {value, context, current: basicForm.category})"
+                    @change="onCategoryChange"
                   />
                 </t-form-item>
               </div>
@@ -173,7 +174,9 @@
 </template>
 
 <script setup lang="ts">
-import { ref, reactive, computed, onMounted, nextTick, watch } from 'vue';
+/* eslint-disable vue/no-v-model-argument */
+import { ref, reactive, computed, onMounted, nextTick, watch, onActivated, onDeactivated, onUnmounted } from 'vue';
+import { useRoute } from 'vue-router'
 import { useRouter } from 'vue-router';
 import { MessagePlugin } from 'tdesign-vue-next';
 import { useAccountStore } from '../stores/account';
@@ -215,6 +218,7 @@ interface TranscodeInfo {
 
 // 路由和状态
 const router = useRouter();
+const route = useRoute();
 const accountStore = useAccountStore();
 
 // 权限验证状态
@@ -231,6 +235,25 @@ const basicForm = reactive({
   category: [] as (string | number)[],
   cover: '',
   mode: 'landscape' as 'portrait' | 'landscape'
+});
+
+onActivated(() => {
+  try {
+    if (streamCheckTimer.value) {
+      clearInterval(streamCheckTimer.value);
+      streamCheckTimer.value = null;
+    }
+    startStreamStatusCheck();
+  } catch {}
+});
+
+onDeactivated(() => {
+  try {
+    if (streamCheckTimer.value) {
+      clearInterval(streamCheckTimer.value);
+      streamCheckTimer.value = null;
+    }
+  } catch {}
 });
 
 const DRAFT_KEY = 'LIVE_CREATE_BASIC_FORM_V1';
@@ -419,37 +442,24 @@ onMounted(async () => {
   }
   const streamStore = useStreamStore()
   await checkLivePermission();
-  if (hasPermission.value) {
-    await loadCategories();
-    console.log('[LiveCreateDraft] before normalizeCategoryDraft:', basicForm.category);
-    normalizeCategoryDraft();
-    console.log('[LiveCreateDraft] after normalizeCategoryDraft:', basicForm.category);
-    if ((streamStore as any).hasValid) {
-      streamInfo.value = { rtmpUrl: (streamStore as any).rtmpUrl, streamKey: (streamStore as any).streamKey, expiresAt: Number((streamStore as any).expiresAt || Date.now() + 3600000) } as any
-    } else {
-      await loadStreamInfo();
-      try {
-        await (streamStore as any).setStreamInfo({ rtmpUrl: streamInfo.value?.rtmpUrl, streamKey: streamInfo.value?.streamKey, expiresAt: streamInfo.value?.expiresAt })
-        await (streamStore as any).syncReadonlyStore()
-      } catch {}
-    }
-  }
   try {
     const statusRes = await window.electronApi.http.get('/api/acfun/live/stream-status');
-    if (statusRes.success && statusRes.data?.liveID) {
+    if (statusRes && statusRes.success && statusRes.data && statusRes.data.liveID) {
       router.replace(`/live/manage/${statusRes.data.liveID}`);
       return;
     }
   } catch {}
+  if (hasPermission.value) {
+    await loadCategories();
+    normalizeCategoryDraft();
+    await loadStreamInfo();
+    try {
+      await (streamStore as any).setStreamInfo({ rtmpUrl: streamInfo.value?.rtmpUrl, streamKey: streamInfo.value?.streamKey, expiresAt: streamInfo.value?.expiresAt })
+      await (streamStore as any).syncReadonlyStore()
+    } catch {}
+  }
   isRestoringDraft.value = false;
   console.log('[LiveCreateDraft] onMounted completed, isRestoringDraft:', isRestoringDraft.value);
-  try {
-    const cfgRes = await window.electronApi.plugin.getConfig('obs-assistant')
-    const cfg = (cfgRes && cfgRes.success) ? (cfgRes.data || {}) : {}
-    if (cfg && cfg.autoStartObs) {
-      try { await window.electronApi.plugin.execute?.('obs-assistant', 'ensureObsRunning', []) } catch {}
-    }
-  } catch {}
 });
 
 watch(basicForm, (newVal, oldVal) => {
@@ -584,7 +594,7 @@ async function handleCoverSuccess(response: any, file: UploadFile) {
         basicForm.cover = base64;
         MessagePlugin.success('封面图片已加载');
       };
-      reader.readAsDataURL(file.raw);
+      if (file?.raw instanceof File) reader.readAsDataURL(file.raw);
     } else if (response && response.url) {
       // 如果已经有URL，直接使用
       basicForm.cover = response.url;
@@ -619,7 +629,7 @@ async function handleCoverChange(files: UploadFile[]) {
       // 直接存储base64到表单
       basicForm.cover = base64;
     };
-    reader.readAsDataURL(file.raw);
+    if (file?.raw instanceof File) reader.readAsDataURL(file.raw);
   } else {
     basicForm.cover = '';
   }
@@ -755,7 +765,6 @@ async function startStreamStatusCheck() {
         transcodeInfo.value = [];
         console.log('[LiveCreate][STATUS] error/empty, canStartLive=', canStartLive.value, 'error=', result.error);
         
-        // 如果是认证错误，停止轮询
         if (result.error?.includes('token') || result.error?.includes('认证') || result.error?.includes('cookies')) {
           if (streamCheckTimer.value) {
             clearInterval(streamCheckTimer.value);
@@ -782,20 +791,37 @@ async function loadStreamInfo() {
   }
 }
 
+ 
+
+ 
+
+// 路由兜底：当进入 /live/create 时强制重启检测；离开时清理定时器
+watch(() => route.fullPath, async (fp) => {
+  try {
+    if (fp && fp.startsWith('/live/create')) {
+      if (streamCheckTimer.value) { clearInterval(streamCheckTimer.value); streamCheckTimer.value = null; }
+      try {
+        const statusRes = await window.electronApi.http.get('/api/acfun/live/stream-status');
+        if (statusRes && statusRes.success && statusRes.data && statusRes.data.liveID) {
+          router.replace(`/live/manage/${statusRes.data.liveID}`);
+          return;
+        }
+      } catch {}
+      streamStatus.value = 'connecting';
+      await getStreamInfo();
+    } else {
+      if (streamCheckTimer.value) { clearInterval(streamCheckTimer.value); streamCheckTimer.value = null; }
+    }
+  } catch (e) {
+    console.warn('[LiveCreate] route watch restart error:', e);
+  }
+}, { immediate: false });
+
 function goBack() {
   router.back();
 }
 
-watch(streamInfo, async (val) => {
-  try {
-    if (!val || !val.rtmpUrl || !val.streamKey) return
-    const cfgRes = await window.electronApi.plugin.getConfig('obs-assistant')
-    const cfg = (cfgRes && cfgRes.success) ? (cfgRes.data || {}) : {}
-    if (cfg && cfg.syncStreaming) {
-      try { await window.electronApi.plugin.execute?.('obs-assistant', 'applyObsSettings', [ { rtmpUrl: val.rtmpUrl, streamKey: val.streamKey }, transcodeInfo.value ]) } catch {}
-    }
-  } catch {}
-}, { immediate: false })
+ 
 
 // 复制推流地址
 function copyStreamUrl() {
@@ -1004,82 +1030,7 @@ async function startLive() {
   }
 }
 
-// 获取开始按钮文本
-function getStartButtonText() {
-  if (startLiveStatus.value?.type === 'success') {
-    return '直播已创建';
-  }
-  return '开始直播';
-}
-
-// 处理图片裁剪确认
-async function handleCropConfirm() {
-  try {
-    cropLoading.value = true;
-    const imgEl = cropImageRef.value as HTMLImageElement | undefined;
-    const src = coverPreviewUrl.value;
-    if (!imgEl || !src) {
-      showCropDialog.value = false;
-      cropLoading.value = false;
-      return;
-    }
-    const naturalW = imgEl.naturalWidth;
-    const naturalH = imgEl.naturalHeight;
-    const targetRatio = 16 / 9;
-    let cropW = naturalW;
-    let cropH = Math.floor(cropW / targetRatio);
-    if (cropH > naturalH) {
-      cropH = naturalH;
-      cropW = Math.floor(cropH * targetRatio);
-    }
-    const offsetX = Math.floor((naturalW - cropW) / 2);
-    const offsetY = Math.floor((naturalH - cropH) / 2);
-    const canvas = document.createElement('canvas');
-    canvas.width = cropW;
-    canvas.height = cropH;
-    const ctx = canvas.getContext('2d');
-    if (!ctx) {
-      showCropDialog.value = false;
-      cropLoading.value = false;
-      return;
-    }
-    const img = new Image();
-    img.onload = () => {
-      ctx.drawImage(img, offsetX, offsetY, cropW, cropH, 0, 0, cropW, cropH);
-      const output = canvas.toDataURL('image/jpeg', 0.9);
-      coverPreviewUrl.value = output;
-      if (files.value && files.value.length) {
-        (files.value[0] as any).url = output;
-      }
-      fetch(`${getApiBase()}/api/acfun/image/upload`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ imageFile: output })
-      }).then(r => r.json()).then(resp => {
-        basicForm.cover = (resp.success && resp.data && (resp.data.url || resp.data.path)) || output;
-        showCropDialog.value = false;
-        MessagePlugin.success('封面裁剪成功');
-        cropLoading.value = false;
-      }).catch(() => {
-        basicForm.cover = output;
-        showCropDialog.value = false;
-        cropLoading.value = false;
-        MessagePlugin.warning('裁剪已应用，但上传失败，将直接使用本地封面');
-      });
-    };
-    img.onerror = () => {
-      showCropDialog.value = false;
-      cropLoading.value = false;
-      MessagePlugin.error('裁剪失败，请重试');
-    };
-    img.src = src;
-  } catch (error) {
-    console.error('封面裁剪失败:', error);
-    MessagePlugin.error('封面裁剪失败，请重试');
-  } finally {
-    // 上面成功路径已处理loading结束
-  }
-}
+// 已移除旧的裁剪逻辑
 
 // 进入直播间管理
 function goToLiveRoom() {
@@ -1150,13 +1101,27 @@ function getModeText(mode: string) {
 }
 
 // 清理定时器
-onMounted(() => {
-  return () => {
+onUnmounted(() => {
+  try {
     if (streamCheckTimer.value) {
       clearInterval(streamCheckTimer.value);
+      streamCheckTimer.value = null;
     }
-  };
+  } catch {}
 });
+// 事件处理：分类改变
+function onCategoryChange(value: any, context: any) {
+  console.log('[LiveCreateDraft] cascader change:', { value, context, current: basicForm.category });
+}
+
+// 刷新推流信息
+async function refreshStreamInfo() {
+  try {
+    const streamStore = useStreamStore();
+    await (streamStore as any).refresh(true);
+    streamInfo.value = { rtmpUrl: (streamStore as any).rtmpUrl, streamKey: (streamStore as any).streamKey, expiresAt: Number((streamStore as any).expiresAt || Date.now() + 3600000) } as any;
+  } catch {}
+}
 </script>
 
 <style scoped>
@@ -1513,10 +1478,3 @@ onMounted(() => {
 
 /* 固定布局，无响应式 */
 </style>
-async function refreshStreamInfo() {
-  try {
-    const streamStore = useStreamStore()
-    await (streamStore as any).refresh(true)
-    streamInfo.value = { rtmpUrl: (streamStore as any).rtmpUrl, streamKey: (streamStore as any).streamKey, expiresAt: Number((streamStore as any).expiresAt || Date.now() + 3600000) } as any
-  } catch {}
-}

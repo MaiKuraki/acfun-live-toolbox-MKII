@@ -1,6 +1,6 @@
 import { defineStore } from 'pinia';
 import { ref, computed, watch } from 'vue';
-import { reportReadonlyUpdate } from '../utils/readonlyReporter';
+import { reportReadonlyUpdate, reportReadonlyInit } from '../utils/readonlyReporter';
 
 export type AppRole = 'anchor' | 'moderator' | 'developer';
 export type StatsScope = '7d' | '30d';
@@ -47,6 +47,14 @@ export const useRoleStore = defineStore('role', () => {
 
   // Boot
   initRole();
+  try {
+    reportReadonlyInit({
+      role: {
+        current: current.value,
+        statsScope: statsScope.value,
+      }
+    });
+  } catch {}
 
   // 变更订阅：角色与统计范围变化时，调用统一只读上报
   watch(

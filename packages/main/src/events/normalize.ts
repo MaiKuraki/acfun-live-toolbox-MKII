@@ -1,6 +1,11 @@
 import type { NormalizedEvent, NormalizedEventType } from '../types';
 
-const ALLOWED_TYPES: NormalizedEventType[] = ['danmaku','gift','follow','like','enter','system'];
+const ALLOWED_TYPES: NormalizedEventType[] = [
+  'danmaku','gift','follow','like','enter','system',
+  'bananaCount','displayInfo','topUsers','redpackList',
+  'chatCall','chatAccept','chatReady','chatEnd',
+  'kickedOut','violationAlert','managerState','end'
+];
 
 // 事件验证规则
 interface ValidationRule {
@@ -68,83 +73,7 @@ const VALIDATION_RULES: ValidationRule[] = [
 ];
 
 // 预定义的过滤器
-const DEFAULT_FILTERS: EventFilter[] = [
-  {
-    name: 'spam_filter',
-    description: 'Filter out potential spam messages',
-    filter: (event) => {
-      if (event.event_type !== 'danmaku') return true;
-      if (!event.content) return true;
-      
-      // 检查是否是重复内容
-      const repeatedChars = /(.)\1{10,}/.test(event.content);
-      const tooManyEmojis = (event.content.match(/[\u{1F600}-\u{1F64F}]|[\u{1F300}-\u{1F5FF}]|[\u{1F680}-\u{1F6FF}]|[\u{1F1E0}-\u{1F1FF}]/gu) || []).length > 10;
-      
-      return !repeatedChars && !tooManyEmojis;
-    }
-  },
-  {
-    name: 'rate_limit_filter',
-    description: 'Filter events that exceed rate limits per user',
-    filter: (() => {
-      const userEventCounts = new Map<string, { count: number; lastReset: number }>();
-      const RATE_LIMIT = 30; // 每分钟最多30条消息
-      const WINDOW_MS = 60 * 1000; // 1分钟窗口
-      
-      return (event: NormalizedEvent) => {
-        if (!event.user_id) return true;
-        
-        const now = Date.now();
-        const userKey = `${event.room_id}:${event.user_id}`;
-        const userStats = userEventCounts.get(userKey);
-        
-        if (!userStats || (now - userStats.lastReset) > WINDOW_MS) {
-          userEventCounts.set(userKey, { count: 1, lastReset: now });
-          return true;
-        }
-        
-        if (userStats.count >= RATE_LIMIT) {
-          return false; // 超过速率限制
-        }
-        
-        userStats.count++;
-        return true;
-      };
-    })()
-  },
-  {
-    name: 'duplicate_filter',
-    description: 'Filter out duplicate events',
-    filter: (() => {
-      const recentEvents = new Map<string, number>();
-      const DUPLICATE_WINDOW_MS = 5 * 1000; // 5秒内的重复事件
-      
-      return (event: NormalizedEvent) => {
-        const eventKey = `${event.room_id}:${event.user_id}:${event.event_type}:${event.content}`;
-        const now = Date.now();
-        const lastSeen = recentEvents.get(eventKey);
-        
-        if (lastSeen && (now - lastSeen) < DUPLICATE_WINDOW_MS) {
-          return false; // 重复事件
-        }
-        
-        recentEvents.set(eventKey, now);
-        
-        // 清理过期的记录
-        if (recentEvents.size > 10000) {
-          const cutoff = now - DUPLICATE_WINDOW_MS;
-          for (const [key, timestamp] of recentEvents.entries()) {
-            if (timestamp < cutoff) {
-              recentEvents.delete(key);
-            }
-          }
-        }
-        
-        return true;
-      };
-    })()
-  }
-];
+const DEFAULT_FILTERS: EventFilter[] = [];
 
 function clampType(t: any): NormalizedEventType {
   const s = String(t || '').toLowerCase();
@@ -154,7 +83,19 @@ function clampType(t: any): NormalizedEventType {
     s === 'gift' ? 'gift' :
     s === 'follow' ? 'follow' :
     s === 'like' ? 'like' :
-    s === 'enter' ? 'enter' : 'system';
+    s === 'enter' ? 'enter' :
+    s === 'bananacount' ? 'bananaCount' :
+    s === 'displayinfo' ? 'displayInfo' :
+    s === 'topusers' ? 'topUsers' :
+    s === 'redpacklist' ? 'redpackList' :
+    s === 'chatcall' ? 'chatCall' :
+    s === 'chataccept' ? 'chatAccept' :
+    s === 'chatready' ? 'chatReady' :
+    s === 'chatend' ? 'chatEnd' :
+    s === 'kickedout' ? 'kickedOut' :
+    s === 'violationalert' ? 'violationAlert' :
+    s === 'managerstate' ? 'managerState' :
+    s === 'end' ? 'end' : 'system';
   return (ALLOWED_TYPES as string[]).includes(mapped) ? (mapped as NormalizedEventType) : 'system';
 }
 
@@ -194,23 +135,7 @@ export function validateEvent(event: NormalizedEvent, rules: ValidationRule[] = 
  * 应用事件过滤器
  */
 export function applyFilters(event: NormalizedEvent, filters: EventFilter[] = DEFAULT_FILTERS): { passed: boolean; failedFilters: string[] } {
-  const failedFilters: string[] = [];
-  
-  for (const filter of filters) {
-    try {
-      if (!filter.filter(event)) {
-        failedFilters.push(filter.name);
-      }
-    } catch (error) {
-      console.warn(`Filter ${filter.name} failed with error:`, error);
-      failedFilters.push(filter.name);
-    }
-  }
-  
-  return {
-    passed: failedFilters.length === 0,
-    failedFilters
-  };
+  return { passed: true, failedFilters: [] };
 }
 
 /**

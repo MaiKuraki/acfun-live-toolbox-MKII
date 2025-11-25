@@ -128,7 +128,9 @@
     
     <!-- 房间状态抽屉 -->
     <t-drawer
-      v-model="showRoomDrawer"
+      v-model:visible="showRoomDrawer"
+      :footer="false"
+      :closeOnOverlayClick="true"
       title="房间状态"
       placement="right"
       size="300px"
@@ -199,7 +201,8 @@ const router = useRouter();
 
 const showAccountCard = ref(false);
 const showRoomDrawer = ref(false);
-const accountArea = ref<HTMLElement>();
+// 明确初始为 null，保证 `getAttachElement` 返回类型稳定
+const accountArea = ref<HTMLElement | null>(null);
 
 const userInfo = computed(() => accountStore.userInfo);
 const rooms = computed<Room[]>(() => roomStore.rooms);
@@ -230,8 +233,15 @@ function closeWindow() {
 }
 
 function login() {
-  accountStore.startLogin();
   showAccountCard.value = false;
+  try {
+    router.push({ path: '/home', query: { qrLogin: '1' } });
+  } catch (err) {
+    try {
+      window.location.hash = '#/home?qrLogin=1';
+    } catch {}
+    console.error('[Topbar] 导航到首页并触发扫码登录失败:', err);
+  }
 }
 
 function logout() {

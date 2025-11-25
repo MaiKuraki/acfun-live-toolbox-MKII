@@ -89,6 +89,23 @@ export class PluginLogger {
       
       // 写入日志
       fs.appendFileSync(this.logFile, logLine + '\n', 'utf-8');
+      // 同步输出到主进程控制台
+      const prefix = pluginId ? `[Plugin ${pluginId}]` : '[Plugin]';
+      try {
+        switch (level) {
+          case LogLevel.ERROR:
+            console.error(prefix, message);
+            break;
+          case LogLevel.WARN:
+            console.warn(prefix, message);
+            break;
+          case LogLevel.DEBUG:
+            console.debug(prefix, message);
+            break;
+          default:
+            console.log(prefix, message);
+        }
+      } catch {}
     } catch (writeError: any) {
       console.error('Failed to write plugin log:', writeError);
     }

@@ -1,3 +1,4 @@
+<!-- eslint-disable vue/no-v-model-argument -->
 <template>
   <div class="live-manage-page">
     <!-- 页面头部 -->
@@ -26,10 +27,12 @@
             <div class="cover-section">
               <div class="cover-container">
                 <img 
-                  :src="liveInfo.cover || '/default-cover.png'" 
+                  v-if="liveInfo.cover"
+                  :src="liveInfo.cover" 
                   :alt="liveInfo.title"
                   class="room-cover"
                 />
+                <div v-else class="room-cover room-cover-placeholder"></div>
                 <div class="cover-overlay">
                   <t-upload
                     v-model:files="editCoverFiles"
@@ -363,8 +366,8 @@ const filteredAudience = computed(() => {
   
   // 排序
   filtered.sort((a, b) => {
-    const aVal = a[sortBy.value] || 0;
-    const bVal = b[sortBy.value] || 0;
+    const aVal = Number(a[sortBy.value] as any) || 0;
+    const bVal = Number(b[sortBy.value] as any) || 0;
     const multiplier = sortOrder.value === 'desc' ? -1 : 1;
     return (aVal - bVal) * multiplier;
   });
@@ -407,7 +410,7 @@ async function loadLiveInfo() {
       
       // 获取用户直播信息
       const accountInfo = await window.electronApi.account.getUserInfo();
-      const userID = accountInfo?.data?.userId || accountInfo?.userId;
+      const userID = ('data' in (accountInfo as any)) ? (accountInfo as any).data?.userId : (accountInfo as any)?.userId;
       if (userID) {
         const userResult = await window.electronApi.http.get('/api/acfun/live/user-info', { userID: Number(userID) });
         if (userResult && userResult.success && userResult.data) {
@@ -419,7 +422,7 @@ async function loadLiveInfo() {
     } else {
       // 如果没有直播流，检查用户是否有直播
       const accountInfo = await window.electronApi.account.getUserInfo();
-      const userID = accountInfo?.data?.userId || accountInfo?.userId;
+      const userID = ('data' in (accountInfo as any)) ? (accountInfo as any).data?.userId : (accountInfo as any)?.userId;
       if (userID) {
         const userResult = await window.electronApi.http.get('/api/acfun/live/user-info', { userID: Number(userID) });
         if (userResult && userResult.success && userResult.data && userResult.data.liveID) {
@@ -479,7 +482,7 @@ async function loadAudience() {
 async function loadStats() {
   try {
     const accountInfo = await window.electronApi.account.getUserInfo();
-    const uid = accountInfo?.data?.userId || accountInfo?.userId;
+    const uid = ('data' in (accountInfo as any)) ? (accountInfo as any).data?.userId : (accountInfo as any)?.userId;
     if (uid) {
       try {
         const result = await window.electronApi.http.get('/api/acfun/live/statistics', { userId: Number(uid) });
@@ -503,10 +506,10 @@ async function loadStats() {
         // 回退：通过 room.details 获取基础统计（不依赖 liveId 映射）
         try {
           const accountInfo = await window.electronApi.account.getUserInfo();
-          const uid = accountInfo?.data?.userId || accountInfo?.userId;
+          const uid = ('data' in (accountInfo as any)) ? (accountInfo as any).data?.userId : (accountInfo as any)?.userId;
           if (uid) {
             const d = await window.electronApi.room.details(String(uid));
-            const data = d?.data || {};
+            const data = ('data' in (d as any)) ? (d as any).data : {};
             if (d && d.success) {
               stats.onlineCount = typeof data.viewerCount === 'number' ? data.viewerCount : stats.onlineCount;
               stats.likeCount = typeof data.likeCount === 'number' ? data.likeCount : stats.likeCount;
@@ -525,7 +528,7 @@ async function loadStats() {
 async function getCurrentLiveId(): Promise<string | null> {
   try {
     const accountInfo = await window.electronApi.account.getUserInfo();
-    const uid = accountInfo?.data?.userId || accountInfo?.userId;
+    const uid = ('data' in (accountInfo as any)) ? (accountInfo as any).data?.userId : (accountInfo as any)?.userId;
     if (uid) {
       const u = await window.electronApi.http.get('/api/acfun/live/user-info', { userID: Number(uid) });
       if (u && u.success && u.data && u.data.liveID) {
@@ -541,7 +544,7 @@ async function getCurrentLiveId(): Promise<string | null> {
   } catch {}
   try {
     const accountInfo = await window.electronApi.account.getUserInfo();
-    const uid = accountInfo?.data?.userId || accountInfo?.userId;
+    const uid = ('data' in (accountInfo as any)) ? (accountInfo as any).data?.userId : (accountInfo as any)?.userId;
     if (uid) {
       const d = await window.electronApi.room.details(String(uid));
       if (d && d.success && d.data && d.data.liveId) {
@@ -1108,6 +1111,10 @@ function formatTime(timestamp: number) {
   background-color: var(--td-bg-color-secondarycontainer);
 }
 
+.room-cover-placeholder {
+  background-color: var(--td-bg-color-secondarycontainer);
+}
+
 .cover-overlay {
   position: absolute;
   bottom: 8px;
@@ -1328,6 +1335,8 @@ function formatTime(timestamp: number) {
   flex-direction: column;
   gap: 8px;
   min-width: 0;
+}
+
 .user-name {
   display: flex;
   align-items: center;
@@ -1335,7 +1344,7 @@ function formatTime(timestamp: number) {
   font-size: 15px;
   font-weight: 500;
   color: var(--td-text-color-primary);
-} margin-bottom: 4px;
+  margin-bottom: 4px;
 }
 
 .user-name {

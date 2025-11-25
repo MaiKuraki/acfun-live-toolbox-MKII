@@ -1,0 +1,12 @@
+{
+  "main": "test.js",
+  "test": false,
+  "libs": [
+    "lodash.js",
+    "timeago.min.js",
+    "obs-websocket-js.js",
+    "lib-cjs.js",
+    "lib-es-named.js",
+    "lib-es-default.js"
+  ]
+}

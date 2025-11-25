@@ -243,13 +243,10 @@ export class PluginPerformanceMonitor extends TypedEventEmitter<PerformanceEvent
     const now = Date.now();
     const memUsage = process.memoryUsage();
     const cpuUsage = process.cpuUsage(this.lastCpuUsage.get(pluginId));
-    
-    // 更新CPU使用记录
     this.lastCpuUsage.set(pluginId, process.cpuUsage());
-    
-    // 计算CPU百分比
-    const cpuPercent = ((cpuUsage.user + cpuUsage.system) / 1000000) / 
-                      ((now - (this.getLastMetricsTime(pluginId) || now)) / 1000) * 100;
+    const lastTs = this.getLastMetricsTime(pluginId) || startTime;
+    const elapsedMs = Math.max(1, now - lastTs);
+    const cpuPercent = ((cpuUsage.user + cpuUsage.system) / 1000000) / (elapsedMs / 1000) * 100;
     
     // 获取事件循环延迟
     const eventLoopDelay = this.measureEventLoopDelay();
@@ -391,6 +388,10 @@ export class PluginPerformanceMonitor extends TypedEventEmitter<PerformanceEvent
    * 检查性能警报
    */
   private checkPerformanceAlerts(metrics: PerformanceMetrics): void {
+    const history = this.metricsHistory.get(metrics.pluginId) || [];
+    if (history.length < 2) {
+      return;
+    }
     // 内存使用检查
     if (metrics.memoryUsage.heapUsed > this.config.memoryWarningThreshold) {
       this.emitAlert({

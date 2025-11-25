@@ -71,8 +71,16 @@ export class PluginWindowManager {
         const lm = getLogManager();
         win.webContents.on('console-message', (_event, level, message, line, sourceId) => {
           try {
+            const msg = String(message);
+            const src = String(sourceId);
+            const suppress = (() => {
+              if (msg.includes('[obs-assistant]')) return true;
+              if (src.includes('devtools://devtools') && (msg.includes('Autofill.enable') || msg.includes('Autofill.setAddresses'))) return true;
+              return false;
+            })();
+            if (suppress) return;
             const lvl = level === 2 ? 'error' : level === 1 ? 'warn' : 'info';
-            lm.addLog('renderer', `[${sourceId}:${line}] ${String(message)}`, lvl as any);
+            lm.addLog('renderer', `[${src}:${line}] ${msg}`, lvl as any);
           } catch {}
         });
       } catch {}

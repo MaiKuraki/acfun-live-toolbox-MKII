@@ -10,7 +10,7 @@
       
       <!-- RouterView 内容区域 (816x728px 可用空间) -->
       <div class="layout-content" :class="{ 'full': isWindowLayout }">
-        <RouterView />
+    <RouterView :key="$route.fullPath" />
       </div>
     </div>
   </div>

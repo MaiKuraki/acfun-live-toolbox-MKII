@@ -7,6 +7,9 @@
   "test": true,
   "icon": "icon.svg",
   "main": "index.js",
+  "libs": [
+    "./obs-websocket-js.js"
+  ],
   "ui": {
     "name": "OBS助手",
     "description": "自动启动 OBS 并同步推流服务器与密钥到 OBS（支持端口/密码配置）",

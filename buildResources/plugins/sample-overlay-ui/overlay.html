@@ -17,69 +17,15 @@
   <script>
     (function(){
       var storeSnap = {};
-      function getBus(){ try { return (window.__WUJIE && window.__WUJIE.bus) || (window.wujie && window.wujie.bus) || null; } catch(e){ return null; } }
-      function resolveInitialBg(){
-        try {
-          var shared = (window.__WUJIE_PROPS__ && window.__WUJIE_PROPS__.shared) || (window.__WUJIE_SHARED || {});
-          var store = (shared && shared.readonlyStore) || {};
-          var ov = store.overlay || {};
-          var style = ov.style || {};
-          return style.backgroundColor || '#eeeeee';
-        } catch(e) { return '#eeeeee'; }
-      }
+      var apiBase = String(window.location.origin || 'http://127.0.0.1:18299');
+      function parsePluginId(){ try { var m = String(location.pathname||'').match(/\/plugins\/([^\/]+)/); return m && m[1] ? decodeURIComponent(m[1]) : ''; } catch(e){ return ''; } }
+      var pluginId = parsePluginId();
       function applyBg(color){ try { document.body.style.background = color || '#eeeeee'; } catch(e){} }
       function renderStore(){ try { var el = document.getElementById('store'); if (el) el.textContent = JSON.stringify(storeSnap, null, 2); } catch(e){} }
       function prependLog(text){ try { var list = document.getElementById('logList'); if(!list) return; var item = document.createElement('div'); item.className = 'item'; item.textContent = text; if(list.firstChild) list.insertBefore(item, list.firstChild); else list.appendChild(item); } catch(e){} }
-      function handleEnvelope(data){
-        if(!data || typeof data !== 'object') return;
-        if(data.type === 'overlay-event'){
-          var evt = data.event;
-          if(evt === 'readonly-store-init'){
-            var payload = data.payload || {};
-            storeSnap = payload || {};
-            var ov = storeSnap.overlay || {}; var style = ov.style || {};
-            applyBg(style.backgroundColor || resolveInitialBg());
-            renderStore();
-            try { prependLog('[readonly-store-init] overlayId=' + String(ov && ov.id || '') + ' keys=' + Object.keys(ov||{}).join(',')); } catch(e){}
-          } else if(evt === 'overlay-updated' || evt === 'overlay-update' || evt === 'readonly-store-update'){
-            var payload = data.payload || {}; var ov = (payload.overlay||{}); var style = ov.style||{};
-            if(!storeSnap || typeof storeSnap !== 'object') storeSnap = {};
-            storeSnap.overlay = Object.assign({}, storeSnap.overlay||{}, ov||{});
-            applyBg(style.backgroundColor || resolveInitialBg());
-            renderStore();
-            try { prependLog('[readonly-store-update] overlayId=' + String(ov && ov.id || '') + ' keys=' + Object.keys(ov||{}).join(',')); } catch(e){}
-          } else {
-            // 普通消息：记录到日志列表（最新在上）
-            try {
-              var msgStr = '[event: ' + String(evt) + '] ' + JSON.stringify(data.payload);
-              prependLog(msgStr);
-            } catch(e){}
-          }
-        } else if (data.type === 'plugin-event' && data.eventType === 'lifecycle') {
-          if (data.event === 'config-updated') {
-            var payload = data.payload || {}; var cfg = (payload.config || {});
-            var color = typeof cfg.uiBgColor === 'string' && cfg.uiBgColor.trim() ? cfg.uiBgColor.trim() : resolveInitialBg();
-            applyBg(color);
-            renderStore();
-          }
-        }
-      }
-      function onMessage(ev){ var data = ev && ev.data || {}; handleEnvelope(data); }
-      function onBusEvent(msg){ handleEnvelope(msg); }
-      window.addEventListener('message', onMessage);
-      try { var bus = getBus(); bus && bus.$on && bus.$on('overlay-event', onBusEvent); } catch {}
-      window.addEventListener('DOMContentLoaded', function(){
-        try {
-          var shared = (window.__WUJIE_PROPS__ && window.__WUJIE_PROPS__.shared) || (window.__WUJIE_SHARED || {});
-          var store = (shared && shared.readonlyStore) || {};
-          if (store && typeof store === 'object' && Object.keys(store).length) {
-            storeSnap = store;
-          }
-        } catch(e){}
-        applyBg(resolveInitialBg());
-        renderStore();
-        try { prependLog('[boot] DOMContentLoaded, initial store keys=' + Object.keys(storeSnap||{}).join(',')); } catch(e){}
-      });
+      function subscribePluginOverlay(){ if(!pluginId) return null; try { var url = new URL('/sse/plugins/'+encodeURIComponent(pluginId)+'/overlay', apiBase); var src = new EventSource(url.toString()); src.addEventListener('init', function(ev){ try { prependLog('[init] '+String(ev.data||'')); } catch(e){} }); src.addEventListener('update', function(ev){ try { var data = JSON.parse(ev.data||'{}'); var ov = (data&&data.payload&&data.payload.overlay)||{}; var style = ov.style||{}; if(style.backgroundColor) applyBg(style.backgroundColor); renderStore(); prependLog('[update]'); } catch(e){} }); src.addEventListener('message', function(ev){ try { var data = JSON.parse(ev.data||'{}'); var evt = (data&&data.event)||''; var payload = (data&&data.payload)||{}; if(evt==='config-update'){ var color = String(payload.uiBgColor||'').trim(); if(color) applyBg(color); renderStore(); } else { prependLog('[message:'+evt+'] '+JSON.stringify(payload)); } } catch(e){} }); src.addEventListener('action', function(ev){ }); src.addEventListener('closed', function(ev){ }); src.addEventListener('heartbeat', function(){}); src.onerror = function(){ try { src.close(); } catch(e){} setTimeout(function(){ subscribePluginOverlay(); }, 3000); }; return src; } catch(e){ return null; } }
+      function subscribeReadonly(keys){ try { var url = new URL('/sse/renderer/readonly-store/subscribe', apiBase); url.searchParams.set('keys', (keys||[]).join(',')); var src = new EventSource(url.toString()); src.addEventListener('readonly-store-init', function(ev){ try { var data = JSON.parse(ev.data||'{}'); storeSnap = Object.assign({}, storeSnap, data||{}); renderStore(); } catch(e){} }); src.addEventListener('readonly-store-update', function(ev){ try { var data = JSON.parse(ev.data||'{}'); storeSnap = Object.assign({}, storeSnap, data||{}); renderStore(); } catch(e){} }); src.addEventListener('heartbeat', function(){}); src.onerror = function(){ try { src.close(); } catch(e){} setTimeout(function(){ subscribeReadonly(keys); }, 3000); }; return src; } catch(e){ return null; } }
+      window.addEventListener('DOMContentLoaded', function(){ applyBg('#eeeeee'); renderStore(); subscribePluginOverlay(); subscribeReadonly(['overlay']); });
     })();
   </script>
 </head>

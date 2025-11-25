@@ -1,3 +1,4 @@
+<!-- eslint-disable vue/no-v-model-argument -->
 <template>
   <div class="live-room-page">
     <div class="page-header">
@@ -143,11 +144,12 @@
         >
           <div class="room-cover">
             <img
-              :src="room.coverUrl || '/default-cover.png'"
+              v-if="room.coverUrl"
+              :src="room.coverUrl"
               :alt="room.title || room.streamer?.userName"
               loading="lazy"
-              @error="onCoverError"
             >
+            <div v-else class="cover-placeholder"></div>
             <div
               class="status-indicator"
               :class="room.status"
@@ -159,7 +161,8 @@
               {{ room.title || '未知标题' }}
             </div>
             <div class="room-streamer">
-              {{ room.streamer?.userName || '未知主播' }}（UID: {{ room.liveId }}）
+              {{ room.streamer?.userName || '未知主播' }}（UID: {{ room.liverUID }}）
+              <a class="t-link t-link--theme-primary t-size-s t-link--hover-underline" @click="openUserSpace(room)">个人空间</a>
             </div>
             <div class="room-stats">
               <span class="viewer-count">
@@ -174,33 +177,32 @@
                 {{ room.likeCount.toLocaleString() }}
               </span>
               <span
-                class="status-text"
+                class="status-text live-tag"
+                :class="room.isLive ? 'connected' : 'disconnected'"
+              >
+                {{ room.isLive ? '直播中' : '未直播' }}
+              </span>
+              <span
+                class="status-text collect-tag"
                 :class="room.status"
               >
-                {{ getStatusText(room.status) }}
+                {{ collectStatusLabel(room.status) }}
               </span>
-              <span v-if="room.status === 'connected'" class="barrage-text">弹幕获取中</span>
             </div>
           </div>
           
           <div class="room-actions">
             <t-button 
-              v-if="room.status !== 'disconnected'"
+              v-if="room.isLive"
               size="small" 
               :theme="room.status === 'connected' ? 'danger' : 'primary'"
+              :disabled="room.status === 'connecting'"
               @click="toggleConnection(room)"
             >
-              {{ room.status === 'connected' ? '断开采集' : '连接采集' }}
+              {{ room.status === 'connected' ? '断开采集' : (room.status === 'connecting' ? '连接采集中' : '连接采集') }}
             </t-button>
             <t-button
-              size="small"
-              variant="outline"
-              @click="router.push(`/live/danmu/${room.liveId}`)"
-            >
-              查看弹幕
-            </t-button>
-            <t-button
-              v-if="room.status !== 'disconnected'"
+              v-if="room.isLive"
               size="small"
               variant="outline"
               @click="openLivePage(room)"
@@ -211,6 +213,8 @@
               <t-button
                 size="small"
                 variant="text"
+                shape="square"
+                class="more-btn"
               >
                 <t-icon name="more" />
               </t-button>
@@ -265,6 +269,24 @@
       </t-form>
     </t-dialog>
 
+    <!-- 房间设置对话框 -->
+    <t-dialog 
+      v-model:visible="showSettingsDialog" 
+      width="500px"
+      @confirm="saveSettings"
+      @cancel="closeSettings"
+    >
+      <template #header>{{ settingsRoomTitle }}</template>
+      <t-form :data="settingsForm" class="room-settings-form" layout="horizontal" label-align="left" :label-width="180">
+        <t-form-item label="是否自动连接采集弹幕" name="autoConnect">
+          <t-switch v-model="settingsForm.autoConnect" />
+        </t-form-item>
+        <t-form-item label="是否开播通知" name="notifyOnLiveStart">
+          <t-switch v-model="settingsForm.notifyOnLiveStart" />
+        </t-form-item>
+      </t-form>
+    </t-dialog>
+
     <!-- 房间详情对话框 -->
     <t-dialog 
       v-model:visible="showDetailsDialog" 
@@ -315,11 +337,11 @@
             </div>
             <div class="detail-item">
               <span class="label">连接时间:</span>
-              <span class="value">{{ formatConnectTime((selectedRoom as any)?.connectedAt) }}</span>
+              <span class="value">{{ formatConnectTime(selectedRoomAny?.connectedAt) }}</span>
             </div>
             <div class="detail-item">
               <span class="label">最后活动:</span>
-              <span class="value">{{ formatLastActivity((selectedRoom as any)?.lastEventAt) }}</span>
+              <span class="value">{{ formatLastActivity(selectedRoomAny?.lastEventAt) }}</span>
             </div>
           </div>
         </div>
@@ -329,6 +351,7 @@
 </template>
 
 <script setup lang="ts">
+/* eslint-disable vue/no-v-model-argument */
 import { ref, computed, onMounted } from 'vue';
 import { useRouter } from 'vue-router';
 import { useRoomStore, type Room } from '../stores/room';
@@ -347,6 +370,8 @@ const selectedRoom = computed<Room | null>(() => {
   if (!selectedRoomId.value) return null;
   return roomStore.getRoomById(selectedRoomId.value) || null;
 });
+// 为模板提供不使用 TypeScript 断言的安全访问对象，避免模板中出现 `as` 触发解析错误
+const selectedRoomAny = computed<any>(() => selectedRoom.value as any);
 
 // 添加房间表单
 const addForm = ref({
@@ -388,6 +413,15 @@ const getStatusText = (status: string) => {
     case 'connecting': return '连接中';
     case 'error': return '错误';
     default: return '未知';
+  }
+};
+
+const collectStatusLabel = (status: string) => {
+  switch (status) {
+    case 'connected': return '😊 弹幕获取中';
+    case 'connecting': return '⏳ 连接采集中';
+    case 'error': return '采集错误';
+    default: return '未连接采集';
   }
 };
 
@@ -478,10 +512,10 @@ const resetAddForm = () => {
 const toggleConnection = async (room: Room) => {
   try {
     if (room.status === 'connected') {
-      const res = await window.electronApi.room.disconnect(room.liveId);
+      const res = await window.electronApi.room.disconnect(room.id);
       if (!res?.success) console.warn('disconnect failed:', res?.error || res);
     } else {
-      const res = await window.electronApi.room.connect(room.liveId);
+      const res = await window.electronApi.room.connect(room.id);
       if (!res?.success) console.warn('connect failed:', res?.error || res);
     }
     await refreshRooms();
@@ -500,12 +534,23 @@ const openLivePage = (room: Room) => {
   window.electronApi.system.openExternal(url);
 };
 
+const openUserSpace = (room: Room) => {
+  const uid = String(room.liverUID || room.streamer?.userId || '');
+  if (!uid) return;
+  window.electronApi.system.openExternal(`https://www.acfun.cn/u/${uid}`);
+};
+
 const onCoverError = (e: Event) => {
   const target = e.target as HTMLImageElement;
   if (target) target.src = '/default-cover.png';
 };
 
 const getRoomMenuOptions = (room: Room) => [
+  {
+    content: '房间设置',
+    value: 'settings',
+    onClick: () => openSettings(room)
+  },
   {
     content: '查看弹幕',
     value: 'danmu',
@@ -543,6 +588,47 @@ const deleteRoom = async (room: Room) => {
   }
 };
 
+const showSettingsDialog = ref(false);
+const settingsRoomId = ref<string | null>(null);
+const settingsForm = ref<{ autoConnect: boolean; notifyOnLiveStart: boolean }>({ autoConnect: false, notifyOnLiveStart: false });
+
+const openSettings = (room: Room) => {
+  settingsRoomId.value = room.id;
+  settingsForm.value = {
+    autoConnect: !!room.autoConnect,
+    notifyOnLiveStart: !!(room as any).notifyOnLiveStart
+  };
+  showSettingsDialog.value = true;
+};
+
+const saveSettings = async () => {
+  if (!settingsRoomId.value) return;
+  try {
+    await roomStore.updateRoomSettings(settingsRoomId.value, {
+      autoConnect: settingsForm.value.autoConnect,
+      notifyOnLiveStart: settingsForm.value.notifyOnLiveStart as any
+    } as any);
+    showSettingsDialog.value = false;
+    settingsRoomId.value = null;
+    await refreshRooms();
+  } catch (e) {
+    console.error('保存房间设置失败:', e);
+  }
+};
+
+const closeSettings = () => {
+  showSettingsDialog.value = false;
+  settingsRoomId.value = null;
+};
+
+const settingsRoomTitle = computed(() => {
+  const id = settingsRoomId.value;
+  if (!id) return '房间设置';
+  const r = roomStore.getRoomById(id);
+  const name = r?.title || r?.streamer?.userName || r?.id || '';
+  return name ? `房间设置 - ${name}` : '房间设置';
+});
+
 const formatConnectTime = (timestamp: number | null) => {
   if (!timestamp) return '未连接';
   return new Date(timestamp).toLocaleString();
@@ -554,9 +640,7 @@ const formatLastActivity = (timestamp: number | null) => {
 };
 
 // 生命周期
-onMounted(() => {
-  roomStore.loadRooms();
-});
+ 
 </script>
 
 <style scoped>
@@ -673,7 +757,7 @@ onMounted(() => {
   padding: 16px;
   border: 1px solid var(--td-border-level-1-color);
   border-radius: 8px;
-  transition: all 0.2s;
+  transition: border-color .2s, background-color .2s;
 }
 
 .room-item:hover {
@@ -706,6 +790,13 @@ onMounted(() => {
   height: 100%;
   border-radius: 8px;
   object-fit: cover;
+}
+
+.cover-placeholder {
+  width: 100%;
+  height: 100%;
+  border-radius: 8px;
+  background-color: var(--td-bg-color-secondarycontainer);
 }
 
 .status-indicator {
@@ -810,6 +901,8 @@ onMounted(() => {
 .room-actions {
   display: flex;
   gap: 8px;
+  align-items: center;
+  flex-wrap: nowrap;
 }
 
 .room-details {
@@ -877,3 +970,27 @@ onMounted(() => {
   }
 }
 </style>
+.more-btn {
+  padding: 0;
+  width: 28px;
+  min-width: 28px;
+  height: 28px;
+}
+
+.more-btn :deep(.t-button__text) {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.more-btn .t-icon {
+  font-size: 16px;
+}
+/* 房间设置表单仅在本页面内两端对齐 */
+.room-settings-form :deep(.t-form__item) {
+  align-items: center;
+}
+.room-settings-form :deep(.t-form__controls) {
+  display: flex;
+  justify-content: flex-end;
+}

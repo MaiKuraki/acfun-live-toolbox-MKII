@@ -5,6 +5,7 @@
   "author": "Toolkit",
   "description": "A sample plugin manifest demonstrating window hosting",
   "test": true,
+  "icon": "icon.svg",
   "main": "index.js",
   "config": {
     "uiBgColor": {

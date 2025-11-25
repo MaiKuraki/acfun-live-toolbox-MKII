@@ -2,6 +2,7 @@ import * as sqlite3 from 'sqlite3';
 import { app } from 'electron';
 import * as path from 'path';
 import * as os from 'os';
+import { createDanmuSchema } from './DanmuSQLiteWriter';
 
 export class DatabaseManager {
   private db: sqlite3.Database | null = null;
@@ -33,8 +34,7 @@ export class DatabaseManager {
           console.error('Error opening database:', err.message);
           reject(err);
         } else {
-          // Use console.info to avoid interception loops
-          console.info('Database connected at:', this.dbPath);
+          console.info('[DB] path=' + String(this.dbPath));
           this.applyPragma()
             .then(() => this.createTables())
             .then(() => resolve())
@@ -51,56 +51,42 @@ export class DatabaseManager {
         return;
       }
 
-      const createEventsTableSql = `
-        CREATE TABLE IF NOT EXISTS events (
-          id INTEGER PRIMARY KEY AUTOINCREMENT,
-          event_id TEXT,
-          type TEXT NOT NULL,
-          room_id TEXT NOT NULL,
-          source TEXT DEFAULT 'unknown',
-          user_id TEXT,
-          username TEXT,
-          payload TEXT NOT NULL,
-          timestamp INTEGER NOT NULL,
-          received_at INTEGER,
-          raw_data TEXT,
-          created_at DATETIME DEFAULT CURRENT_TIMESTAMP
-        );
-      `;
+      const dropLegacyEventsSql = `DROP TABLE IF EXISTS events;`;
 
       // 房间元数据：用于根据主播用户名关键词解析 room_kw 到 room_id 集合
       const createRoomsMetaTableSql = `
         CREATE TABLE IF NOT EXISTS rooms_meta (
-          room_id TEXT PRIMARY KEY,
+          id INTEGER PRIMARY KEY AUTOINCREMENT,
+          room_id TEXT,
           streamer_name TEXT,
           streamer_user_id TEXT,
+          title TEXT,
+          cover_url TEXT,
+          status TEXT,
+          is_live INTEGER,
+          viewer_count INTEGER,
+          online_count INTEGER,
+          like_count INTEGER,
+          live_cover TEXT,
+          category_id TEXT,
+          category_name TEXT,
+          sub_category_id TEXT,
+          sub_category_name TEXT,
           updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
         );
       `;
 
       const createIndexesSql = [
-        'CREATE INDEX IF NOT EXISTS idx_events_room_ts ON events (room_id, timestamp);',
-        'CREATE INDEX IF NOT EXISTS idx_events_type_ts ON events (type, timestamp);',
-        'CREATE INDEX IF NOT EXISTS idx_events_source ON events (source);',
-        'CREATE INDEX IF NOT EXISTS idx_events_received_at ON events (received_at);',
-        'CREATE INDEX IF NOT EXISTS idx_rooms_meta_streamer_name ON rooms_meta (streamer_name)'
+        'CREATE INDEX IF NOT EXISTS idx_rooms_meta_streamer_name ON rooms_meta (streamer_name)',
+        'CREATE INDEX IF NOT EXISTS idx_rooms_meta_updated_at ON rooms_meta (updated_at)',
+        'CREATE INDEX IF NOT EXISTS idx_rooms_meta_room_updated ON rooms_meta (room_id, updated_at)'
       ];
 
       // 检查并添加新列的迁移逻辑
-      const migrationSql = [
-        'ALTER TABLE events ADD COLUMN source TEXT DEFAULT \'unknown\';',
-        'ALTER TABLE events ADD COLUMN received_at INTEGER;'
-      ];
+      const migrationSql: string[] = [];
 
       this.db.serialize(() => {
-        this.db!.run(createEventsTableSql, (err: Error | null) => {
-          if (err) {
-            console.error('Error creating events table:', err.message);
-            reject(err);
-            return;
-          }
-
-          // 创建房间元数据表
+        this.db!.run(dropLegacyEventsSql, () => {
           this.db!.run(createRoomsMetaTableSql, (roomsErr: Error | null) => {
             if (roomsErr) {
               console.error('Error creating rooms_meta table:', roomsErr.message);
@@ -108,15 +94,14 @@ export class DatabaseManager {
               return;
             }
 
-          // 执行迁移（如果列不存在）
           migrationSql.forEach(sql => {
             this.db!.run(sql, (migErr: Error | null) => {
-              // 忽略列已存在的错误
               if (migErr && !migErr.message.includes('duplicate column name')) {
                 console.warn('Migration warning:', migErr.message);
               }
             });
           });
+          createIndexesSql.forEach(sql => this.db!.run(sql));
 
           let indexCreationError: Error | null = null;
           for (const stmt of createIndexesSql) {
@@ -131,8 +116,12 @@ export class DatabaseManager {
             console.error('Error creating indexes:', indexCreationError);
             reject(indexCreationError);
           } else {
-            console.log('Events table and indexes created/verified');
-            resolve();
+            createDanmuSchema(this.db!)
+              .then(() => {
+                console.log('Events table and indexes created/verified');
+                resolve();
+              })
+              .catch(reject);
           }
           });
         });
@@ -145,6 +134,10 @@ export class DatabaseManager {
       throw new Error('Database not initialized. Call initialize() first.');
     }
     return this.db;
+  }
+
+  public getPath(): string {
+    return this.dbPath;
   }
 
   public async close(): Promise<void> {

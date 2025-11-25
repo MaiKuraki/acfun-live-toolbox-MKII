@@ -1,6 +1,7 @@
 import { defineStore } from 'pinia'
 import { ref, computed } from 'vue'
 import { useAccountStore } from './account'
+import { reportReadonlyUpdate, reportReadonlyInit } from '../utils/readonlyReporter'
 
 function splitRtmp(input: string): { server?: string; key?: string } {
   if (!input || typeof input !== 'string') return {}
@@ -64,16 +65,26 @@ export const useStreamStore = defineStore('stream', () => {
     } catch {}
     if (!r) r = 'rtmp://live.acfun.cn/live'
     await setStreamInfo({ rtmpUrl: r, streamKey: k || '', expiresAt: Date.now() + 60 * 60 * 1000 })
+    try {
+      reportReadonlyInit({
+        stream: {
+          rtmpUrl: rtmpUrl.value,
+          streamKey: streamKey.value,
+          expiresAt: expiresAt.value
+        }
+      })
+    } catch {}
     await syncReadonlyStore()
   }
 
   async function syncReadonlyStore() {
-    try {
-      await (window as any).electronApi.http.post('/api/renderer/readonly-store', {
-        event: 'readonly-store-update',
-        payload: { stream: { rtmpUrl: rtmpUrl.value, streamKey: streamKey.value, expiresAt: expiresAt.value } }
-      })
-    } catch {}
+    reportReadonlyUpdate({
+      stream: {
+        rtmpUrl: rtmpUrl.value,
+        streamKey: streamKey.value,
+        expiresAt: expiresAt.value
+      }
+    })
   }
 
   return { rtmpUrl, streamKey, expiresAt, lastFetched, isExpired, hasValid, setStreamInfo, refresh, syncReadonlyStore }

@@ -56,6 +56,70 @@
  */
 
 /**
+ * @api {post} /api/popup 全局弹窗
+ * @apiName GlobalPopup
+ * @apiGroup Core
+ * @apiDescription 在主窗口或指定插件窗口弹出 toast/alert/confirm。
+ * @apiHeader {String} [X-Plugin-ID] 目标插件窗口ID（不传则主窗口）
+ * @apiBody {String} action 弹窗类型：toast|alert|confirm
+ * @apiBody {String} [title] 标题（alert/confirm）
+ * @apiBody {String} message 文本内容
+ * @apiBody {Object} [options] 额外选项
+ * @apiBody {String} [windowId] 指定窗口ID（优先于 X-Plugin-ID）
+ * @apiSuccess {Boolean} success 是否成功
+ * @apiErrorExample {json} 失败示例:
+ *  HTTP/1.1 404 Not Found
+ *  { "success": false, "error": "WINDOW_NOT_FOUND" }
+ */
+
+/**
+ * @api {post} /api/windows/show 显示并聚焦窗口
+ * @apiName WindowShow
+ * @apiGroup Core
+ * @apiBody {String} [windowId] 插件窗口ID（不传则主窗口）
+ * @apiBody {String} [pluginId] 同 windowId，用于兼容
+ * @apiSuccess {Boolean} success 是否成功
+ */
+
+/**
+ * @api {post} /api/windows/focus 聚焦窗口
+ * @apiName WindowFocus
+ * @apiGroup Core
+ * @apiBody {String} [windowId] 插件窗口ID（不传则主窗口）
+ * @apiBody {String} [pluginId] 同 windowId，用于兼容
+ * @apiSuccess {Boolean} success 是否成功
+ */
+
+/**
+ * @api {post} /api/windows/close 关闭窗口
+ * @apiName WindowClose
+ * @apiGroup Core
+ * @apiBody {String} [windowId] 插件窗口ID（不传则主窗口）
+ * @apiBody {String} [pluginId] 同 windowId，用于兼容
+ * @apiSuccess {Boolean} success 是否成功
+ */
+
+/**
+ * @api {get} /api/windows/list 窗口列表
+ * @apiName WindowList
+ * @apiGroup Core
+ * @apiSuccess {Boolean} success 是否成功
+ * @apiSuccess {Object[]} windows 窗口数组
+ * @apiSuccess (windows) {String} windowId 窗口ID（主窗口为"main"）
+ * @apiSuccess (windows) {Boolean} visible 是否可见
+ * @apiSuccess (windows) {Boolean} focused 是否聚焦
+ */
+
+/**
+ * @api {get} /api/windows/self 调用方窗口标识
+ * @apiName WindowSelf
+ * @apiGroup Core
+ * @apiHeader {String} [X-Plugin-ID] 插件窗口ID
+ * @apiSuccess {Boolean} success 是否成功
+ * @apiSuccess {String} windowId 窗口ID（主窗口为"main"）
+ */
+
+/**
  * @api {get} /api/plugins 插件列表
  * @apiName Plugins
  * @apiGroup Core

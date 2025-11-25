@@ -136,6 +136,11 @@ class MessageCenter {
     return idx >= 0 ? q.slice(idx + 1) : q.slice();
   }
 
+  hasSubscribers(channel: string): boolean {
+    const subs = this.subscribers.get(channel);
+    return !!subs && subs.size > 0;
+  }
+
   /** Append a heartbeat message (not persisted) */
   heartbeat(channel: string): MessageRecord<{ type: 'heartbeat' }> {
     return this.publish(channel, { type: 'heartbeat' }, { ttlMs: 30_000, persist: false, meta: { kind: 'heartbeat' } });

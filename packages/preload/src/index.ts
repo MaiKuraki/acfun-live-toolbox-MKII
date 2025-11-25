@@ -59,7 +59,6 @@ const _listenerMap = new WeakMap<(...args: any[]) => void, (event: Electron.IpcR
     setDir: (dir: string) => ipcRenderer.invoke('config.setDir', dir)
   },
   db: {
-    getPath: () => ipcRenderer.invoke('db.getPath'),
     setPath: (p: string) => ipcRenderer.invoke('db.setPath', p)
   },
   // Overlay API bridging

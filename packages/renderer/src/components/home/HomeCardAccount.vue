@@ -68,7 +68,7 @@
 
     <!-- 二维码登录对话框 -->
     <t-dialog 
-      :visible="qrDialogVisible"
+      v-model:visible="qrDialogVisible"
       title="二维码登录" 
       width="420px"
       :close-on-overlay-click="false"
@@ -115,7 +115,8 @@
 </template>
 
 <script setup lang="ts">
-import { ref, computed } from 'vue';
+import { ref, computed, onMounted, watch, nextTick } from 'vue';
+import { useRoute } from 'vue-router';
 import { useAccountStore } from '../../stores/account';
 import { useHomeStore } from '../../stores/home';
 import { formatCompact } from '../../utils/format';
@@ -156,11 +157,36 @@ const showQrLogin = async () => {
   await generateQrCode();
 };
 
-const generateQrCode = async () => {
+// 通过路由参数触发弹框（强化）
+const route = useRoute();
+const tryOpenQrByRoute = () => {
+  const val = String(((route.query as any)?.qrLogin) ?? '');
+  if (val === '1' && !qrDialogVisible.value) {
+    showQrLogin();
+  }
+};
+tryOpenQrByRoute();
+onMounted(async () => {
+  await nextTick();
+  tryOpenQrByRoute();
+});
+watch(() => (route.query as any)?.qrLogin, (val) => {
+  if (String(val) === '1') {
+    tryOpenQrByRoute();
+  }
+});
+watch(() => route.fullPath, (p) => {
+  if (p.includes('qrLogin=1')) {
+    tryOpenQrByRoute();
+  }
+});
+
+async function generateQrCode() {
   qrSession.value.status = 'loading';
   if (qrCountdownTimer) { clearInterval(qrCountdownTimer); qrCountdownTimer = null; }
   if (qrSession.value.pollInterval) { clearInterval(qrSession.value.pollInterval); qrSession.value.pollInterval = null; }
   try {
+    try { await window.electronApi.login.qrCancel(); } catch {}
     const result = await window.electronApi.login.qrStart();
     if ('error' in result) throw new Error(result.error);
     if ('qrCodeDataUrl' in result) {
@@ -176,8 +202,22 @@ const generateQrCode = async () => {
   } catch (error) {
     console.error('生成二维码失败:', error);
     qrSession.value.status = 'error';
+    try { window.electronApi.popup.toast(`二维码生成失败: ${String((error as any)?.message || error)}`); } catch {}
+    // 轻量自动重试一次
+    try {
+      await new Promise(r => setTimeout(r, 1000));
+      const retry = await window.electronApi.login.qrStart();
+      if ('qrCodeDataUrl' in retry) {
+        qrSession.value.qrDataUrl = retry.qrCodeDataUrl;
+        qrSession.value.status = 'waiting';
+        const expireAtMs = (retry as any).expireAt ?? (typeof (retry as any).expiresIn === 'number' ? Date.now() + (retry as any).expiresIn * 1000 : undefined);
+        qrSession.value.expireAt = typeof expireAtMs === 'number' ? new Date(expireAtMs) : null;
+        if (qrSession.value.expireAt) startQrCountdown();
+        startQrPolling();
+      }
+    } catch {}
   }
-};
+}
 
 const startQrPolling = () => {
   let pollInterval: NodeJS.Timeout;
@@ -200,7 +240,7 @@ const startQrPolling = () => {
           console.warn('Finalize 调用失败，回退使用 check 的 tokenInfo');
           await accountStore.handleLoginSuccess(result.tokenInfo);
         }
-        setTimeout(() => { qrDialogVisible.value = false; qrSession.value.status = 'idle'; }, 2000);
+        setTimeout(() => { qrDialogVisible.value = false; qrSession.value.status = 'idle'; }, 1000);
         clearInterval(pollInterval);
       } else if (result.error) {
         if (result.error.includes('请等待用户确认') || result.error.includes('已扫码')) {
@@ -376,4 +416,3 @@ const formatCountdown = (expireAt: Date) => {
 .qr-countdown { margin-top: 12px; padding: 8px 12px; background: var(--td-bg-color-container-hover); border-radius: 4px; font-size: 12px; color: var(--td-text-color-secondary); }
 .qr-dialog-footer { display: flex; justify-content: flex-end; gap: 8px; }
 </style>
-const onUpdateVisible = (v: boolean) => { qrDialogVisible.value = v; };

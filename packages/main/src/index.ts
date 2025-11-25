@@ -1,4 +1,4 @@
-import { DatabaseManager, EventWriter } from './persistence';
+import { DatabaseManager } from './persistence';
 import { RoomManager } from './rooms';
 import { ApiServer } from './server/ApiServer';
 import { initializeIpcHandlers } from './ipc/ipcHandlers';
@@ -18,7 +18,14 @@ import { getLogManager, LogManager } from './logging/LogManager';
 import { ConsoleManager } from './console/ConsoleManager';
 import { acfunDanmuModule } from './adapter/AcfunDanmuModule';
 import path from 'path';
+import { DataManager } from './persistence/DataManager';
 import * as fs from 'fs';
+
+try {
+  app.commandLine.appendSwitch('disable-logging');
+  app.commandLine.appendSwitch('log-level', 'disable');
+  app.commandLine.appendSwitch('v', '0');
+} catch {}
 
 const applyUserDataRedirect = () => {
   try {
@@ -46,6 +53,13 @@ async function main() {
       console.log = (...args: any[]) => { 
         try { 
           const message = args.map(a => String(a)).join(' ');
+          const suppress = (() => {
+            if (message.startsWith('[StateSignal]') || message.startsWith('[WebSocket]') || message.startsWith('[Command]')) return true;
+            if (message.startsWith('[AcfunApiProxy]')) return true;
+            if (message.includes('devtools://devtools') && (message.includes('Autofill.enable') || message.includes('Autofill.setAddresses'))) return true;
+            return false;
+          })();
+          if (suppress) { return; }
           // Avoid logging database connection messages to prevent loops
           if (!message.includes('Database connected at:')) {
             lm.addLog('main', message, 'info'); 
@@ -57,6 +71,13 @@ async function main() {
       console.info = (...args: any[]) => { 
         try { 
           const message = args.map(a => String(a)).join(' ');
+          const suppress = (() => {
+            if (message.startsWith('[StateSignal]') || message.startsWith('[WebSocket]') || message.startsWith('[Command]')) return true;
+            if (message.startsWith('[AcfunApiProxy]')) return true;
+            if (message.includes('devtools://devtools') && (message.includes('Autofill.enable') || message.includes('Autofill.setAddresses'))) return true;
+            return false;
+          })();
+          if (suppress) { return; }
           if (!message.includes('Database connected at:')) {
             lm.addLog('main', message, 'info'); 
           }
@@ -67,6 +88,13 @@ async function main() {
       console.warn = (...args: any[]) => { 
         try { 
           const message = args.map(a => String(a)).join(' ');
+          const suppress = (() => {
+            if (message.startsWith('[StateSignal]') || message.startsWith('[WebSocket]') || message.startsWith('[Command]')) return true;
+            if (message.startsWith('[AcfunApiProxy]')) return true;
+            if (message.includes('devtools://devtools') && (message.includes('Autofill.enable') || message.includes('Autofill.setAddresses'))) return true;
+            return false;
+          })();
+          if (suppress) { return; }
           if (!message.includes('Database connected at:')) {
             lm.addLog('main', message, 'warn'); 
           }
@@ -77,6 +105,13 @@ async function main() {
       console.error = (...args: any[]) => { 
         try { 
           const message = args.map(a => String(a)).join(' ');
+          const suppress = (() => {
+            if (message.startsWith('[StateSignal]') || message.startsWith('[WebSocket]') || message.startsWith('[Command]')) return true;
+            if (message.startsWith('[AcfunApiProxy]')) return true;
+            if (message.includes('devtools://devtools') && (message.includes('Autofill.enable') || message.includes('Autofill.setAddresses'))) return true;
+            return false;
+          })();
+          if (suppress) { return; }
           if (!message.includes('Database connected at:')) {
             lm.addLog('main', message, 'error'); 
           }
@@ -87,6 +122,13 @@ async function main() {
       console.debug = (...args: any[]) => { 
         try { 
           const message = args.map(a => String(a)).join(' ');
+          const suppress = (() => {
+            if (message.startsWith('[StateSignal]') || message.startsWith('[WebSocket]') || message.startsWith('[Command]')) return true;
+            if (message.startsWith('[AcfunApiProxy]')) return true;
+            if (message.includes('devtools://devtools') && (message.includes('Autofill.enable') || message.includes('Autofill.setAddresses'))) return true;
+            return false;
+          })();
+          if (suppress) { return; }
           if (!message.includes('Database connected at:')) {
             lm.addLog('main', message, 'debug'); 
           }
@@ -126,8 +168,7 @@ async function main() {
   await databaseManager.initialize();
   const logManager = getLogManager();
 
-  const eventWriter = new EventWriter(databaseManager);
-  const roomManager = new RoomManager(eventWriter);
+  const roomManager = new RoomManager(null as any, databaseManager);
   
   // 初始化配置与插件系统
   const configManager = new ConfigManager();
@@ -166,12 +207,50 @@ async function main() {
   (pluginManager as any).apiServer = apiServer;
   // 向 ApiServer 注入 PluginManager 以支持统一静态托管
   apiServer.setPluginManager(pluginManager);
-  
-  await apiServer.start();
 
   // 预先实例化窗口管理器以供 IPC 处理程序使用（窗口创建仍在 app ready 后）
   const windowManager = new WindowManager(); // This will need refactoring
   const pluginWindowManager = new PluginWindowManager();
+
+  // 注入窗口管理器以支持HTTP窗口控制与弹窗
+  apiServer.setWindowManagers(windowManager, pluginWindowManager);
+
+  await apiServer.start();
+
+  try {
+    const ud = app.getPath('userData');
+    const cfgPath = path.join(ud, 'config.json');
+    console.info('[Main] userData path=', ud);
+    try {
+      if (fs.existsSync(cfgPath)) {
+        const raw = fs.readFileSync(cfgPath, 'utf-8');
+        const json = JSON.parse(raw || '{}');
+        console.info('[Main] config.json keys=', Object.keys(json));
+      } else {
+        console.info('[Main] config.json not found at userData path');
+      }
+    } catch {}
+  } catch {}
+
+  console.info('[Main] Server ready → loading plugins');
+  try {
+    const pluginsCfg = configManager.get<any>('plugins', {});
+    console.info('[Main] Persisted plugins config snapshot=', pluginsCfg);
+  } catch {}
+  try {
+    pluginManager.loadInstalledPlugins();
+  } catch (e) {
+    console.warn('[Main] Failed to load plugins after server ready:', e instanceof Error ? e.message : String(e));
+  }
+
+  try {
+    const readyPlugins = pluginManager.getInstalledPlugins().filter(p => p.enabled);
+    for (const p of readyPlugins) {
+      try { await pluginManager.enablePlugin(p.id); } catch (e) { console.error('[Main] Failed to enable plugin on server ready:', p.id, e); }
+    }
+  } catch (e) {
+    console.warn('[Main] Plugin enable on server ready encountered an issue:', e instanceof Error ? e.message : String(e));
+  }
 
   initializeIpcHandlers(
     roomManager,
@@ -183,7 +262,8 @@ async function main() {
     pluginWindowManager,
     configManager,
     logManager,
-    diagnosticsService
+    diagnosticsService,
+    databaseManager
   );
 
   // --- 4. Start API Server ---
@@ -195,6 +275,14 @@ async function main() {
     } catch (err) {
       console.error('[Main] Failed to broadcast event via WsHub:', err);
     }
+    try {
+      const dm = DataManager.getInstance();
+      const plugins = pluginManager.getInstalledPlugins().filter(p => p.enabled);
+      for (const p of plugins) {
+        const channel = `plugin:${p.id}:overlay`;
+        dm.publish(channel, { event: 'normalized-event', payload: event }, { ttlMs: 2 * 60 * 1000, persist: true, meta: { kind: 'danmaku' } });
+      }
+    } catch {}
   });
 
   roomManager.on('roomStatusChange', (roomId: string, status: string) => {
@@ -203,6 +291,15 @@ async function main() {
     } catch (err) {
       console.error('[Main] Failed to broadcast room status via WsHub:', err);
     }
+    try {
+      const dm = DataManager.getInstance();
+      const plugins = pluginManager.getInstalledPlugins().filter(p => p.enabled);
+      const payload = { roomId, status };
+      for (const p of plugins) {
+        const channel = `plugin:${p.id}:overlay`;
+        dm.publish(channel, { event: 'room-status-change', payload }, { ttlMs: 2 * 60 * 1000, persist: true, meta: { kind: 'room' } });
+      }
+    } catch {}
   });
 
   roomManager.on('roomAdded', (roomId: string) => {
@@ -211,6 +308,15 @@ async function main() {
     } catch (err) {
       console.error('[Main] Failed to broadcast room added via WsHub:', err);
     }
+    try {
+      const dm = DataManager.getInstance();
+      const plugins = pluginManager.getInstalledPlugins().filter(p => p.enabled);
+      const payload = { roomId, ts: Date.now() };
+      for (const p of plugins) {
+        const channel = `plugin:${p.id}:overlay`;
+        dm.publish(channel, { event: 'room-added', payload }, { ttlMs: 2 * 60 * 1000, persist: true, meta: { kind: 'room' } });
+      }
+    } catch {}
   });
 
   roomManager.on('roomRemoved', (roomId: string) => {
@@ -219,6 +325,15 @@ async function main() {
     } catch (err) {
       console.error('[Main] Failed to broadcast room removed via WsHub:', err);
     }
+    try {
+      const dm = DataManager.getInstance();
+      const plugins = pluginManager.getInstalledPlugins().filter(p => p.enabled);
+      const payload = { roomId, ts: Date.now() };
+      for (const p of plugins) {
+        const channel = `plugin:${p.id}:overlay`;
+        dm.publish(channel, { event: 'room-removed', payload }, { ttlMs: 2 * 60 * 1000, persist: true, meta: { kind: 'room' } });
+      }
+    } catch {}
   });
 
   // --- 3. Application Ready ---

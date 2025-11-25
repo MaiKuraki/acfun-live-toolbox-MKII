@@ -84,7 +84,7 @@ export class WorkerPoolManager extends TypedEventEmitter<WorkerPoolEvents> {
     }
   }
 
-  public async createWorker(pluginId: string, pluginPath: string): Promise<string> {
+  public async createWorker(pluginId: string, pluginPath: string, sandboxConfig?: any): Promise<string> {
     if (this.workers.size >= this.config.maxWorkers) {
       this.emit('pool.full', { requestedPluginId: pluginId });
       throw new Error(`Worker pool is full (max: ${this.config.maxWorkers})`);
@@ -112,7 +112,8 @@ export class WorkerPoolManager extends TypedEventEmitter<WorkerPoolEvents> {
           config: {
             maxMemoryUsage: this.config.maxMemoryUsage,
             maxExecutionTime: this.config.maxExecutionTime,
-          }
+          },
+          sandboxConfig: sandboxConfig || null
         }
       });
 
@@ -175,6 +176,21 @@ export class WorkerPoolManager extends TypedEventEmitter<WorkerPoolEvents> {
     if (!workerInfo) return;
 
     switch (message.type) {
+      case 'plugin_log': {
+        const level = String(message.level || 'info').toLowerCase();
+        const msg = String(message.message || '');
+        const pid = workerInfo.pluginId;
+        try {
+          // 统一通过 PluginLogger 记录；PluginLogger 会镜像到主进程控制台
+          switch (level) {
+            case 'error': pluginLogger.error(msg, pid); break;
+            case 'warn': pluginLogger.warn(msg, pid); break;
+            case 'debug': pluginLogger.debug(msg, pid); break;
+            default: pluginLogger.info(msg, pid); break;
+          }
+        } catch {}
+        break;
+      }
       case 'status':
         this.updateWorkerStatus(workerId, message.status);
         break;
@@ -232,7 +248,8 @@ export class WorkerPoolManager extends TypedEventEmitter<WorkerPoolEvents> {
     workerId: string, 
     method: string, 
     args: any[] = [],
-    timeout?: number
+    timeout?: number,
+    optional?: boolean
   ): Promise<any> {
     const workerInfo = this.workers.get(workerId);
     if (!workerInfo) {
@@ -270,6 +287,7 @@ export class WorkerPoolManager extends TypedEventEmitter<WorkerPoolEvents> {
         type: 'execute',
         method,
         args,
+        optional: !!optional,
       });
     });
   }

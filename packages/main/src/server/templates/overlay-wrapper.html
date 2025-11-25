@@ -276,6 +276,32 @@
               try { console.log('[overlay-wrapper] SSE lifecycle', { event: msg && msg.event }); } catch(e){}
             } catch(e){ console.warn('[overlay-wrapper] lifecycle parse failed:', e); }
           });
+          es.addEventListener('room', function(ev){
+            try {
+              var rec = JSON.parse(ev.data || '{}');
+              if (rec && typeof rec.id === 'string') {
+                if (seenIds.has(rec.id)) return;
+                seenIds.add(rec.id); lastEventId = rec.id;
+              }
+              var msg = (rec && rec.payload) || rec;
+              postToChild({ type: 'plugin-event', eventType: 'room', event: String(msg && msg.event || ''), payload: msg && msg.payload });
+              pluginStreamActive = true;
+              try { console.log('[overlay-wrapper] SSE room', { event: msg && msg.event }); } catch(e){}
+            } catch(e){ console.warn('[overlay-wrapper] room parse failed:', e); }
+          });
+          es.addEventListener('danmaku', function(ev){
+            try {
+              var rec = JSON.parse(ev.data || '{}');
+              if (rec && typeof rec.id === 'string') {
+                if (seenIds.has(rec.id)) return;
+                seenIds.add(rec.id); lastEventId = rec.id;
+              }
+              var msg = (rec && rec.payload) || rec;
+              postToChild({ type: 'plugin-event', eventType: 'danmaku', event: String(msg && msg.event || ''), payload: msg && msg.payload });
+              pluginStreamActive = true;
+              try { console.log('[overlay-wrapper] SSE danmaku'); } catch(e){}
+            } catch(e){ console.warn('[overlay-wrapper] danmaku parse failed:', e); }
+          });
           es.addEventListener('message', function(ev){
             try {
               var rec = JSON.parse(ev.data || '{}');

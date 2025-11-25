@@ -202,6 +202,20 @@ class YourPlugin {
 }
 ```
 
+### 窗口交互（HTTP）
+
+- 弹窗（主/插件窗口）：`POST /api/popup`
+  - Header 可选：`X-Plugin-ID: <pluginId>` 指定插件窗口；不传为主窗口
+  - Body：`{ action: 'toast'|'alert'|'confirm', title?, message, options?, windowId? }`
+  - 注意：`confirm` 为异步交互，HTTP 返回 `{ success: true }`，结果由渲染层通过 IPC 回传
+- 窗口控制：
+  - `POST /api/windows/show|focus|close`（Body：`windowId` 或 `pluginId`；不传默认主窗口）
+  - `GET /api/windows/list` 列出窗口状态（主窗口 `windowId: 'main'`）
+  - `GET /api/windows/self` 获取调用方窗口标识（优先 `X-Plugin-ID`，否则 `main`）
+- 插件窗口识别建议：
+  - 插件窗口路由为 `#/plugins/:pluginId/window`；渲染页可从路由或上下文获取 `pluginId`
+  - 发起 HTTP 请求时统一附加 `X-Plugin-ID` 头，便于后端路由到对应窗口
+
 ### API 对象
 
 插件构造函数会接收一个 `api` 对象，提供以下功能：

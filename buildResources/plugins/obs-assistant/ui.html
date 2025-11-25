@@ -15,6 +15,8 @@
 <body>
   <div class="card">
     <h1>OBS 助手</h1>
+    <p id="obsStatus">OBS 连接状态：未知</p>
+    <div style="margin:8px 0; color:#666; font-size:12px;">状态由后台自动连接与重试维护；如需自动启动，请在插件配置中选择 OBS 可执行文件路径。</div>
     <p>本插件用于：</p>
     <ul>
       <li>应用启动时自动检测并启动 OBS（需要配置 OBS 可执行路径）</li>
@@ -23,5 +25,53 @@
     </ul>
     <p>在插件管理页的配置项中设置：<code>obsPath</code>、<code>autoStartObs</code>、<code>syncStreaming</code>、<code>wsPort</code>、<code>wsPassword</code>。</p>
   </div>
+  <script>
+    (function(){
+      function getBus(){ try { return (window.$wujie && window.$wujie.bus) || (window.__WUJIE && window.__WUJIE.bus) || (window.wujie && window.wujie.bus) || null; } catch(e){ return null; } }
+      function getProps(){ try { return (window.__WUJIE && window.__WUJIE.props) || (window.$wujie && window.$wujie.props) || {}; } catch(e){ return {}; } }
+      function requestOnce(command, payload){
+        return new Promise(function(resolve, reject){
+          var id = 'req-' + Date.now() + '-' + Math.random().toString(16).slice(2);
+          var bus = getBus();
+          function onResp(msg){ try { if(msg && msg.requestId === id){ bus.$off && bus.$off('bridge-response', onResp); if(msg.success){ resolve(msg.data); } else { reject(new Error(msg.error||'failed')); } } } catch(e){} }
+          try { bus && bus.$on && bus.$on('bridge-response', onResp); bus && bus.$emit && bus.$emit('bridge-request', { type: 'bridge-request', requestId: id, command: command, payload: payload||{} }); } catch(e){}
+          setTimeout(function(){ try { bus && bus.$off && bus.$off('bridge-response', onResp); } catch(e){} reject(new Error('timeout')); }, 10000);
+        });
+      }
+      function requestWithRetry(command, payload, opts){
+        var retries = (opts && opts.retries) || 5;
+        var delayMs = (opts && opts.delayMs) || 400;
+        function attempt(i){
+          return requestOnce(command, payload).catch(function(err){
+            var msg = String(err && err.message || err || '');
+            if(i < retries && (msg.includes('busy') || msg.includes('timeout'))){
+              return new Promise(function(r){ setTimeout(r, delayMs); }).then(function(){ return attempt(i+1); });
+            }
+            throw err;
+          });
+        }
+        return attempt(0);
+      }
+      function renderStatus(data){ try { var el = document.getElementById('obsStatus'); if(!el) return; var s = (data && data.summary) ? data.summary : (data || {}); var conn = !!s.connected; var run = !!s.running; var connecting = !!s.connecting; var connText = connecting ? '连接中' : (conn ? '已连接' : '未连接'); var msg = 'OBS 连接状态：' + connText + '（' + (run ? '运行中' : '未运行') + '）'; var err = s.lastError ? String(s.lastError) : ''; var attempt = s.lastAttempt ? String(s.lastAttempt) : ''; if(err){ msg += '；错误：' + err + (attempt ? (' @ ' + attempt) : ''); } el.textContent = msg; } catch(e){} }
+      function refresh(){
+        requestWithRetry('process.execute', { method: 'getStatus' }, { retries: 5, delayMs: 400 })
+          .then(renderStatus)
+          .catch(function(){ try { var el = document.getElementById('obsStatus'); if(el) el.textContent = 'OBS 连接状态：未连接（未运行或插件忙）'; } catch(e){} });
+      }
+      function getApiBaseBridged(){ return requestWithRetry('get-api-base', {}).then(function(resp){ return String((resp&&resp.base)||''); }); }
+      function subscribeReadonly(keys){ return getApiBaseBridged().then(function(base){ var url = new URL('/sse/renderer/readonly-store/subscribe', base); url.searchParams.set('keys', (keys||[]).join(',')); var src = new EventSource(url.toString()); src.addEventListener('readonly-store-init', function(ev){ try { var data = JSON.parse(ev.data||'{}'); console.log('[readonly:init]', data); } catch(e){} }); src.addEventListener('readonly-store-update', function(ev){ try { var data = JSON.parse(ev.data||'{}'); console.log('[readonly:update]', data); } catch(e){} }); src.addEventListener('heartbeat', function(){ }); src.onerror = function(){ try { src.close(); } catch(e){} setTimeout(function(){ subscribeReadonly(keys); }, 3000); }; return src; }); }
+      function fetchSnapshot(keys){ return getApiBaseBridged().then(function(base){ return fetch(new URL('/api/renderer/readonly-store/snapshot', base).toString(), { method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({ keys: keys||[] }) }).then(function(r){ return r.json(); }).then(function(json){ if(json&&json.success){ console.log('[readonly:snapshot]', json.data); } }); }); }
+      function subscribePluginOverlay(){ var props = getProps(); var pid = String((props&&props.pluginId)||''); if(!pid) return Promise.resolve(null); return getApiBaseBridged().then(function(base){ var url = new URL('/sse/plugins/'+encodeURIComponent(pid)+'/overlay', base); var src = new EventSource(url.toString()); src.addEventListener('init', function(ev){ try { console.log('[overlay:init]', ev.data); } catch(e){} }); src.addEventListener('update', function(ev){ try { console.log('[overlay:update]', ev.data); } catch(e){} }); src.addEventListener('message', function(ev){ try { console.log('[overlay:message]', ev.data); } catch(e){} }); src.addEventListener('action', function(ev){ try { console.log('[overlay:action]', ev.data); } catch(e){} }); src.addEventListener('closed', function(ev){ try { console.log('[overlay:closed]', ev.data); } catch(e){} }); src.addEventListener('heartbeat', function(){ }); src.onerror = function(){ try { src.close(); } catch(e){} setTimeout(function(){ subscribePluginOverlay(); }, 3000); }; return src; }); }
+      window.addEventListener('DOMContentLoaded', function(){
+        var bus = getBus();
+        try { bus && bus.$emit && bus.$emit('ui-ready', { type: 'ui-ready' }); } catch(e){}
+        var defaultKeys = ['account','ui','role','rooms','stream'];
+        fetchSnapshot(defaultKeys).then(function(){ subscribeReadonly(defaultKeys); });
+        subscribePluginOverlay();
+        try { if(bus && bus.$on){ bus.$on('plugin-init', refresh); bus.$on('plugin-event', function(msg){ try { if(msg && msg.eventType==='lifecycle' && (msg.event==='ready'||msg.event==='config-updated')) refresh(); } catch(e){} }); } } catch(e){}
+        refresh();
+      });
+    })();
+  </script>
 </body>
 </html>

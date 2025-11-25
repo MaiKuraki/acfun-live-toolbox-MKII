@@ -64,6 +64,8 @@ export const GlobalPopup = {
       const inst = DialogPlugin.confirm({
         header: sanitizeText(title),
         body: sanitizeText(message),
+        confirmBtn: (options as any)?.confirmBtn,
+        cancelBtn: (options as any)?.cancelBtn,
         onConfirm: () => { try { inst?.hide?.(); } catch {} resolve(true); },
         onCancel: () => { try { inst?.hide?.(); } catch {} resolve(false); },
         onClosed: () => { confirmLocks.delete(ctx); }

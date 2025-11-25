@@ -27,6 +27,7 @@
     "electron-store": "^8.1.0",
     "express": "^5.1.0",
     "helmet": "^7.1.0",
+    "happy-dom": "^20.0.10",
     "morgan": "^1.10.0",
     "obs-websocket-js": "^5.0.0",
     "sqlite3": "^5.1.7",
@@ -46,8 +47,8 @@
     "@types/ws": "^8.5.10",
     "@vitest/ui": "^4.0.6",
     "electron-devtools-installer": "4.0.0",
-    "typescript": "^5.9.3",
-    "vite": "7.0.0",
+    "typescript": "5.9.3",
+    "vite": "7.1.12",
     "vitest": "^4.0.6"
   }
 }

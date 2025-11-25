@@ -1,10 +1,14 @@
 import express from 'express';
+import { DataManager } from '../persistence/DataManager';
+import { IPluginManager } from '../types/contracts';
 import { EventSourceService } from 'acfunlive-http-api/dist/services/EventSourceService';
 import { ImageService } from 'acfunlive-http-api/dist/services/ImageService';
 import { HttpClient } from 'acfunlive-http-api/dist/core/HttpClient';
 import { TokenManager } from './TokenManager';
+import { DatabaseManager } from '../persistence/DatabaseManager';
 import { rateLimitManager } from './ApiRateLimitManager';
 import { AcfunApiProxyConfig,  ApiResponse } from './types/AcfunApiTypes';
+import { DanmuSQLiteWriter } from '../persistence/DanmuSQLiteWriter';
 
 /**
  * AcFun API代理服务
@@ -17,8 +21,11 @@ export class AcfunApiProxy {
   private eventSourceService: EventSourceService;
   private imageService: ImageService;
   private httpClient: HttpClient;
+  private databaseManager?: DatabaseManager;
+  private pluginManager?: IPluginManager;
+  private dataManager = DataManager.getInstance();
 
-  constructor(config: AcfunApiProxyConfig = {}, tokenManager?: TokenManager) {
+  constructor(config: AcfunApiProxyConfig = {}, tokenManager?: TokenManager, databaseManager?: DatabaseManager) {
     this.config = {
       enableAuth: true,
       enableRateLimit: true,
@@ -44,8 +51,25 @@ export class AcfunApiProxy {
     });
     this.eventSourceService = new EventSourceService(this.httpClient);
     this.imageService = new ImageService(this.httpClient);
+    this.databaseManager = databaseManager;
 
     this.initializeAuthentication();
+  }
+
+  public setPluginManager(pm: IPluginManager): void {
+    this.pluginManager = pm;
+  }
+
+  private broadcast(kind: string, event: string, data: any): void {
+    try {
+      const pm = this.pluginManager;
+      if (!pm) return;
+      const plugins = pm.getInstalledPlugins().filter(p => p.enabled);
+      for (const p of plugins) {
+        const channel = `plugin:${p.id}:overlay`;
+        this.dataManager.publish(channel, { event, payload: data }, { ttlMs: 120000, persist: true, meta: { kind } });
+      }
+    } catch {}
   }
 
   /**
@@ -213,10 +237,12 @@ export class AcfunApiProxy {
       switch (pathSegments[0]) {
         case 'status':
           if (method === 'GET') {
+            const validation = await this.tokenManager.validateToken();
             return {
               success: true,
               data: {
-                authenticated: this.tokenManager.isAuthenticated(),
+                authenticated: !!validation?.isValid,
+                reason: validation?.reason,
                 timestamp: Date.now()
               },
               code: 200
@@ -307,13 +333,19 @@ export class AcfunApiProxy {
               };
             }
 
-            // 创建回调函数来处理弹幕事件
+            const db = this.databaseManager?.getDb();
+            const writer = db ? new DanmuSQLiteWriter(db) : null;
             const danmuCallback = (event: any) => {
-              // 这里可以通过 WebSocket 或其他方式将事件推送给客户端
-              console.log('[AcfunApiProxy] Danmu event:', event);
+              if (writer) {
+                writer.handleEvent(String(liverUID), event).catch(err => { try { console.warn('[AcfunApiProxy] persist error:', err); } catch {} });
+              }
+              try { console.log('[AcfunApiProxy] Danmu event:', event); } catch {}
             };
 
             const result = await this.acfunApi.danmu.startDanmu(liverUID, danmuCallback);
+            if (result && result.success) {
+              this.broadcast('room', 'danmu-start', { liverUID, ts: Date.now(), sessionId: (result.data as any)?.sessionId });
+            }
             return {
               success: result.success,
               data: result.data,
@@ -335,6 +367,9 @@ export class AcfunApiProxy {
             }
 
             const result = await this.acfunApi.danmu.stopDanmu(sessionId);
+            if (result && result.success) {
+              this.broadcast('room', 'danmu-stop', { sessionId, ts: Date.now() });
+            }
             return {
               success: result.success,
               data: result.data,
@@ -356,6 +391,55 @@ export class AcfunApiProxy {
             }
 
             const result = await this.acfunApi.danmu.getLiveRoomInfo(liverUID);
+            try {
+              if (result && result.success && this.databaseManager) {
+                const db = this.databaseManager.getDb();
+                const stmt = db.prepare(`
+                  INSERT INTO rooms_meta (
+                    room_id, streamer_name, streamer_user_id,
+                    title, cover_url, status, is_live,
+                    viewer_count, online_count, like_count, live_cover,
+                    category_id, category_name, sub_category_id, sub_category_name,
+                    updated_at
+                  ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
+                `);
+                const data: any = result.data || {};
+                const owner = data.owner || {};
+                const title = typeof data.title === 'string' ? data.title : '';
+                const cover = typeof data.coverUrl === 'string' ? data.coverUrl : '';
+                const status = data.liveID ? 'open' : 'closed';
+                const isLive = data.liveID ? 1 : 0;
+                const viewerCount = typeof data.viewerCount === 'number' ? data.viewerCount : (typeof data.onlineCount === 'number' ? data.onlineCount : 0);
+                const liveCover = typeof data.liveCover === 'string' ? data.liveCover : null;
+                const categoryId = data.categoryID ?? data.categoryId ?? null;
+                const categoryName = data.categoryName ?? null;
+                const subCategoryId = data.subCategoryID ?? data.subCategoryId ?? null;
+                const subCategoryName = data.subCategoryName ?? null;
+                const likeCount = typeof data.likeCount === 'number' ? data.likeCount : 0;
+                stmt.run(
+                  String(liverUID),
+                  owner.userName || owner.nickname || owner.name || '',
+                  owner.userID != null ? String(owner.userID) : String(liverUID),
+                  title,
+                  cover,
+                  status,
+                  isLive,
+                  viewerCount,
+                  viewerCount,
+                  likeCount,
+                  liveCover,
+                  categoryId != null ? String(categoryId) : '',
+                  categoryName != null ? String(categoryName) : '',
+                  subCategoryId != null ? String(subCategoryId) : '',
+                  subCategoryName != null ? String(subCategoryName) : '',
+                  (err: any) => {
+                    try { stmt.finalize(); } catch {}
+                    if (err) { try { console.warn('[rooms_meta] upsert error via /api/acfun/danmu/room-info', err); } catch {} }
+                    else { try { console.info('[rooms_meta] upsert route=/api/acfun/danmu/room-info room=' + String(liverUID) + ' status=' + String(status) + ' isLive=' + String(isLive) + ' viewer=' + String(viewerCount)); } catch {} }
+                  }
+                );
+              }
+            } catch {}
             return {
               success: result.success,
               data: result.data,
@@ -522,7 +606,7 @@ export class AcfunApiProxy {
                 });
               } catch {}
               
-              const result = await this.acfunApi.live.getLiveStreamStatus();
+            const result = await this.acfunApi.live.getLiveStreamStatus();
               try {
                 console.debug('[AcfunApiProxy][stream-status] upstream resp', {
                   success: result.success,
@@ -534,19 +618,94 @@ export class AcfunApiProxy {
                   } : null
                 });
               } catch {}
-              const err = result.error || '';
-              return {
-                success: result.success,
-                data: result.data,
-                error: result.error,
-                code: result.success ? 200 : (err.includes('cookies') || err.includes('token')) ? 401 : 400
-              };
+            try {
+              if (result && result.success && this.databaseManager) {
+                const tokenInfo = this.acfunApi.httpClient.getValidatedTokenInfo();
+                const roomId = tokenInfo?.tokenInfo?.userID ? String(tokenInfo.tokenInfo.userID) : undefined;
+                if (roomId) {
+                  const db = this.databaseManager.getDb();
+                const stmt = db.prepare(`
+                    INSERT INTO rooms_meta (
+                      room_id, streamer_name, streamer_user_id,
+                      title, cover_url, status, is_live,
+                      viewer_count, online_count, like_count, live_cover,
+                      category_id, category_name, sub_category_id, sub_category_name,
+                      updated_at
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
+                  `);
+                  const data: any = result.data || {};
+                  const status = data.liveID ? 'open' : 'closed';
+                  const isLive = data.liveID ? 1 : 0;
+                  stmt.run(
+                    roomId,
+                    '',
+                    roomId,
+                    typeof data.title === 'string' ? data.title : '',
+                    null,
+                    status,
+                    isLive,
+                    0,
+                    0,
+                  0,
+                  '',
+                  '',
+                  '',
+                  '',
+                  (err: any) => {
+                      try { stmt.finalize(); } catch {}
+                      if (err) { try { console.warn('[rooms_meta] upsert error via /api/acfun/live/stream-status', err); } catch {} }
+                      else { try { console.info('[rooms_meta] upsert route=/api/acfun/live/stream-status room=' + String(roomId) + ' status=' + String(status) + ' isLive=' + String(isLive)); } catch {} }
+                    }
+                  );
+                }
+              }
+            } catch {}
+            const err = result.error || '';
+            if (!result.success) {
+              // 认证错误 → 401
+              if (err.includes('cookies') || err.includes('token') || err.includes('unauthorized')) {
+                return { success: false, error: result.error, data: null, code: 401 };
+              }
+              // 未开播错误 → 归一为 success:true + 默认对象
+              const maybeJson = (() => {
+                try {
+                  const m = err.match(/\{[^]*\}/);
+                  if (m && m[0]) return JSON.parse(m[0]);
+                } catch {}
+                return null;
+              })();
+              const notLive = err.includes('未开播') || (maybeJson && (Number(maybeJson.result) === 380023 || String(maybeJson.error_msg || '').includes('未开播')));
+              if (notLive) {
+                return {
+                  success: true,
+                  data: {
+                    liveID: '',
+                    streamName: '',
+                    title: '',
+                    liveCover: '',
+                    liveStartTime: 0,
+                    panoramic: false,
+                    bizUnit: '',
+                    bizCustomData: '',
+                    isLive: false
+                  },
+                  error: undefined,
+                  code: 200
+                };
+              }
+            }
+            return {
+              success: result.success,
+              data: result.data,
+              error: result.error,
+              code: 200
+            };
             } catch (error: any) {
               console.error('[AcfunApiProxy] Stream status error:', error);
               return {
                 success: false,
                 error: error.message || 'Failed to get stream status',
-                code: 400
+                code: 200
               };
             }
           }
@@ -629,6 +788,9 @@ export class AcfunApiProxy {
               categoryID,
               subCategoryID
             );
+            if (result && result.success) {
+              this.broadcast('room', 'live-start', { title, streamName, ts: Date.now(), liveId: (result.data as any)?.liveID });
+            }
             return {
               success: result.success,
               data: result.data,
@@ -650,6 +812,9 @@ export class AcfunApiProxy {
             }
 
             const result = await this.acfunApi.live.stopLiveStream(liveId);
+            if (result && result.success) {
+              this.broadcast('room', 'live-stop', { liveId, ts: Date.now() });
+            }
             return {
               success: result.success,
               data: result.data,

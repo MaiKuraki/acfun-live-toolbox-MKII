@@ -32,142 +32,92 @@ export class QueryService {
   }
 
   public async queryEvents(query: EventQuery): Promise<EventQueryResult> {
-    const {
-      room_id,
-      room_kw,
-      from_ts,
-      to_ts,
-      type,
-      types,
-      user_id,
-      user_kw,
-      q,
-      page = 1,
-      pageSize = 200
-    } = query;
+    const { room_id, room_kw, from_ts, to_ts, type, types, user_id, user_kw, q, page = 1, pageSize = 200 } = query;
+    const offset = (page - 1) * pageSize;
+    const actionTypeMap: Record<string, NormalizedEventType> = { comment: 'danmaku', gift: 'gift', like: 'like', enterRoom: 'enter', followAuthor: 'follow' };
+    const typeList: NormalizedEventType[] | undefined = Array.isArray(types) && types.length > 0 ? types : (type ? [type] : undefined);
+    const actionFilters = typeList ? typeList.filter(t => ['danmaku','gift','like','enter','follow'].includes(t)) : undefined;
 
-    // 构建 WHERE 条件
-    const conditions: string[] = [];
-    const params: any[] = [];
-
-    if (room_id) {
-      conditions.push('room_id = ?');
-      params.push(room_id);
-    }
-
-    // 解析 room_kw -> room_id 集合过滤
+    const whereActions: string[] = [];
+    const paramsActions: any[] = [];
+    const hasNick = await this.hasUsersNicknameColumn();
+    if (room_id) { whereActions.push('a.live_id = ?'); paramsActions.push(room_id); }
     if (room_kw && !room_id) {
       const resolvedRoomIds = await this.resolveRoomIdsByKeyword(room_kw);
-      if (resolvedRoomIds.length === 0) {
-        // 关键词无匹配，直接返回空结果
-        return {
-          items: [],
-          total: 0,
-          page,
-          pageSize,
-          hasNext: false
-        };
-      }
-      conditions.push(`room_id IN (${resolvedRoomIds.map(() => '?').join(',')})`);
-      params.push(...resolvedRoomIds);
+      if (resolvedRoomIds.length === 0) return { items: [], total: 0, page, pageSize, hasNext: false };
+      whereActions.push(`a.live_id IN (${resolvedRoomIds.map(() => '?').join(',')})`);
+      paramsActions.push(...resolvedRoomIds);
     }
-
-    if (from_ts) {
-      conditions.push('timestamp >= ?');
-      params.push(from_ts);
+    if (from_ts) { whereActions.push('a.send_time >= ?'); paramsActions.push(from_ts); }
+    if (to_ts) { whereActions.push('a.send_time <= ?'); paramsActions.push(to_ts); }
+    if (user_id) { whereActions.push('a.user_id = ?'); paramsActions.push(user_id); }
+    if (user_kw && user_kw.trim().length > 0 && hasNick) { whereActions.push('u.nickname LIKE ?'); paramsActions.push(`%${user_kw.trim()}%`); }
+    if (q && q.trim().length > 0) { const like = `%${q.trim()}%`; if (hasNick) { whereActions.push('(COALESCE(u.nickname,"") LIKE ? OR COALESCE(a.content,"") LIKE ? OR COALESCE(a.extra_json,"") LIKE ?)'); paramsActions.push(like, like, like); } else { whereActions.push('(COALESCE(a.content,"") LIKE ? OR COALESCE(a.extra_json,"") LIKE ?)'); paramsActions.push(like, like); } }
+    if (actionFilters && actionFilters.length > 0) {
+      const actionKeys = actionFilters.map(t => Object.keys(actionTypeMap).find(k => actionTypeMap[k] === t)).filter(Boolean) as string[];
+      if (actionKeys.length > 0) { whereActions.push(`a.action_type IN (${actionKeys.map(() => '?').join(',')})`); paramsActions.push(...actionKeys); } else { whereActions.push('1=0'); }
     }
+    const whereClauseActions = whereActions.length > 0 ? `WHERE ${whereActions.join(' AND ')}` : '';
 
-    if (to_ts) {
-      conditions.push('timestamp <= ?');
-      params.push(to_ts);
-    }
-
-    // 类型过滤：支持单个或集合
-    const typeList: NormalizedEventType[] | undefined = Array.isArray(types) && types.length > 0
-      ? types
-      : (type ? [type] : undefined);
-    if (typeList && typeList.length > 0) {
-      if (typeList.length === 1) {
-        conditions.push('type = ?');
-        params.push(typeList[0]);
-      } else {
-        conditions.push(`type IN (${typeList.map(() => '?').join(',')})`);
-        params.push(...typeList);
-      }
-    }
-
-    if (user_id) {
-      conditions.push('user_id = ?');
-      params.push(user_id);
-    }
-
-    if (user_kw && user_kw.trim().length > 0) {
-      const likeUser = `%${user_kw.trim()}%`;
-      conditions.push('(username LIKE ?)');
-      params.push(likeUser);
-    }
-
-    if (q && q.trim().length > 0) {
-      const like = `%${q.trim()}%`;
-      conditions.push('(username LIKE ? OR payload LIKE ? OR raw_data LIKE ?)');
-      params.push(like, like, like);
-    }
-
-    const whereClause = conditions.length > 0 ? `WHERE ${conditions.join(' AND ')}` : '';
-
-    // 计算总数
-    const countSql = `SELECT COUNT(*) as total FROM events ${whereClause}`;
-    const totalResult = await this.executeQuery<{ total: number }>(countSql, params);
-    const total = totalResult[0]?.total || 0;
-
-    // 计算分页
-    const offset = (page - 1) * pageSize;
-    const hasNext = offset + pageSize < total;
-
-    // 查询数据
-    const dataSql = `
+    const sqlActions = `
       SELECT 
-        id,
-        event_id,
-        type as event_type,
-        room_id,
-        source,
-        user_id,
-        username as user_name,
-        payload as content,
-        timestamp as ts,
-        received_at,
-        raw_data as raw,
-        created_at
-      FROM events 
-      ${whereClause}
-      ORDER BY timestamp DESC, id DESC
+        a.send_time AS ts,
+        a.live_id AS room_id,
+        'acfun' AS source,
+        CASE a.action_type 
+          WHEN 'comment' THEN 'danmaku'
+          WHEN 'gift' THEN 'gift'
+          WHEN 'like' THEN 'like'
+          WHEN 'enterRoom' THEN 'enter'
+          WHEN 'followAuthor' THEN 'follow'
+          ELSE 'system'
+        END AS event_type,
+        CAST(a.user_id AS TEXT) AS user_id,
+        ${hasNick ? 'COALESCE(u.nickname, \'\')' : "COALESCE(json_extract(a.extra_json, '$.user.userName'), json_extract(a.extra_json, '$.user.nickname'), json_extract(a.extra_json, '$.user.name'), json_extract(a.extra_json, '$.userName'), json_extract(a.extra_json, '$.nickname'))"} AS user_name,
+        a.content AS content,
+        a.extra_json AS raw,
+        a.id AS _id
+      FROM live_actions a
+      LEFT JOIN users u ON u.user_id = a.user_id
+      ${whereClauseActions}
+    `;
+    const listSql = `
+      ${sqlActions}
+      ORDER BY ts DESC, _id DESC
       LIMIT ? OFFSET ?
     `;
+    const rows = await this.executeQuery<any>(listSql, [...paramsActions, pageSize, offset]);
 
-    const dataParams = [...params, pageSize, offset];
-    const rows = await this.executeQuery<any>(dataSql, dataParams);
+    const countActionsSql = `SELECT COUNT(1) AS c FROM live_actions a ${whereClauseActions}`;
+    const [ca] = await this.executeQuery<{ c: number }>(countActionsSql, paramsActions);
+    const total = (ca?.c || 0);
+    const hasNext = offset + pageSize < total;
 
-    // 转换为 NormalizedEvent 格式
     const items: NormalizedEvent[] = rows.map(row => ({
-      ts: row.ts,
-      received_at: row.received_at || row.ts,
-      room_id: row.room_id,
-      source: row.source || 'unknown',
+      ts: Number(row.ts),
+      received_at: Number(row.ts),
+      room_id: String(row.room_id),
+      source: String(row.source || 'acfun'),
       event_type: row.event_type as NormalizedEventType,
-      user_id: row.user_id || null,
-      user_name: row.user_name || null,
-      content: row.content || null,
-      raw: row.raw ? JSON.parse(row.raw) : null
+      user_id: row.user_id ? String(row.user_id) : null,
+      user_name: row.user_name ? String(row.user_name) : null,
+      content: row.content ? String(row.content) : null,
+      raw: row.raw ? safeJson(row.raw) : null
     }));
 
-    return {
-      items,
-      total,
-      page,
-      pageSize,
-      hasNext
-    };
+    return { items, total, page, pageSize, hasNext };
+  }
+
+  private async hasUsersNicknameColumn(): Promise<boolean> {
+    try {
+      const rows = await this.executeQuery<{ name: string }>('PRAGMA table_info(users)', []);
+      const hasByPragma = rows.some(r => String(r.name).toLowerCase() === 'nickname');
+      if (!hasByPragma) return false;
+      try {
+        await this.executeQuery<any>('SELECT nickname FROM users LIMIT 1', []);
+        return true;
+      } catch { return false; }
+    } catch { return false; }
   }
 
   private async executeQuery<T>(sql: string, params: any[] = []): Promise<T[]> {
@@ -187,102 +137,51 @@ export class QueryService {
 
   public async getEventById(id: number): Promise<NormalizedEvent | null> {
     const sql = `
-      SELECT 
-        id,
-        event_id,
-        type as event_type,
-        room_id,
-        source,
-        user_id,
-        username as user_name,
-        payload as content,
-        timestamp as ts,
-        received_at,
-        raw_data as raw,
-        created_at
-      FROM events 
-      WHERE id = ?
+      SELECT * FROM (
+        SELECT a.id AS _id, a.send_time AS ts, a.live_id AS room_id, 'acfun' AS source,
+               CASE a.action_type WHEN 'comment' THEN 'danmaku' WHEN 'gift' THEN 'gift' WHEN 'like' THEN 'like' WHEN 'enterRoom' THEN 'enter' WHEN 'followAuthor' THEN 'follow' ELSE 'system' END AS event_type,
+               CAST(a.user_id AS TEXT) AS user_id, (SELECT nickname FROM users WHERE user_id=a.user_id) AS user_name, a.content AS content, a.extra_json AS raw
+        FROM live_actions a WHERE a.id = ?
+        UNION ALL
+        SELECT s.id AS _id, s.report_time AS ts, s.live_id AS room_id, 'acfun' AS source,
+               s.state_type AS event_type, NULL AS user_id, NULL AS user_name,
+               CASE s.state_type WHEN 'bananaCount' THEN CAST(s.metric_main AS TEXT) WHEN 'displayInfo' THEN json_extract(s.raw_data, '$.watchingCount') ELSE NULL END AS content,
+               s.raw_data AS raw
+        FROM live_states s WHERE s.id = ?
+      ) LIMIT 1
     `;
-
-    const rows = await this.executeQuery<any>(sql, [id]);
-    
-    if (rows.length === 0) {
-      return null;
-    }
-
-    const row = rows[0];
-    return {
-      ts: row.ts,
-      received_at: row.received_at || row.ts,
-      room_id: row.room_id,
-      source: row.source || 'unknown',
-      event_type: row.event_type as NormalizedEventType,
-      user_id: row.user_id || null,
-      user_name: row.user_name || null,
-      content: row.content || null,
-      raw: row.raw ? JSON.parse(row.raw) : null
-    };
+    const rows = await this.executeQuery<any>(sql, [id, id]);
+    if (rows.length === 0) return null;
+    const r = rows[0];
+    return { ts: Number(r.ts), received_at: Number(r.ts), room_id: String(r.room_id), source: String(r.source || 'acfun'), event_type: r.event_type as NormalizedEventType, user_id: r.user_id ? String(r.user_id) : null, user_name: r.user_name ? String(r.user_name) : null, content: r.content ? String(r.content) : null, raw: r.raw ? safeJson(r.raw) : null };
   }
 
-  public async getEventStats(room_id?: string): Promise<{
-    total: number;
-    byType: Record<string, number>;
-    dateRange: { earliest: number | null; latest: number | null };
-  }> {
-    const conditions: string[] = [];
-    const params: any[] = [];
-
-    if (room_id) {
-      conditions.push('room_id = ?');
-      params.push(room_id);
-    }
-
-    const whereClause = conditions.length > 0 ? `WHERE ${conditions.join(' AND ')}` : '';
-
-    // 总数和类型统计
-    const statsSql = `
-      SELECT 
-        COUNT(*) as total,
-        type,
-        COUNT(type) as type_count,
-        MIN(timestamp) as earliest,
-        MAX(timestamp) as latest
-      FROM events 
-      ${whereClause}
-      GROUP BY type
-    `;
-
-    const statsRows = await this.executeQuery<{
-      total: number;
-      type: string;
-      type_count: number;
-      earliest: number;
-      latest: number;
-    }>(statsSql, params);
-
+  public async getEventStats(room_id?: string): Promise<{ total: number; byType: Record<string, number>; dateRange: { earliest: number | null; latest: number | null } }> {
     const byType: Record<string, number> = {};
     let total = 0;
     let earliest: number | null = null;
     let latest: number | null = null;
 
-    for (const row of statsRows) {
-      byType[row.type] = row.type_count;
-      total += row.type_count;
-      
-      if (earliest === null || row.earliest < earliest) {
-        earliest = row.earliest;
-      }
-      
-      if (latest === null || row.latest > latest) {
-        latest = row.latest;
-      }
+    const whereA = room_id ? 'WHERE a.live_id = ?' : '';
+    const pA = room_id ? [room_id] : [];
+    const rowsA = await this.executeQuery<{ type: string; cnt: number; earliest: number; latest: number }>(`SELECT a.action_type AS type, COUNT(1) AS cnt, MIN(a.send_time) AS earliest, MAX(a.send_time) AS latest FROM live_actions a ${whereA} GROUP BY a.action_type`, pA);
+    for (const r of rowsA) {
+      const t = r.type === 'comment' ? 'danmaku' : (r.type === 'enterRoom' ? 'enter' : (r.type === 'followAuthor' ? 'follow' : r.type));
+      byType[t] = (byType[t] || 0) + r.cnt;
+      total += r.cnt;
+      earliest = earliest == null ? r.earliest : Math.min(earliest, r.earliest);
+      latest = latest == null ? r.latest : Math.max(latest, r.latest);
     }
-
-    return {
-      total,
-      byType,
-      dateRange: { earliest, latest }
-    };
+    const whereS = room_id ? 'WHERE s.live_id = ?' : '';
+    const pS = room_id ? [room_id] : [];
+    const rowsS = await this.executeQuery<{ type: string; cnt: number; earliest: number; latest: number }>(`SELECT s.state_type AS type, COUNT(1) AS cnt, MIN(s.report_time) AS earliest, MAX(s.report_time) AS latest FROM live_states s ${whereS} GROUP BY s.state_type`, pS);
+    for (const r of rowsS) {
+      byType[r.type] = (byType[r.type] || 0) + r.cnt;
+      total += r.cnt;
+      earliest = earliest == null ? r.earliest : Math.min(earliest, r.earliest);
+      latest = latest == null ? r.latest : Math.max(latest, r.latest);
+    }
+    return { total, byType, dateRange: { earliest, latest } };
   }
 
   // 根据主播用户名关键词解析 room_id 集合（使用 rooms_meta，必要时从 API 补充）
@@ -303,7 +202,11 @@ export class QueryService {
 
     // 无匹配则尝试补全 rooms_meta：遍历 events 中已知房间并拉取主播名
     const distinctRooms = await this.executeQuery<{ room_id: string }>(
-      'SELECT DISTINCT room_id FROM events',
+      `SELECT room_id FROM (
+        SELECT DISTINCT live_id AS room_id FROM live_actions
+        UNION
+        SELECT DISTINCT live_id AS room_id FROM live_states
+      )`,
       []
     );
     const roomIds = distinctRooms.map(r => String(r.room_id));
@@ -381,38 +284,183 @@ export class QueryService {
 
   public async listRooms(limit: number = 200): Promise<Array<{ roomId: string; streamerName: string }>> {
     const sql = `
-      SELECT e.room_id AS room_id,
-             COALESCE(r.streamer_name, '') AS streamer_name,
-             MAX(e.timestamp) AS last_ts
-      FROM events e
-      LEFT JOIN rooms_meta r ON r.room_id = e.room_id
-      GROUP BY e.room_id
+      SELECT room_id, MAX(streamer_name) AS streamer_name, MAX(last_ts) AS last_ts
+      FROM (
+        SELECT a.live_id AS room_id, COALESCE(r.streamer_name,'') AS streamer_name, MAX(a.send_time) AS last_ts
+        FROM live_actions a LEFT JOIN rooms_meta r ON r.room_id = a.live_id
+        GROUP BY a.live_id
+        UNION ALL
+        SELECT s.live_id AS room_id, COALESCE(r.streamer_name,'') AS streamer_name, MAX(s.report_time) AS last_ts
+        FROM live_states s LEFT JOIN rooms_meta r ON r.room_id = s.live_id
+        GROUP BY s.live_id
+      )
+      GROUP BY room_id
       ORDER BY last_ts DESC
       LIMIT ?
     `;
-    const rows = await this.executeQuery<{ room_id: string; streamer_name: string; last_ts: number }>(sql, [limit]);
+    const rows = await this.executeQuery<{ room_id: string; streamer_name: string }>(sql, [limit]);
     return rows.map(row => ({ roomId: String(row.room_id), streamerName: row.streamer_name || '' }));
   }
 
   public async getDbInfo(): Promise<{ eventsCount: number; latestEventTs: number | null; latestRoomIds: string[]; roomsMetaCount: number }> {
-    const countRows = await this.executeQuery<{ total: number }>('SELECT COUNT(*) AS total FROM events', []);
-    const latestRows = await this.executeQuery<{ ts: number; room_id: string }>('SELECT timestamp AS ts, room_id FROM events ORDER BY timestamp DESC LIMIT 10', []);
+    const c1 = await this.executeQuery<{ total: number }>('SELECT COUNT(*) AS total FROM live_actions', []);
+    const c2 = await this.executeQuery<{ total: number }>('SELECT COUNT(*) AS total FROM live_states', []);
+    const latest = await this.executeQuery<{ ts: number; room_id: string }>(
+      `SELECT ts, room_id FROM (
+        SELECT MAX(send_time) AS ts, live_id AS room_id FROM live_actions
+        UNION ALL
+        SELECT MAX(report_time) AS ts, live_id AS room_id FROM live_states
+      ) ORDER BY ts DESC LIMIT 10`, []);
     const roomsRows = await this.executeQuery<{ total: number }>('SELECT COUNT(*) AS total FROM rooms_meta', []);
-    const latestTs = latestRows[0]?.ts ?? null;
-    const latestRoomIds = Array.from(new Set(latestRows.map(r => String(r.room_id))));
-    return {
-      eventsCount: countRows[0]?.total || 0,
-      latestEventTs: latestTs,
-      latestRoomIds,
-      roomsMetaCount: roomsRows[0]?.total || 0
-    };
+    const latestTs = latest[0]?.ts ?? null;
+    const latestRoomIds = Array.from(new Set(latest.map(r => String(r.room_id))));
+    return { eventsCount: (c1[0]?.total || 0) + (c2[0]?.total || 0), latestEventTs: latestTs, latestRoomIds, roomsMetaCount: roomsRows[0]?.total || 0 };
   }
 
   public async getEventsSample(limit: number = 20): Promise<Array<{ id: number; room_id: string; type: string; ts: number }>> {
     const rows = await this.executeQuery<{ id: number; room_id: string; type: string; ts: number }>(
-      'SELECT id, room_id, type, timestamp AS ts FROM events ORDER BY timestamp DESC, id DESC LIMIT ?',
-      [limit]
+      `SELECT id, room_id, type, ts FROM (
+        SELECT a.id AS id, a.live_id AS room_id, a.action_type AS type, a.send_time AS ts FROM live_actions a
+        UNION ALL
+        SELECT s.id AS id, s.live_id AS room_id, s.state_type AS type, s.report_time AS ts FROM live_states s
+      ) ORDER BY ts DESC, id DESC LIMIT ?`, [limit]
     );
     return rows.map(r => ({ id: r.id, room_id: String(r.room_id), type: String(r.type), ts: Number(r.ts) }));
   }
+
+  public async listUsers(limit: number = 200, room_id?: string): Promise<Array<{ id: string; name: string }>> {
+    const hasNick = await this.hasUsersNicknameColumn();
+    if (hasNick) {
+      if (room_id) {
+        const rows = await this.executeQuery<{ user_id: string; nickname: string }>(
+          `SELECT DISTINCT CAST(u.user_id AS TEXT) AS user_id, COALESCE(u.nickname,'') AS nickname
+           FROM users u
+           WHERE EXISTS (SELECT 1 FROM live_actions a WHERE a.user_id = u.user_id AND a.live_id = ?)
+           ORDER BY nickname ASC
+           LIMIT ?`, [room_id, limit]
+        );
+        return rows.map(r => ({ id: String(r.user_id), name: r.nickname || String(r.user_id) }));
+      }
+      const rows = await this.executeQuery<{ user_id: string; nickname: string }>(
+        `SELECT CAST(user_id AS TEXT) AS user_id, COALESCE(nickname,'') AS nickname
+         FROM users
+         ORDER BY updated_at DESC
+         LIMIT ?`, [limit]
+      );
+      return rows.map(r => ({ id: String(r.user_id), name: r.nickname || String(r.user_id) }));
+    } else {
+      if (room_id) {
+        const rows = await this.executeQuery<{ user_id: string; name: string }>(
+          `SELECT DISTINCT CAST(a.user_id AS TEXT) AS user_id, COALESCE(json_extract(a.extra_json, '$.user.userName'),'') AS name
+           FROM live_actions a
+           WHERE a.live_id = ? AND a.user_id IS NOT NULL
+           ORDER BY name ASC
+           LIMIT ?`, [room_id, limit]
+        );
+        return rows.map(r => ({ id: String(r.user_id), name: r.name || String(r.user_id) }));
+      }
+      const rows = await this.executeQuery<{ user_id: string; name: string }>(
+        `SELECT DISTINCT CAST(a.user_id AS TEXT) AS user_id, COALESCE(json_extract(a.extra_json, '$.user.userName'),'') AS name
+         FROM live_actions a
+         WHERE a.user_id IS NOT NULL
+         ORDER BY name ASC
+         LIMIT ?`, [limit]
+      );
+      return rows.map(r => ({ id: String(r.user_id), name: r.name || String(r.user_id) }));
+    }
+  }
+
+  public async searchUsers(keyword: string, page: number = 1, pageSize: number = 20, room_id?: string): Promise<{ items: Array<{ id: string; name: string }>; total: number; page: number; pageSize: number; hasNext: boolean }>{
+    const kw = String(keyword || '').trim();
+    const like = `%${kw}%`;
+    const offset = (page - 1) * pageSize;
+    const hasNick = await this.hasUsersNicknameColumn();
+    if (hasNick) {
+      if (room_id) {
+        const rows = await this.executeQuery<{ user_id: string; nickname: string }>(
+          `SELECT CAST(u.user_id AS TEXT) AS user_id, COALESCE(u.nickname,'') AS nickname
+           FROM users u
+           WHERE EXISTS (SELECT 1 FROM live_actions a WHERE a.user_id = u.user_id AND a.live_id = ?)
+             AND COALESCE(u.nickname,'') LIKE ?
+           ORDER BY nickname ASC
+           LIMIT ? OFFSET ?`, [room_id, like, pageSize, offset]
+        );
+        const cntRows = await this.executeQuery<{ c: number }>(
+          `SELECT COUNT(1) AS c FROM users u WHERE EXISTS (SELECT 1 FROM live_actions a WHERE a.user_id = u.user_id AND a.live_id = ?) AND COALESCE(u.nickname,'') LIKE ?`, [room_id, like]
+        );
+        const total = cntRows[0]?.c || 0;
+        const items = rows.map(r => ({ id: String(r.user_id), name: r.nickname || String(r.user_id) }));
+        return { items, total, page, pageSize, hasNext: offset + pageSize < total };
+      }
+      const rows = await this.executeQuery<{ user_id: string; nickname: string }>(
+        `SELECT CAST(user_id AS TEXT) AS user_id, COALESCE(nickname,'') AS nickname
+         FROM users
+         WHERE COALESCE(nickname,'') LIKE ?
+         ORDER BY nickname ASC
+         LIMIT ? OFFSET ?`, [like, pageSize, offset]
+      );
+      const cntRows = await this.executeQuery<{ c: number }>(
+        `SELECT COUNT(1) AS c FROM users WHERE COALESCE(nickname,'') LIKE ?`, [like]
+      );
+      const total = cntRows[0]?.c || 0;
+      const items = rows.map(r => ({ id: String(r.user_id), name: r.nickname || String(r.user_id) }));
+      return { items, total, page, pageSize, hasNext: offset + pageSize < total };
+    } else {
+      if (room_id) {
+        const rows = await this.executeQuery<{ user_id: string; name: string }>(
+          `SELECT DISTINCT CAST(a.user_id AS TEXT) AS user_id, COALESCE(json_extract(a.extra_json, '$.user.userName'),'') AS name
+           FROM live_actions a
+           WHERE a.live_id = ? AND COALESCE(json_extract(a.extra_json, '$.user.userName'),'') LIKE ?
+           ORDER BY name ASC
+           LIMIT ? OFFSET ?`, [room_id, like, pageSize, offset]
+        );
+        const cntRows = await this.executeQuery<{ c: number }>(
+          `SELECT COUNT(1) AS c FROM (
+             SELECT DISTINCT a.user_id
+             FROM live_actions a
+             WHERE a.live_id = ? AND COALESCE(json_extract(a.extra_json, '$.user.userName'),'') LIKE ?
+           )`, [room_id, like]
+        );
+        const total = cntRows[0]?.c || 0;
+        const items = rows.map(r => ({ id: String(r.user_id), name: r.name || String(r.user_id) }));
+        return { items, total, page, pageSize, hasNext: offset + pageSize < total };
+      }
+      const rows = await this.executeQuery<{ user_id: string; name: string }>(
+        `SELECT DISTINCT CAST(a.user_id AS TEXT) AS user_id, COALESCE(json_extract(a.extra_json, '$.user.userName'),'') AS name
+         FROM live_actions a
+         WHERE COALESCE(json_extract(a.extra_json, '$.user.userName'),'') LIKE ?
+         ORDER BY name ASC
+         LIMIT ? OFFSET ?`, [like, pageSize, offset]
+      );
+      const cntRows = await this.executeQuery<{ c: number }>(
+        `SELECT COUNT(1) AS c FROM (
+           SELECT DISTINCT a.user_id
+           FROM live_actions a
+           WHERE COALESCE(json_extract(a.extra_json, '$.user.userName'),'') LIKE ?
+         )`, [like]
+      );
+      const total = cntRows[0]?.c || 0;
+      const items = rows.map(r => ({ id: String(r.user_id), name: r.name || String(r.user_id) }));
+      return { items, total, page, pageSize, hasNext: offset + pageSize < total };
+    }
+  }
+
+  public async getEventDates(room_id?: string): Promise<string[]> {
+    const paramsA: any[] = [];
+    const paramsS: any[] = [];
+    const whereA = room_id ? 'WHERE a.live_id = ?' : '';
+    const whereS = room_id ? 'WHERE s.live_id = ?' : '';
+    if (room_id) { paramsA.push(room_id); paramsS.push(room_id); }
+    const rowsA = await this.executeQuery<{ d: string }>(
+      `SELECT strftime('%Y-%m-%d', datetime(a.send_time/1000, 'unixepoch')) AS d FROM live_actions a ${whereA} GROUP BY d ORDER BY d DESC`, paramsA
+    );
+    const rowsS = await this.executeQuery<{ d: string }>(
+      `SELECT strftime('%Y-%m-%d', datetime(s.report_time/1000, 'unixepoch')) AS d FROM live_states s ${whereS} GROUP BY d ORDER BY d DESC`, paramsS
+    );
+    const set = new Set<string>();
+    for (const r of rowsA) { if (r.d) set.add(String(r.d)); }
+    for (const r of rowsS) { if (r.d) set.add(String(r.d)); }
+    return Array.from(set).sort((a, b) => a < b ? 1 : (a > b ? -1 : 0));
+  }
 }
+function safeJson(s: string): any { try { return JSON.parse(s); } catch { return null; } }

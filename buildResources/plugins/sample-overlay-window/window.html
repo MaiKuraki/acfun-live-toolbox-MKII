@@ -244,208 +244,28 @@
         </div>
 
         <div class="section">
-          <h3 class="section-title">定时提示功能</h3>
-          <div class="row">
-            <button class="btn" id="btn-ticker-toggle">
-              <span id="ticker-status">定时提示：未启用</span>
-            </button>
-            <span id="ticker-badge" class="status-badge">关闭</span>
-          </div>
-        </div>
-
-        <div class="section">
           <h3 class="section-title">运行日志</h3>
           <div id="logs" class="logs-container">等待操作...</div>
         </div>
       </div>
     </div>
     <script>
-      function getBus() {
-        try {
-          return (window.$wujie && window.$wujie.bus)
-            || (window.__WUJIE && window.__WUJIE.bus)
-            || (window.wujie && window.wujie.bus)
-            || null;
-        } catch (e) { return null; }
-      }
-      function waitForBus(timeoutMs) {
-        return new Promise(function(resolve){
-          var deadline = Date.now() + Number(timeoutMs || 1500);
-          (function loop(){
-            var bus = getBus();
-            if (bus && bus.$emit) { resolve(bus); return; }
-            if (Date.now() >= deadline) { resolve(null); return; }
-            setTimeout(loop, 50);
-          })();
-        });
-      }
-      function bridgeRequest(command, payload) {
-        try {
-          const requestId = String(Date.now()) + '-' + Math.random().toString(16).slice(2);
-          waitForBus(1500).then(function(bus){
-            if (bus && bus.$emit) {
-              bus.$emit('bridge-request', { type: 'bridge-request', requestId, command, payload });
-            } else {
-              console.warn('[sample-overlay-window] wujie bus not available');
-            }
-          });
-        } catch (e) { console.warn('[sample-overlay-window] bridge request failed:', e); }
-      }
+      var apiBase = String(window.location.origin || 'http://127.0.0.1:18299');
+      function parsePluginId(){ try { var m = String(location.pathname||'').match(/\/plugins\/([^\/]+)/); return m && m[1] ? decodeURIComponent(m[1]) : ''; } catch(e){ return ''; } }
+      var pluginId = parsePluginId();
       function applyBg(color){ try { document.body.style.background = color || '#f4f4f4'; } catch(e){} }
       var _storeSnap = {};
-      function renderStore(data){ 
-        try { 
-          var el = document.getElementById('store'); 
-          if(el) {
-            var formatted = JSON.stringify(data||{}, null, 2);
-            // Limit the display to prevent overflow
-            if (formatted.length > 500) {
-              formatted = formatted.substring(0, 500) + '...';
-            }
-            el.textContent = formatted;
-          }
-        } catch(e){} 
-      }
-      var _pendingToggle = false;
-      function setTickerButton(enabled){ 
-        var btn = document.getElementById('btn-ticker-toggle'); 
-        var status = document.getElementById('ticker-status');
-        var badge = document.getElementById('ticker-badge');
-        if(!btn || !status || !badge) return; 
-        status.textContent = '定时提示：' + (enabled ? '已启用' : '未启用');
-        badge.textContent = enabled ? '开启' : '关闭';
-        badge.className = enabled ? 'status-badge active' : 'status-badge';
-      }
-      function logLine(obj){ 
-        try { 
-          var el = document.getElementById('logs'); 
-          if(!el) return; 
-          var timestamp = new Date().toLocaleTimeString();
-          var s = (typeof obj==='string'?obj:JSON.stringify(obj, null, 2));
-          el.textContent = `[${timestamp}] ${s}\n` + el.textContent;
-          if (el.textContent.split('\n').length > 20) {
-            el.textContent = el.textContent.split('\n').slice(0, 20).join('\n');
-          }
-        } catch(e){} 
-      }
-      function refreshTickerStatus(){
-        // 添加重试机制和错误处理
-        try {
-          bridgeRequest('plugin-process', { action: 'execute', method: 'getTickerStatus' });
-        } catch (e) {
-          logLine('状态获取失败，工作进程可能繁忙');
-        }
-      }
-      document.getElementById('btn-toast').onclick = () => {
-        logLine('显示提示消息');
-        bridgeRequest('renderer-popup', { action: 'toast', payload: { message: 'Hello from window sample!', options: { durationMs: 2500 } } });
-      };
-      document.getElementById('btn-alert').onclick = () => {
-        logLine('显示警告对话框');
-        bridgeRequest('renderer-popup', { action: 'alert', payload: { title: 'Notice', message: 'This is an alert from window sample.' } });
-      };
-      document.getElementById('btn-confirm').onclick = () => {
-        logLine('显示确认对话框');
-        bridgeRequest('renderer-popup', { action: 'confirm', payload: { title: 'Confirm', message: 'Proceed with operation?' } });
-      };
-      document.getElementById('btn-save-bg').onclick = () => {
-        var val = (document.getElementById('bg')||{}).value || '';
-        logLine('保存背景色: ' + (val || '默认'));
-        bridgeRequest('plugin-process', { action: 'execute', method: 'updateWindowTheme', args: [ { uiBgColor: val } ] });
-        bridgeRequest('set-config', { config: { uiBgColor: val } });
-      };
-      document.getElementById('btn-ticker-toggle').onclick = () => {
-        _pendingToggle = true;
-        logLine('切换定时提示状态');
-        // 添加重试机制，避免工作进程繁忙时立即失败
-        try {
-          bridgeRequest('plugin-process', { action: 'execute', method: 'getTickerStatus' });
-        } catch (e) {
-          logLine('定时提示状态获取失败，请稍后重试');
-          _pendingToggle = false;
-        }
-      };
-
-
-      // 处理宿主返回（只读仓库与桥接响应）
-      waitForBus(1500).then(function(bus){ if(!bus||!bus.$on) return;
-        bus.$on('plugin-init', function(msg){ 
-          try { 
-            var cfg = (msg&&msg.config)||{}; 
-            applyBg(cfg.uiBgColor); 
-            var el=document.getElementById('bg'); 
-            if(el) el.value = cfg.uiBgColor||''; 
-            logLine('插件初始化完成');
-          } catch(e){} 
-        });
-        bus.$on('plugin-event', function(msg){ 
-          try {
-            if(msg&&msg.eventType==='readonly-store'){
-              if(msg.event==='readonly-store-init'){ 
-                _storeSnap = (msg.payload||{}); 
-                renderStore(_storeSnap); 
-                logLine('只读仓库初始化');
-              }
-              if(msg.event==='readonly-store-update'){
-                var upd = msg.payload||{};
-                if(upd && typeof upd==='object' && Object.keys(upd).length>0){ 
-                  for(var k in upd){ _storeSnap[k]=upd[k]; } 
-                }
-                renderStore(_storeSnap);
-                logLine('只读仓库更新');
-              }
-            }
-            if(msg&&msg.eventType==='lifecycle'&&msg.event==='config-updated'){ 
-              bridgeRequest('get-config'); 
-              bridgeRequest('plugin-process',{ action:'execute', method:'getTickerStatus' });
-              logLine('配置已更新');
-            }
-          } catch(e){} 
-        });
-        bus.$on('bridge-response', function(resp){ 
-          try {
-            if(resp && resp.command === 'get-config' && resp.success){ 
-              var cfg = resp.data||{}; 
-              applyBg(cfg.uiBgColor); 
-              var el=document.getElementById('bg'); 
-              if(el) el.value = cfg.uiBgColor||''; 
-              setTickerButton(!!cfg.tickerEnabled); 
-              logLine('配置获取成功');
-            }
-            if(resp && resp.command === 'plugin-process' && resp.success){
-              var data = resp.data||{};
-              if(data && (data.type||data.ok||data.payload)){ 
-                logLine({ 插件响应: data }); 
-              }
-              if(typeof data.enabled === 'boolean'){
-                setTickerButton(!!data.enabled);
-                if(_pendingToggle){ 
-                  var will = !data.enabled; 
-                  // 添加延迟，避免工作进程繁忙
-                  setTimeout(function() {
-                    bridgeRequest('plugin-process', { action: 'execute', method: will ? 'enableTicker' : 'disableTicker' }); 
-                  }, 500);
-                  setTickerButton(will); 
-                  _pendingToggle = false; 
-                  logLine('定时提示已' + (will ? '启用' : '禁用'));
-                }
-              }
-            }
-          } catch(e){ 
-            if(_pendingToggle) {
-              logLine('操作失败，请稍后重试');
-              _pendingToggle = false;
-            }
-          } 
-        });
-        // 初始拉取
-        logLine('界面加载完成');
-        // 延迟初始化，避免工作进程繁忙
-        setTimeout(function() {
-          refreshTickerStatus(); 
-          bridgeRequest('get-config');
-        }, 1000);
-      });
+      function renderStore(data){ try { var el = document.getElementById('store'); if(el){ var formatted = JSON.stringify(data||{}, null, 2); if (formatted.length > 500) { formatted = formatted.substring(0, 500) + '...'; } el.textContent = formatted; } } catch(e){} }
+      function logLine(obj){ try { var el = document.getElementById('logs'); if(!el) return; var timestamp = new Date().toLocaleTimeString(); var s = (typeof obj==='string'?obj:JSON.stringify(obj, null, 2)); el.textContent = `[${timestamp}] ${s}\n` + el.textContent; if (el.textContent.split('\n').length > 20) { el.textContent = el.textContent.split('\n').slice(0, 20).join('\n'); } } catch(e){} }
+      function fetchSnapshot(keys){ try { return fetch(new URL('/api/renderer/readonly-store/snapshot', apiBase).toString(), { method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({ keys: keys||[] }) }).then(function(r){ return r.json(); }).then(function(json){ if(json&&json.success){ _storeSnap = Object.assign({}, _storeSnap, json.data||{}); renderStore(_storeSnap); logLine('只读仓库快照已加载'); } }); } catch(e){ return Promise.resolve(); } }
+      function subscribeReadonly(keys){ try { var url = new URL('/sse/renderer/readonly-store/subscribe', apiBase); url.searchParams.set('keys', (keys||[]).join(',')); var src = new EventSource(url.toString()); src.addEventListener('readonly-store-init', function(ev){ try { var data = JSON.parse(ev.data||'{}'); _storeSnap = Object.assign({}, _storeSnap, data||{}); renderStore(_storeSnap); logLine('只读仓库初始化'); } catch(e){} }); src.addEventListener('readonly-store-update', function(ev){ try { var data = JSON.parse(ev.data||'{}'); _storeSnap = Object.assign({}, _storeSnap, data||{}); renderStore(_storeSnap); logLine('只读仓库更新'); } catch(e){} }); src.addEventListener('heartbeat', function(){}); src.onerror = function(){ try { src.close(); } catch(e){} setTimeout(function(){ subscribeReadonly(keys); }, 3000); }; return src; } catch(e){ return null; } }
+      function subscribePluginOverlay(){ if(!pluginId) return null; try { var url = new URL('/sse/plugins/'+encodeURIComponent(pluginId)+'/overlay', apiBase); var src = new EventSource(url.toString()); src.addEventListener('init', function(ev){ logLine('overlay:init'); }); src.addEventListener('update', function(ev){ try { var data = JSON.parse(ev.data||'{}'); var ov = (data&&data.payload&&data.payload.overlay)||{}; var style = ov.style||{}; if(style.backgroundColor) applyBg(style.backgroundColor); logLine('overlay:update'); } catch(e){} }); src.addEventListener('message', function(ev){ try { var data = JSON.parse(ev.data||'{}'); var evt = (data&&data.event)||''; var payload = (data&&data.payload)||{}; if(evt==='config-update'){ var color = String(payload.uiBgColor||'').trim(); if(color) applyBg(color); logLine('config-update'); } else { logLine('message:'+evt); } } catch(e){} }); src.addEventListener('action', function(ev){ }); src.addEventListener('closed', function(ev){ }); src.addEventListener('heartbeat', function(){}); src.onerror = function(){ try { src.close(); } catch(e){} setTimeout(function(){ subscribePluginOverlay(); }, 3000); }; return src; } catch(e){ return null; } }
+      function postPluginMessage(event, payload){ try { fetch(new URL('/api/plugins/'+encodeURIComponent(pluginId)+'/overlay/messages', apiBase).toString(), { method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({ event: event, payload: payload||{} }) }); } catch(e){} }
+      document.getElementById('btn-toast').onclick = function(){ logLine('显示提示消息'); postPluginMessage('ui-toast', { message: 'Hello from window sample!', options: { durationMs: 2500 } }); };
+      document.getElementById('btn-alert').onclick = function(){ logLine('显示警告对话框'); postPluginMessage('ui-alert', { title: 'Notice', message: 'This is an alert from window sample.' }); };
+      document.getElementById('btn-confirm').onclick = function(){ logLine('显示确认对话框'); postPluginMessage('ui-confirm', { title: 'Confirm', message: 'Proceed with operation?' }); };
+      document.getElementById('btn-save-bg').onclick = function(){ var val = (document.getElementById('bg')||{}).value || ''; logLine('保存背景色: ' + (val || '默认')); applyBg(val||'#f4f4f4'); postPluginMessage('config-update', { uiBgColor: val }); };
+      (function init(){ logLine('界面加载完成'); var keys = ['account','ui','stream']; fetchSnapshot(keys).then(function(){ subscribeReadonly(keys); }); subscribePluginOverlay(); })();
     </script>
   </body>
 </html>

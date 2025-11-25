@@ -168,14 +168,12 @@ export class ApiBridge implements PluginAPI {
    */
   private normalizeHookName(hookName: string): import('./PluginLifecycle').LifecycleHook {
     const map: Record<string, import('./PluginLifecycle').LifecycleHook> = {
-      // 别名 → 实际钩子
-      'plugin.beforeLoad': 'beforeInstall',
-      'plugin.afterLoad': 'afterInstall',
-      'plugin.beforeStart': 'beforeEnable',
-      'plugin.afterStart': 'afterEnable',
-      'plugin.beforeClose': 'beforeDisable',
-      'plugin.afterClose': 'afterDisable',
-      // 页面钩子直接透传
+      // 别名 → 实际钩子（与现有生命周期类型保持一致）
+      'plugin.beforeStart': 'afterLoaded',
+      'plugin.afterStart': 'afterLoaded',
+      'plugin.beforeClose': 'beforeUnloaded',
+      'plugin.afterClose': 'beforeUnloaded',
+      // 页面钩子直接透传（这些已在 LifecycleHook 中定义）
       'beforeUiOpen': 'beforeUiOpen',
       'afterUiOpen': 'afterUiOpen',
       'uiClosed': 'uiClosed',
@@ -611,7 +609,12 @@ export class ApiBridge implements PluginAPI {
     },
     danmu: {
       startDanmu: async (liverUID: string, callback?: (event: any) => void) => {
-        const cb = callback || (() => {});
+        const db = this.databaseManager.getDb();
+        const writer = new (require('../persistence/DanmuSQLiteWriter').DanmuSQLiteWriter)(db);
+        const cb = (e: any) => {
+          try { writer.handleEvent(String(liverUID), e); } catch {}
+          try { if (typeof callback === 'function') callback(e); } catch {}
+        };
         return this.invokeAcfun(() => this.acfunApi.danmu.startDanmu(liverUID, cb));
       },
       stopDanmu: async (sessionId: string) => {

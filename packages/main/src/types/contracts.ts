@@ -22,7 +22,10 @@ export interface NormalizedEvent {
  * Defines the whitelist of event types the application will process.
  */
 export type NormalizedEventType =
-  | 'danmaku' | 'gift' | 'follow' | 'like' | 'enter' | 'system';
+  | 'danmaku' | 'gift' | 'follow' | 'like' | 'enter' | 'system'
+  | 'bananaCount' | 'displayInfo' | 'topUsers' | 'redpackList'
+  | 'chatCall' | 'chatAccept' | 'chatReady' | 'chatEnd'
+  | 'kickedOut' | 'violationAlert' | 'managerState' | 'end';
 
 /**
  * Represents the connection status of a single live room.

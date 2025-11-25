@@ -5,6 +5,7 @@
   "description": "提供示例 UI 页面与 Overlay 页面托管，演示配置读取与事件桥接。",
   "author": "Acfun Toolbox Team",
   "test": true,
+  "icon": "icon.svg",
   "main": "index.js",
   "permissions": ["overlay"],
   "config": {

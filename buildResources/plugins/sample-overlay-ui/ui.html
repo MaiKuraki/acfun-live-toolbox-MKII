@@ -21,85 +21,20 @@
   <script>
     (function(){
       var cfg = { uiBgColor: '#f4f4f4' };
-      var reqSeq = 0;
-      var waiters = new Map();
       var storeSnap = {};
-      function getBus(){ try { return (window.$wujie && window.$wujie.bus) || (window.__WUJIE && window.__WUJIE.bus) || (window.wujie && window.wujie.bus) || null; } catch(e){ return null; } }
-
+      var apiBase = String(window.location.origin || 'http://127.0.0.1:18299');
       function applyBg(color){ try { document.body.style.background = color || '#f4f4f4'; } catch(e){} }
-      function request(command, payload){
-        return new Promise(function(resolve, reject){
-          var id = 'req-' + (++reqSeq) + '-' + Date.now();
-          waiters.set(id, { resolve, reject, command });
-          try { var bus = getBus(); bus && bus.$emit && bus.$emit('bridge-request', { type: 'bridge-request', requestId: id, command: command, payload: payload || {} }); } catch(e){}
-          setTimeout(function(){ if(waiters.has(id)){ waiters.delete(id); reject(new Error('Timeout for '+command)); } }, 15000);
-        });
-      }
-
-      function renderStore(){ try { var el = document.getElementById('store'); if(el) el.textContent = JSON.stringify(storeSnap, null, 2); } catch(e){} }
-      function mergeSlice(base, slice){ if(!base || typeof base!=='object') return slice; for(var k in slice){ base[k] = Object.assign({}, base[k]||{}, slice[k]||{}); } return base; }
-
-      function handleEnvelope(data){ if(!data || typeof data !== 'object') return;
-        // 初始化与生命周期
-        if(data.type === 'plugin-init'){
-          var initCfg = data && data.config;
-          if (initCfg && typeof initCfg === 'object') { try { Object.assign(cfg, initCfg); applyBg(cfg.uiBgColor); var input0 = document.getElementById('bg'); if (input0) input0.value = cfg.uiBgColor; } catch(e){} }
-          request('get-config').then(function(resp){ try { Object.assign(cfg, resp || {}); applyBg(cfg.uiBgColor); var input1 = document.getElementById('bg'); if (input1) input1.value = cfg.uiBgColor; } catch(e){} });
-          return;
-        }
-        if(data.type === 'plugin-event' && data.eventType === 'lifecycle'){
-          if(data.event === 'ready' || data.event === 'config-updated'){
-            request('get-config').then(function(resp){ try { Object.assign(cfg, resp || {}); applyBg(cfg.uiBgColor); var input2 = document.getElementById('bg'); if (input2) input2.value = cfg.uiBgColor; } catch(e){} });
-            return;
-          }
-        }
-        // 只读仓库：初始快照与增量更新
-        if(data.type === 'plugin-event' && data.eventType === 'readonly-store'){
-          if(data.event === 'readonly-store-init'){
-            storeSnap = (data.payload || {});
-            renderStore();
-            return;
-          }
-          if(data.event === 'readonly-store-update'){
-            storeSnap = mergeSlice(storeSnap, (data.payload || {}));
-            renderStore();
-            return;
-          }
-        }
-        // 桥接响应
-        if(data.type === 'bridge-response'){
-          var w = waiters.get(data.requestId); if(!w) return;
-          waiters.delete(data.requestId);
-          if(data.success) w.resolve(data.data); else w.reject(new Error(data.error||('Failed '+String(w.command))));
-        }
-      }
-      function onBusPluginInit(msg){ handleEnvelope(msg); }
-      function onBusPluginEvent(msg){ handleEnvelope(msg); }
-      function onBusBridgeResponse(msg){ handleEnvelope(msg); }
-
       function isHexColor(str){ return /^#([0-9a-fA-F]{3}|[0-9a-fA-F]{6})$/.test(String(str||'')); }
-      function saveBg(){ var val = (document.getElementById('bg')||{}).value || ''; if(!val || !isHexColor(val)) { alert('请输入合法的十六进制颜色值，如 #2b2b2b'); return; } request('set-config', { config: { uiBgColor: val } }).then(function(){ cfg.uiBgColor = val; applyBg(val); }).catch(function(e){ console.warn('set-config failed:', e); }); }
-      function sendText(){
-        var msg = (document.getElementById('msgText')||{}).value || '';
-        if(!msg) { alert('请输入要发送的文本'); return; }
-        var payload = { text: String(msg), ts: Date.now() };
-        try {
-          var bus = getBus();
-          if (bus && bus.$emit) {
-            // 未提供 overlayId 时按插件广播到所有 Overlay
-            bus.$emit('overlay-send', { type: 'overlay-send', event: 'text', payload: payload });
-          }
-        } catch(e){}
-      }
-
-      window.addEventListener('DOMContentLoaded', function(){
-        try { var bus = getBus(); bus && bus.$emit && bus.$emit('ui-ready', { type: 'ui-ready' }); } catch(e){}
-        applyBg(cfg.uiBgColor);
-        var input = document.getElementById('bg'); if(input) input.value = cfg.uiBgColor;
-        var btn = document.getElementById('save'); if(btn) btn.addEventListener('click', saveBg);
-        var sendBtn = document.getElementById('sendBtn'); if(sendBtn) sendBtn.addEventListener('click', sendText);
-        try { var bus = getBus(); if(bus && bus.$on){ bus.$on('plugin-init', onBusPluginInit); bus.$on('plugin-event', onBusPluginEvent); bus.$on('bridge-response', onBusBridgeResponse); } } catch(e){}
-      });
+      function mergeSlice(base, slice){ if(!base || typeof base!=='object') return slice||{}; for(var k in (slice||{})){ base[k] = Object.assign({}, base[k]||{}, slice[k]||{}); } return base; }
+      function parsePluginId(){ try { var m = String(location.pathname||'').match(/\/plugins\/([^\/]+)/); return m && m[1] ? decodeURIComponent(m[1]) : ''; } catch(e){ return ''; } }
+      var pluginId = parsePluginId();
+      function renderStore(){ try { var el = document.getElementById('store'); if(el) el.textContent = JSON.stringify(storeSnap, null, 2); } catch(e){} }
+      function fetchSnapshot(keys){ try { return fetch(new URL('/api/renderer/readonly-store/snapshot', apiBase).toString(), { method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({ keys: keys||[] }) }).then(function(r){ return r.json(); }).then(function(json){ if(json&&json.success){ storeSnap = mergeSlice(storeSnap, json.data||{}); renderStore(); } }); } catch(e){ return Promise.resolve(); } }
+      function subscribeReadonly(keys){ try { var url = new URL('/sse/renderer/readonly-store/subscribe', apiBase); url.searchParams.set('keys', (keys||[]).join(',')); var src = new EventSource(url.toString()); src.addEventListener('readonly-store-init', function(ev){ try { var data = JSON.parse(ev.data||'{}'); storeSnap = mergeSlice(storeSnap, data); renderStore(); } catch(e){} }); src.addEventListener('readonly-store-update', function(ev){ try { var data = JSON.parse(ev.data||'{}'); storeSnap = mergeSlice(storeSnap, data); renderStore(); } catch(e){} }); src.addEventListener('heartbeat', function(){}); src.onerror = function(){ try { src.close(); } catch(e){} setTimeout(function(){ subscribeReadonly(keys); }, 3000); }; return src; } catch(e){ return null; } }
+      function subscribePluginOverlay(){ if(!pluginId) return null; try { var url = new URL('/sse/plugins/'+encodeURIComponent(pluginId)+'/overlay', apiBase); var src = new EventSource(url.toString()); src.addEventListener('init', function(ev){ }); src.addEventListener('update', function(ev){ }); src.addEventListener('message', function(ev){ }); src.addEventListener('action', function(ev){ }); src.addEventListener('closed', function(ev){ }); src.addEventListener('heartbeat', function(){}); src.onerror = function(){ try { src.close(); } catch(e){} setTimeout(function(){ subscribePluginOverlay(); }, 3000); }; return src; } catch(e){ return null; } }
+      function saveBg(){ var val = (document.getElementById('bg')||{}).value || ''; if(!val || !isHexColor(val)) { alert('请输入合法的十六进制颜色值，如 #2b2b2b'); return; } cfg.uiBgColor = val; applyBg(val); try { fetch(new URL('/api/plugins/'+encodeURIComponent(pluginId)+'/overlay/messages', apiBase).toString(), { method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({ event: 'config-update', payload: { uiBgColor: val } }) }); } catch(e){} }
+      function sendText(){ var msg = (document.getElementById('msgText')||{}).value || ''; if(!msg){ alert('请输入要发送的文本'); return; } var payload = { text: String(msg), ts: Date.now() }; try { fetch(new URL('/api/plugins/'+encodeURIComponent(pluginId)+'/overlay/messages', apiBase).toString(), { method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({ event: 'text', payload: payload }) }); } catch(e){} }
+      window.addEventListener('DOMContentLoaded', function(){ applyBg(cfg.uiBgColor); var input = document.getElementById('bg'); if(input) input.value = cfg.uiBgColor; var keys = ['account','ui','role','rooms','stream']; fetchSnapshot(keys).then(function(){ subscribeReadonly(keys); }); subscribePluginOverlay(); var btn = document.getElementById('save'); if(btn) btn.addEventListener('click', saveBg); var sendBtn = document.getElementById('sendBtn'); if(sendBtn) sendBtn.addEventListener('click', sendText); });
     })();
   </script>
 </head>

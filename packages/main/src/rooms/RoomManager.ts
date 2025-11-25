@@ -1,6 +1,7 @@
 import { EventEmitter } from 'events';
 import { AcfunAdapter } from '../adapter/AcfunAdapter';
-import { EventWriter } from '../persistence/EventWriter';
+import { DatabaseManager } from '../persistence/DatabaseManager';
+import { DanmuSQLiteWriter } from '../persistence/DanmuSQLiteWriter';
 import { RoomStatus, NormalizedEvent } from '../types';
 import { ensureNormalized } from '../events/normalize';
 
@@ -20,14 +21,16 @@ export interface RoomInfo {
 
 export class RoomManager extends EventEmitter {
   private rooms: Map<string, RoomInfo> = new Map();
-  private eventWriter: EventWriter;
+  private databaseManager: DatabaseManager;
+  private danmuWriter: any;
   private reconnectTimers: Map<string, NodeJS.Timeout> = new Map();
   // 标记正在移除的房间，避免触发自动重连
   private removingRooms: Set<string> = new Set();
 
-  constructor(eventWriter: EventWriter) {
+  constructor(eventWriter: any, databaseManager: DatabaseManager) {
     super();
-    this.eventWriter = eventWriter;
+    this.databaseManager = databaseManager;
+    this.danmuWriter = new DanmuSQLiteWriter(this.databaseManager.getDb());
   }
 
   public async addRoom(roomId: string): Promise<boolean> {
@@ -216,10 +219,16 @@ export class RoomManager extends EventEmitter {
         ts: event.ts || Date.now()
       });
 
+      try {
+        console.info('[Room] unified type=' + String(enriched.event_type) + ' room=' + String(roomId) + ' user=' + String(enriched.user_name || '') + '(' + String(enriched.user_id || '') + ')' + ' content="' + String(enriched.content || '') + '" ts=' + String(enriched.ts));
+      } catch {}
+
+      
+
       if (process.env.ACFRAME_DEBUG_LOGS === '1') {
         try { console.log('[Room] enqueue roomId=' + String(roomId) + ' type=' + String(enriched.event_type) + ' ts=' + String(enriched.ts)); } catch {}
       }
-      this.eventWriter.enqueue(enriched);
+      try { this.danmuWriter.handleNormalized(roomId, enriched); } catch {}
       this.emit('event', enriched);
     });
 

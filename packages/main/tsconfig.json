@@ -13,11 +13,13 @@
     "resolveJsonModule": true, // 开启 JSON 模块解析
     "isolatedModules": true,
     "types": ["node", "electron"],
+    "ignoreDeprecations": "5.0",
     "baseUrl": ".",
     "paths": {
       "@app/preload": ["../preload"],
       "@app/renderer": ["../renderer"]
-    }
+    },
+    
   },
   "include": ["src/**/*.ts", "../../types/**/*.d.ts"],
   "exclude": ["**/*.spec.ts", "**/*.test.ts"]

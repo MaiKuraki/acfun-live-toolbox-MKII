@@ -5,6 +5,7 @@ import 'tdesign-vue-next/es/style/index.css';
 import './style.css';
 import App from './App.vue';
 import router from './router';
+import { reportReadonlyUpdate } from './utils/readonlyReporter'
 import { Icon as TIcon } from 'tdesign-icons-vue-next';
 import GlobalPopup from './services/globalPopup';
 
@@ -36,4 +37,34 @@ try {
       } catch {}
     });
   }
+} catch {}
+
+try {
+  const to = router.currentRoute.value as any;
+  const path = String(to?.fullPath || window.location.hash || '');
+  const name = String(to?.name || '');
+  const title = String((to?.meta as any)?.title || document.title.replace(/\s*-\s*ACLiveFrame$/, '') || '');
+  reportReadonlyUpdate({ ui: { routePath: path, pageName: name, pageTitle: title } });
+} catch {}
+
+try {
+  router.isReady().then(() => {
+    const rt = router.currentRoute.value as any;
+    const path = String(rt?.fullPath || window.location.hash || '');
+    const name = String(rt?.name || '');
+    const title = String((rt?.meta as any)?.title || document.title.replace(/\s*-\s*ACLiveFrame$/, '') || '');
+    reportReadonlyUpdate({ ui: { routePath: path, pageName: name, pageTitle: title } });
+  });
+} catch {}
+
+try {
+  window.addEventListener('hashchange', () => {
+    try {
+      const rt = router.currentRoute.value as any;
+      const path = String(rt?.fullPath || window.location.hash || '');
+      const name = String(rt?.name || '');
+      const title = String((rt?.meta as any)?.title || document.title.replace(/\s*-\s*ACLiveFrame$/, '') || '');
+      reportReadonlyUpdate({ ui: { routePath: path, pageName: name, pageTitle: title } });
+    } catch {}
+  });
 } catch {}

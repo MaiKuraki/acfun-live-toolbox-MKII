@@ -148,6 +148,10 @@ export class OverlayManager extends EventEmitter {
             pluginId: options.pluginId,
             context: { pageType: 'overlay', overlayId, route: options?.type === 'html' ? 'overlay.html' : undefined }
           });
+          try {
+            const channel = `plugin:${options.pluginId}:overlay`;
+            (require('../persistence/DataManager') as any).DataManager.getInstance().publish(channel, { overlayId, event: 'before-overlay-open', payload: { options } }, { ttlMs: 2 * 60 * 1000, persist: true, meta: { kind: 'lifecycle' } });
+          } catch {}
         }
       } catch (e) {
         pluginLogger.warn(
@@ -188,6 +192,10 @@ export class OverlayManager extends EventEmitter {
             pluginId: overlayState.pluginId,
             context: { pageType: 'overlay', overlayId }
           });
+          try {
+            const channel = `plugin:${overlayState.pluginId}:overlay`;
+            (require('../persistence/DataManager') as any).DataManager.getInstance().publish(channel, { overlayId, event: 'after-overlay-open', payload: { overlay: overlayState } }, { ttlMs: 2 * 60 * 1000, persist: true, meta: { kind: 'lifecycle' } });
+          } catch {}
         }
       } catch (e) {
         pluginLogger.warn(
@@ -284,6 +292,10 @@ export class OverlayManager extends EventEmitter {
             pluginId: overlay.pluginId,
             context: { pageType: 'overlay', overlayId }
           });
+          try {
+            const channel = `plugin:${overlay.pluginId}:overlay`;
+            (require('../persistence/DataManager') as any).DataManager.getInstance().publish(channel, { overlayId, event: 'overlay-closed', payload: {} }, { ttlMs: 60 * 1000, persist: true, meta: { kind: 'lifecycle' } });
+          } catch {}
         }
       } catch (e) {
         pluginLogger.warn(

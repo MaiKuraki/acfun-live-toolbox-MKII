@@ -132,13 +132,7 @@ export class PluginUpdater extends EventEmitter {
     try {
       pluginLogger.debug(`检查插件更新: ${plugin.id}`);
 
-      // 执行 beforeUpdate 钩子
-      await pluginLifecycleManager.executeHook('beforeUpdate', {
-        pluginId: plugin.id,
-        plugin,
-        manifest: plugin.manifest,
-        context: { action: 'check' }
-      });
+      // 删除 beforeUpdate 钩子执行
 
       // 这里应该实现实际的更新检查逻辑
       // 例如：从插件仓库或更新服务器获取最新版本信息
@@ -337,15 +331,7 @@ export class PluginUpdater extends EventEmitter {
 
       this.emitProgress(pluginId, 'completing', 100, '更新完成');
 
-      // 执行 afterUpdate 钩子
-      await pluginLifecycleManager.executeHook('afterUpdate', {
-        pluginId,
-        context: { 
-          action: 'update',
-          fromVersion: updateResult.currentVersion,
-          toVersion: updateResult.latestVersion
-        }
-      });
+      // 删除 afterUpdate 钩子执行
 
       this.emit('update.complete', { pluginId, result: updateResult });
       pluginLogger.info(`插件更新完成: ${pluginId} ${updateResult.currentVersion} -> ${updateResult.latestVersion}`);
