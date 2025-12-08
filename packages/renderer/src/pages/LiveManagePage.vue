@@ -1,938 +1,496 @@
 <!-- eslint-disable vue/no-v-model-argument -->
 <template>
   <div class="live-manage-page">
-    <!-- 页面头部 -->
     <div class="page-header">
-      <div class="header-left">
-        <h1>直播间管理</h1>
-        <t-tag v-if="liveStatus" :theme="getStatusTheme(liveStatus)" size="large">
-          {{ getStatusText(liveStatus) }}
-        </t-tag>
+      <div class="title-with-status">
+        <h2>{{ isMyRoom ? '我的直播间' : (hostName ? hostName + '的直播间' : '直播间') }}</h2>
+        <t-tag :theme="liveStatus === 'live' ? 'success' : 'danger'" size="small">{{ getStatusText(liveStatus) }}</t-tag>
       </div>
     </div>
-
-
-
-    <!-- 主要内容区域：左右分栏 -->
-    <div v-if="pageLoading" class="loading-container">
-      <t-loading size="large" />
-      <p>正在加载直播数据...</p>
-    </div>
-    <div v-else class="content-area">
-      <!-- 左栏：房间信息和管理 -->
-      <div class="left-panel">
-        <!-- 房间信息卡片 -->
-        <t-card title="房间信息" class="room-info-card">
-          <div class="room-info-content">
-            <div class="cover-section">
-              <div class="cover-container">
-                <img 
-                  v-if="liveInfo.cover"
-                  :src="liveInfo.cover" 
-                  :alt="liveInfo.title"
-                  class="room-cover"
-                />
-                <div v-else class="room-cover room-cover-placeholder"></div>
-                <div class="cover-overlay">
-                  <t-upload
-                    v-model:files="editCoverFiles"
-                    accept="image/jpeg,image/jpg,image/png"
-                    :max="1"
-                    :action="uploadAction"
-                    :before-upload="beforeCoverUpload"
-                    :on-success="handleCoverSuccess"
-                    :show-thumbnail="true"
-                    theme="image"
-                    class="cover-upload"
-                  >
-                    <template #trigger>
-                      <t-button variant="text" size="small" class="cover-edit-btn">
-                        <t-icon name="edit" />
-                        更换封面
-                      </t-button>
-                    </template>
-                  </t-upload>
-                </div>
-              </div>
-            </div>
-            
-            <div class="info-form">
-              <t-form layout="vertical" :data="liveInfo">
-                <t-form-item label="直播标题">
-                  <t-textarea
-                    v-model="liveInfo.title"
-                    placeholder="请输入直播标题"
-                    :maxlength="50"
-                    :autosize="{ minRows: 2, maxRows: 3 }"
-                    show-limit-number
-                    class="title-textarea"
-                  />
-                </t-form-item>
-                
-                <t-form-item>
-                  <t-space>
-                    <t-button 
-                      theme="primary" 
-                      @click="updateRoomInfo"
-                      :loading="updatingRoom"
-                      class="update-btn"
-                    >
-                      更新信息
-                    </t-button>
-                    <t-button 
-                      v-if="liveStatus === 'live'" 
-                      theme="danger" 
-                      @click="toggleLive"
-                      class="end-live-btn"
-                    >
-                      <t-icon name="poweroff" />
-                      结束直播
-                    </t-button>
-                  </t-space>
-                </t-form-item>
-              </t-form>
-            </div>
+  <div class="content-layout">
+      <!-- 左侧控制栏 -->
+      <div class="left-sidebar">
+       <div class="thumbnail-container">
+          <div class="cover-readonly">
+            <img :src="roomCover" alt="封面" />
           </div>
-        </t-card>
-
-        <!-- 直播统计 - 上层显示数字 -->
-        <div class="stats-summary">
-          <div class="stat-summary-item">
-            <div class="stat-number">{{ formatNumber(stats.onlineCount) }}</div>
-            <div class="stat-label">在线观看</div>
-          </div>
-          <div class="stat-summary-item">
-            <div class="stat-number">{{ formatNumber(stats.likeCount) }}</div>
-            <div class="stat-label">点赞数</div>
-          </div>
-          <div class="stat-summary-item">
-            <div class="stat-number">{{ formatNumber(stats.giftCount) }}</div>
-            <div class="stat-label">礼物数</div>
-          </div>
-          <div class="stat-summary-item">
-            <div class="stat-number">{{ formatNumber(stats.bananaCount) }}</div>
-            <div class="stat-label">香蕉数</div>
+          <div class="live-status-badge"></div>
+        </div>
+        
+        <div class="title-section">
+           <t-typography-title  style="margin:6px 0px" level="h5">{{ roomTitle }}</t-typography-title>
+        </div>
+        <div class="video-container" v-if="!isMyRoom">
+          <FlvPlayer  v-if="showVideo" :src="selectedUrl" :autoplay="true" :muted="true" :poster="roomCover" @error="playerError=true" />
+          <div v-else-if="showPlaceholder" class="placeholder-wrapper">
+            <div class="placeholder-text">直播视频获取中</div>
           </div>
         </div>
+        <t-select v-if="showVideo" v-model="selectedUrl" size="small" placeholder="选择清晰度" style="margin-top:8px">
+          <t-option v-for="opt in qualityOptions" :key="opt.value" :value="opt.value" :label="opt.label" />
+        </t-select>
+      <!-- 中部：核心操作 -->
+      <div class="control-section">
+        <t-row :gutter="12" v-if="isMyRoom">
+          <t-col :span="6">
+            <t-button 
+              block 
+              theme="primary" 
+              size="tiny"
+              @click="openEditDialog"
+            >
+              修改信息
+            </t-button>
+          </t-col>
+          <t-col :span="6">
+            <t-button 
+              block 
+              :theme="liveStatus === 'live' ? 'danger' : 'success'" 
+              size="tiny" 
+              :disabled="liveStatus !== 'live'"
+              @click="toggleLive"
+            >
+              下播
+            </t-button>
+          </t-col>
+        </t-row>
 
-        <!-- 直播统计趋势图 -->
-        <t-card title="直播数据趋势" class="stats-trend-card">
-          <div class="chart-container" ref="chartContainer">
-            <div v-if="chartData.length === 0" class="chart-empty">
-              <t-icon name="chart" size="32px" />
-              <p>暂无趋势数据</p>
+        <t-row :gutter="12">
+          <t-col :span="3">
+            <div class="custom-stat">
+              <div class="stat-title">在线人数</div>
+              <div class="stat-value">{{ formatNumber(stats.onlineCount) }}</div>
             </div>
-            <div v-else class="chart-content" ref="chartRef"></div>
+          </t-col>
+          <t-col :span="3">
+            <div class="custom-stat">
+              <div class="stat-title">点赞数</div>
+              <div class="stat-value">{{ formatNumber(stats.likeCount) }}</div>
+            </div>
+          </t-col>
+          <t-col :span="3">
+            <div class="custom-stat">
+              <div class="stat-title">香蕉数</div>
+              <div class="stat-value">{{ formatNumber(stats.bananaCount) }}</div>
+            </div>
+          </t-col>
+          <t-col :span="3">
+            <div class="custom-stat">
+              <div class="stat-title">直播时长</div>
+              <div class="stat-value" style="font-size:14px">{{ liveDuration }}</div>
+            </div>
+          </t-col>
+        </t-row>
+      </div>
+      <t-divider style="margin: 6px 0px;"></t-divider>
+      <t-dialog 
+        v-model:visible="editDialogVisible" 
+        title="修改信息"
+      >
+        <t-form ref="editFormRef" :data="editForm" :rules="editFormRules" layout="vertical">
+          <div class="section-subtitle">基本信息</div>
+          <t-form-item label="直播标题" name="title">
+            <t-input v-model="editForm.title" placeholder="请输入直播标题" />
+          </t-form-item>
+          <div class="section-subtitle">封面设置</div>
+          <t-form-item label="封面裁剪" name="cover">
+            <CoverCropper v-model="editForm.cover" />
+          </t-form-item>
+        </t-form>
+        <template #footer>
+          <t-space>
+            <t-button variant="outline" @click="editDialogVisible = false">取消</t-button>
+            <t-button theme="primary" @click="confirmEditInfo">确认</t-button>
+          </t-space>
+        </template>
+      </t-dialog>
+
+        <div class="plugin-grid" v-if="isMyRoom">
+          <div 
+            v-for="plugin in liveRoomPlugins" 
+            :key="plugin.id" 
+            class="plugin-card"
+            :class="{ disabled: plugin.status !== 'active' || !plugin.enabled }"
+            @click="openLiveRoomPlugin(plugin.id)"
+          >
+            <div class="plugin-icon" :style="{ backgroundColor: '#1890FF' }">
+              <img v-if="plugin.icon" :src="plugin.icon" :alt="plugin.name" @error="onAvatarError" />
+              <VideoIcon v-else />
+            </div>
+            <div class="plugin-name">{{ plugin.name }}</div>
           </div>
-        </t-card>
+        </div>
       </div>
 
-      <!-- 右栏：观众列表 -->
-      <div class="right-panel">
-        <t-card title="观众列表" class="audience-card">
-          <template #actions>
-            <div class="audience-actions">
-              <t-input 
-                v-model="searchKeyword" 
-                placeholder="搜索观众..." 
-                size="small"
-                clearable
-                style="width: 180px;"
-              >
-                <template #prefix-icon>
-                  <t-icon name="search" />
-                </template>
-              </t-input>
-              
-              <t-select 
-                v-model="sortBy" 
-                placeholder="排序" 
-                size="small"
-                style="width: 100px;"
-              >
-                <t-option value="giftCount" label="礼物数" />
-                <t-option value="likeCount" label="点赞数" />
-                <t-option value="bananaCount" label="香蕉数" />
-                <t-option value="nickname" label="昵称" />
-              </t-select>
-              
-              <t-button 
-                variant="text" 
-                size="small" 
-                @click="sortOrder = sortOrder === 'desc' ? 'asc' : 'desc'"
-                :aria-label="sortOrder === 'desc' ? '降序' : '升序'"
-              >
-                <t-icon :name="sortOrder === 'desc' ? 'sort-descending' : 'sort-ascending'" />
-              </t-button>
-              
-              <t-checkbox 
-                v-model="filterManagers" 
-                size="small"
-              >
-                仅显示房管
-              </t-checkbox>
-              
-              <div style="flex: 1;"></div>
+      <!-- 右侧互动栏 -->
+      <div class="right-main-area">
+      <!-- 顶部：礼物贡献榜 -->
+      <div class="gift-leaderboard" ref="giftLeaderboardEl" @mouseleave="onGiftMouseLeave" @mouseenter="onGiftMouseEnter">
+        <div class="leaderboard-header">
+          <div class="leaderboard-title">礼物贡献榜</div>
+          <t-button size="small" variant="text" @click="leaderboardExpanded = !leaderboardExpanded">
+            <template #icon>
+              <ChevronUpIcon v-if="leaderboardExpanded" />
+              <ChevronDownIcon v-else />
+</template>
+          </t-button>
+        </div>
+
+        <div class="leaderboard-content" :style="{ height: leaderboardExpanded ? '168px' : '28px', transition: 'height 0.3s ease' }" ref="leaderboardContent">
+        <div v-if="!leaderboardExpanded" class="leaderboard-list">
+          <div 
+            v-for="(user, index) in giftLeaderboard" 
+            :key="user.userID" 
+            class="leaderboard-item"
+            :class="'rank-' + (index + 1)"
+            @click="leaderboardExpanded = true"
+          >
+            <div class="avatar-wrapper">
+              <img :src="user.avatar" :alt="user.nickname" :title="user.nickname" :draggable="false" @dragstart.prevent @error="onAvatarError" />
+              <div class="rank-badge" v-if="index < 3">{{ index + 1 }}</div>
             </div>
+          </div>
+          <div v-if="giftLoading" class="empty-leaderboard">加载中</div>
+          <div v-else-if="giftLeaderboard.length === 0" class="empty-leaderboard">暂无数据</div>
+        </div>
+
+        <div v-else class="leaderboard-vertical" @click.stop>
+          <div 
+            v-for="(user, index) in giftLeaderboard"
+            :key="user.userID"
+            class="leaderboard-vertical-item"
+          >
+            <img 
+              :src="user.avatar" 
+              :alt="user.nickname" 
+              :title="user.nickname" 
+              :draggable="false" 
+              @dragstart.prevent 
+              @error="onAvatarError" 
+              @click.stop="openUserMenu({ userId: user.userID, nickname: user.nickname }, $event)"
+            />
+            <div class="lv-text">
+              <div class="lv-name">{{ user.nickname }}</div>
+              <div class="lv-value">贡献值 {{ user.value }}</div>
+            </div>
+          </div>
+          <div v-if="giftLoading" class="empty-leaderboard">加载中</div>
+          <div v-else-if="giftLeaderboard.length === 0" class="empty-leaderboard">暂无数据</div>
+        </div>
+        </div>
+      </div>
+
+      <!-- 中部：聊天消息流 -->
+      <div class="chat-stream" ref="chatContainer">
+        <div v-if="messages.length === 0" class="chat-empty">当前还没有人发送弹幕</div>
+        <template v-for="msg in messages">
+          <t-divider v-if="['enter','like','follow'].includes(msg.type)" :key="msg.id" style="margin: 0px 0px;">{{ msg.nickname }} {{ msg.content }}</t-divider>
+          <div v-else :key="msg.id" class="chat-message" :class="{ 'is-host': msg.isHost }">
+            <div class="message-avatar" v-if="!msg.isHost" @click.stop="openUserMenu(msg, $event)">
+              <img :src="msg.avatar" :alt="msg.nickname" :draggable="false" @dragstart.prevent @error="onAvatarError" />
+            </div>
+            <div class="message-bubble">
+              <div class="message-sender" @click.stop="openUserMenu(msg, $event)">
+                <span>{{ msg.nickname }}</span>
+                <span v-if="msg.isManager" class="manager-shield">🛡️</span>
+                <span v-if="msg.medal" class="sender-medal">{{ msg.medal.clubName }} Lv.{{ msg.medal.level }}</span>
+              </div>
+              <div class="message-content">{{ msg.content }}</div>
+            </div>
+            <div class="message-avatar" v-if="msg.isHost">
+              <img :src="hostAvatar" alt="主播" :draggable="false" @dragstart.prevent @error="onAvatarError" />
+            </div>
+          </div>
+        </template>
+      </div>
+
+      <div v-if="!isAtBottom && newMsgCount > 0" class="new-messages-bubble" @click="scrollToBottom">
+        ⬇️ {{ newMsgCount }} 条新消息
+      </div>
+
+      <div v-if="userMenuVisible" class="user-context-popover" :style="{ left: userMenuX + 'px', top: userMenuY + 'px' }">
+        <div class="popover-item" @click="openUserPage">个人页面</div>
+        <div class="popover-item" v-if="showSetManager" @click="setAsManager">设为房管</div>
+        <div class="popover-item danger" v-if="showKickUser" @click="promptKick">踢出用户</div>
+      </div>
+
+      <t-dialog v-model:visible="kickConfirmVisible" title="踢出观众确认">
+        <div>确定要将 {{ kickTargetName }} 踢出直播间吗？该用户本场无法再进入。</div>
+        <template #footer>
+          <t-space>
+            <t-button variant="outline" @click="kickConfirmVisible = false">取消</t-button>
+            <t-button theme="danger" @click="confirmKick">确认踢出</t-button>
+          </t-space>
+        </template>
+      </t-dialog>
+
+      <!-- 底部：发言区 -->
+      <div class="input-area">
+        <t-input 
+          v-model="inputMessage" 
+          placeholder="和大家聊点什么..." 
+          class="chat-input"
+          :maxlength="50"
+          show-limit-number
+          @enter="sendMessage"
+          @keydown="onInputKeydown"
+        >
+          <template #suffix>
+            <t-button shape="circle" theme="primary" variant="text" @click="sendMessage">
+              <template #icon><send-icon /></template>
+            </t-button>
           </template>
-
-          <div v-if="audienceLoading" class="loading-state">
-            <t-loading />
-            <span>加载观众列表中...</span>
-          </div>
-
-          <div v-else-if="filteredAudience.length === 0" class="empty-state">
-            <t-icon name="user" size="48px" />
-            <p>{{ searchKeyword ? '未找到匹配的观众' : '暂无观众' }}</p>
-          </div>
-
-          <div v-else class="audience-list">
-            <div 
-              v-for="user in filteredAudience" 
-              :key="user.userID"
-              class="audience-item"
-              :class="{ 'is-manager': user.isManager }"
-            >
-
-              
-              <div class="user-avatar">
-                <img :src="user.avatar || '/default-avatar.png'" :alt="user.nickname" />
-                <div v-if="user.badge" class="badge-indicator" :title="`粉丝牌: ${user.badge.clubName} Lv.${user.badge.level}`">
-                  <t-icon name="medal" />
-                  <span>{{ user.badge.level }}</span>
-                </div>
-              </div>
-              
-              <div class="user-info">
-                <div class="user-name">
-                  {{ user.nickname }}
-                  <t-tag v-if="user.isManager" theme="primary" size="extra-small" class="manager-tag">房管</t-tag>
-                </div>
-                <div class="user-stats">
-                  <div class="stat-item" title="礼物">
-                    <div class="stat-value">{{ formatNumber(user.giftCount || 0) }}</div>
-                    <div class="stat-label">礼物</div>
-                  </div>
-                  <div class="stat-item" title="点赞">
-                    <div class="stat-value">{{ formatNumber(user.likeCount || 0) }}</div>
-                    <div class="stat-label">点赞</div>
-                  </div>
-                  <div class="stat-item" title="香蕉">
-                    <div class="stat-value">{{ formatNumber(user.bananaCount || 0) }}</div>
-                    <div class="stat-label">香蕉</div>
-                  </div>
-                </div>
-              </div>
-              
-              <div class="user-actions">
-                <t-dropdown :options="getUserMenuOptions(user)" trigger="click">
-                  <t-button variant="text" size="small" :aria-label="`操作菜单 - ${user.nickname}`">
-                    <t-icon name="more" />
-                  </t-button>
-                </t-dropdown>
-              </div>
+        </t-input>
+      </div>
+      
+      <!-- Summary Overlay -->
+      <div v-if="summaryOverlayVisible" class="summary-overlay">
+        <div class="summary-card">
+          <div class="summary-title">本场总结</div>
+          <div v-if="summaryLoading" class="summary-loading">正在生成总结...</div>
+          <div v-else class="summary-content">
+            <div class="summary-row">
+              <div>在线人数</div>
+              <div>{{ (summaryData?.watchingCount ?? summaryData?.viewerCount ?? 0) }}</div>
+            </div>
+            <div class="summary-row">
+              <div>点赞数</div>
+              <div>{{ (summaryData?.likeCount ?? 0) }}</div>
+            </div>
+            <div class="summary-row">
+              <div>礼物数</div>
+              <div>{{ (summaryData?.giftCount ?? 0) }}</div>
+            </div>
+            <div class="summary-row">
+              <div>投蕉数</div>
+              <div>{{ (summaryData?.bananaCount ?? 0) }}</div>
+            </div>
+            <div style="margin-top:12px; text-align:center;">
+              <t-button theme="primary" @click="summaryOverlayVisible = false">关闭</t-button>
             </div>
           </div>
-        </t-card>
+        </div>
+      </div>
+      </div>
       </div>
     </div>
-
-
-
-    <!-- 用户操作确认对话框 -->
-    <t-dialog
-      v-model:visible="showUserActionDialog"
-      :title="userActionTitle"
-      :theme="userActionTheme"
-      @confirm="confirmUserAction"
-      @cancel="cancelUserAction"
-    >
-      <p>{{ userActionMessage }}</p>
-    </t-dialog>
-  </div>
-</template>
+  </template>
 
 <script setup lang="ts">
-import { ref, reactive, computed, onMounted, onUnmounted, nextTick, watch } from 'vue';
-import { useRoute } from 'vue-router';
+import { ref, computed, onMounted, onUnmounted, nextTick, watch } from 'vue';
+import { useRoute, useRouter } from 'vue-router';
 import { MessagePlugin } from 'tdesign-vue-next';
-import * as echarts from 'echarts';
+import { 
+    SendIcon,
+    VideoIcon,
+    ChevronDownIcon,
+    ChevronUpIcon
+  } from 'tdesign-icons-vue-next';
+import { useLiveStore } from '../stores/live';
+import { useAccountStore } from '../stores/account';
+import { useRoomStore } from '../stores/room';
+import { getApiBase, resolvePrimaryHostingType } from '../utils/hosting';
+import { usePluginStore } from '../stores/plugin';
+import CoverCropper from '../components/CoverCropper.vue'
+import FlvPlayer from '../components/FlvPlayer.vue'
 
-// 接口类型定义
-interface User {
-  userID: number;
-  nickname: string;
-  avatar: string;
-  isManager: boolean;
-  badge?: {
-    clubName: string;
-    level: number;
-  };
-  giftCount: number;
-  likeCount: number;
-  bananaCount: number;
-}
-
-interface Message {
-  id: string;
-  type: 'comment' | 'gift' | 'like' | 'banana' | 'enter';
-  nickname: string;
-  avatar: string;
-  content?: string;
-  giftName?: string;
-  count?: number;
-  time: number;
-}
-
-interface LiveStats {
-  onlineCount: number;
-  likeCount: number;
-  giftCount: number;
-  bananaCount: number;
-}
-
-// 路由和状态
+// Store
+const liveStore = useLiveStore();
 const route = useRoute();
-const liveId = computed(() => route.params.id as string);
+const router = useRouter();
+const accountStore = useAccountStore();
+const roomStore = useRoomStore();
+const pluginStore = usePluginStore();
 
-// 直播状态
-const liveStatus = ref<'live' | 'offline' | 'preparing'>('offline');
-const liveInfo = ref({
-  title: '',
-  cover: '',
-  startTime: 0
-});
-const updatingRoom = ref(false);
-const pageLoading = ref(true);
-
-// 统计数据
-const stats = reactive<LiveStats>({
-  onlineCount: 0,
-  likeCount: 0,
-  giftCount: 0,
-  bananaCount: 0
-});
-
-// 图表数据
-const chartData = ref<any[]>([]);
-const chartRef = ref<HTMLElement>();
-const chartContainer = ref<HTMLElement>();
-let chartInstance: echarts.ECharts | null = null;
-const chartTimer = ref<NodeJS.Timeout | null>(null);
-
-// 观众列表
-const audienceLoading = ref(false);
-const audienceList = ref<User[]>([]);
-const searchKeyword = ref('');
-const sortBy = ref<'nickname' | 'giftCount' | 'likeCount' | 'bananaCount'>('giftCount');
-const sortOrder = ref<'asc' | 'desc'>('desc');
-const filterManagers = ref(false);
-
-
-
-// 封面编辑
-const editCoverFiles = ref([]);
-
-// 用户操作对话框
-const showUserActionDialog = ref(false);
-const userActionTitle = ref('');
-const userActionTheme = ref<'info' | 'danger' | 'warning'>('info');
-const userActionMessage = ref('');
-const pendingUserAction = ref<{ type: string; user: User } | null>(null);
-
-// 定时器
-const refreshTimer = ref<NodeJS.Timeout | null>(null);
-const trendTimer = ref<NodeJS.Timeout | null>(null);
-
-// 上传配置
-const uploadAction = '/api/upload/cover';
-
-// 计算属性
-const filteredAudience = computed(() => {
-  let filtered = audienceList.value;
-  
-  // 搜索过滤
-  if (searchKeyword.value) {
-    const keyword = searchKeyword.value.toLowerCase();
-    filtered = filtered.filter(user => 
-      user.nickname.toLowerCase().includes(keyword)
-    );
-  }
-  
-  // 房管过滤
-  if (filterManagers.value) {
-    filtered = filtered.filter(user => user.isManager);
-  }
-  
-  // 排序
-  filtered.sort((a, b) => {
-    const aVal = Number(a[sortBy.value] as any) || 0;
-    const bVal = Number(b[sortBy.value] as any) || 0;
-    const multiplier = sortOrder.value === 'desc' ? -1 : 1;
-    return (aVal - bVal) * multiplier;
-  });
-  
-  return filtered;
-});
-
-// 生命周期
-onMounted(async () => {
-  try {
-    await loadLiveInfo();
-    startDataRefresh();
-    initChart();
-    startTrendDataCollection();
-  } catch (error) {
-    console.error('页面初始化失败:', error);
-    await MessagePlugin.error('页面初始化失败，请刷新页面重试');
-  }
-});
-
-onUnmounted(() => {
-  stopDataRefresh();
-  stopTrendDataCollection();
-  disposeChart();
-});
-
-
-// 加载直播信息
-async function loadLiveInfo() {
-  try {
-    // 获取直播流状态（HTTP代理）
-    const streamResult = await window.electronApi.http.get('/api/acfun/live/stream-status');
-    if (streamResult && streamResult.success && streamResult.data) {
-      liveStatus.value = 'live';
-      liveInfo.value = {
-        title: streamResult.data.title,
-        cover: streamResult.data.liveCover,
-        startTime: streamResult.data.liveStartTime
-      };
-      
-      // 获取用户直播信息
-      const accountInfo = await window.electronApi.account.getUserInfo();
-      const userID = ('data' in (accountInfo as any)) ? (accountInfo as any).data?.userId : (accountInfo as any)?.userId;
-      if (userID) {
-        const userResult = await window.electronApi.http.get('/api/acfun/live/user-info', { userID: Number(userID) });
-        if (userResult && userResult.success && userResult.data) {
-          liveInfo.value.title = userResult.data.title;
-          liveInfo.value.cover = userResult.data.liveCover;
-          liveInfo.value.startTime = userResult.data.liveStartTime;
-        }
-      }
-    } else {
-      // 如果没有直播流，检查用户是否有直播
-      const accountInfo = await window.electronApi.account.getUserInfo();
-      const userID = ('data' in (accountInfo as any)) ? (accountInfo as any).data?.userId : (accountInfo as any)?.userId;
-      if (userID) {
-        const userResult = await window.electronApi.http.get('/api/acfun/live/user-info', { userID: Number(userID) });
-        if (userResult && userResult.success && userResult.data && userResult.data.liveID) {
-          liveStatus.value = 'live';
-          liveInfo.value = {
-            title: userResult.data.title,
-            cover: userResult.data.liveCover,
-            startTime: userResult.data.liveStartTime
-          };
-        }
-      }
-    }
-    
-    await loadAudience();
-    await loadStats();
-  } catch (error) {
-    console.error('加载直播信息失败:', error);
-    await MessagePlugin.error('加载直播信息失败，请检查网络连接或稍后重试');
-  } finally {
-    pageLoading.value = false;
-  }
-}
-
-// 加载观众列表
-async function loadAudience() {
-  try {
-    audienceLoading.value = true;
-    const currentLiveId = await getCurrentLiveId();
-    if (currentLiveId) {
-      const res = await window.electronApi.http.get('/api/acfun/live/watching-list', { liveId: currentLiveId });
-      if (res && res.success && Array.isArray(res.data)) {
-        audienceList.value = res.data.map((w: any) => ({
-          userID: Number(w.userInfo?.userID || 0),
-          nickname: String(w.userInfo?.nickname || ''),
-          avatar: String(w.userInfo?.avatar || ''),
-          isManager: Number(w.userInfo?.managerType || 0) === 1,
-          badge: w.userInfo?.medal ? { clubName: String(w.userInfo.medal.clubName || ''), level: Number(w.userInfo.medal.level || 0) } : undefined,
-          giftCount: 0,
-          likeCount: 0,
-          bananaCount: 0
-        }));
-      } else {
-        audienceList.value = [];
-      }
-    } else {
-      audienceList.value = [];
-    }
-  } catch (error) {
-    console.error('加载观众列表失败:', error);
-    await MessagePlugin.error('加载观众列表失败，请检查网络连接或稍后重试');
-  } finally {
-    audienceLoading.value = false;
-  }
-}
-
-// 加载统计数据
-async function loadStats() {
-  try {
-    const accountInfo = await window.electronApi.account.getUserInfo();
-    const uid = ('data' in (accountInfo as any)) ? (accountInfo as any).data?.userId : (accountInfo as any)?.userId;
-    if (uid) {
-      try {
-        const result = await window.electronApi.http.get('/api/acfun/live/statistics', { userId: Number(uid) });
-        if (result && result.success && result.data) {
-          stats.onlineCount = result.data.totalViewers;
-          stats.likeCount = result.data.totalLikes;
-          stats.giftCount = result.data.totalGifts;
-          stats.bananaCount = result.data.totalComments;
-        }
-        const liveIdForSummary = await getCurrentLiveId();
-        const summaryResult = liveIdForSummary
-          ? await window.electronApi.http.get('/api/acfun/live/summary', { liveId: liveIdForSummary })
-          : null;
-        if (summaryResult && summaryResult.success && summaryResult.data) {
-          stats.bananaCount = summaryResult.data.bananaCount;
-          stats.likeCount = summaryResult.data.likeCount;
-          stats.giftCount = summaryResult.data.giftCount;
-        }
-      } catch (e: any) {
-        const msg = (e && e.message) ? String(e.message) : '';
-        // 回退：通过 room.details 获取基础统计（不依赖 liveId 映射）
-        try {
-          const accountInfo = await window.electronApi.account.getUserInfo();
-          const uid = ('data' in (accountInfo as any)) ? (accountInfo as any).data?.userId : (accountInfo as any)?.userId;
-          if (uid) {
-            const d = await window.electronApi.room.details(String(uid));
-            const data = ('data' in (d as any)) ? (d as any).data : {};
-            if (d && d.success) {
-              stats.onlineCount = typeof data.viewerCount === 'number' ? data.viewerCount : stats.onlineCount;
-              stats.likeCount = typeof data.likeCount === 'number' ? data.likeCount : stats.likeCount;
-            }
-          }
-        } catch {}
-        throw e; // 保持上层统一错误提示
-      }
-    }
-  } catch (error) {
-    console.error('加载统计数据失败:', error);
-    await MessagePlugin.error('加载统计数据失败，请检查网络连接或稍后重试');
-  }
-}
-
-async function getCurrentLiveId(): Promise<string | null> {
-  try {
-    const accountInfo = await window.electronApi.account.getUserInfo();
-    const uid = ('data' in (accountInfo as any)) ? (accountInfo as any).data?.userId : (accountInfo as any)?.userId;
-    if (uid) {
-      const u = await window.electronApi.http.get('/api/acfun/live/user-info', { userID: Number(uid) });
-      if (u && u.success && u.data && u.data.liveID) {
-        return String(u.data.liveID);
-      }
-    }
-  } catch {}
-  try {
-    const s = await window.electronApi.http.get('/api/acfun/live/stream-status');
-    if (s && s.success && s.data && s.data.liveID) {
-      return String(s.data.liveID);
-    }
-  } catch {}
-  try {
-    const accountInfo = await window.electronApi.account.getUserInfo();
-    const uid = ('data' in (accountInfo as any)) ? (accountInfo as any).data?.userId : (accountInfo as any)?.userId;
-    if (uid) {
-      const d = await window.electronApi.room.details(String(uid));
-      if (d && d.success && d.data && d.data.liveId) {
-        return String(d.data.liveId);
-      }
-    }
-  } catch {}
-  return null;
-}
-
-// 开始数据刷新
-function startDataRefresh() {
-  refreshTimer.value = setInterval(async () => {
-    await loadAudience();
-    await loadStats();
-  }, 10000); // 10秒刷新一次
-}
-
-// 停止数据刷新
-function stopDataRefresh() {
-  if (refreshTimer.value) {
-    clearInterval(refreshTimer.value);
-    refreshTimer.value = null;
-  }
-}
-
-
-
-
-
-
-
-
-
-
-
-// 获取用户菜单选项
-function getUserMenuOptions(user: User) {
-  const options = [];
-  
-  if (user.isManager) {
-    options.push({
-      content: '取消房管',
-      value: 'removeManager',
-      theme: 'warning',
-      onClick: () => handleRemoveManager(user)
-    });
-  } else {
-    options.push({
-      content: '设为房管',
-      value: 'addManager',
-      theme: 'primary',
-      onClick: () => handleAddManager(user)
-    });
-  }
-  
-  options.push({
-    content: '踢出直播间',
-    value: 'kick',
-    theme: 'danger',
-    onClick: () => handleKickUser(user)
-  });
-  
-  return options;
-}
-
-// 处理添加房管
-function handleAddManager(user: User) {
-  pendingUserAction.value = { type: 'addManager', user };
-  userActionTitle.value = '设为房管';
-  userActionTheme.value = 'info';
-  userActionMessage.value = `确定要将 "${user.nickname}" 设为房管吗？`;
-  showUserActionDialog.value = true;
-}
-
-// 处理取消房管
-function handleRemoveManager(user: User) {
-  pendingUserAction.value = { type: 'removeManager', user };
-  userActionTitle.value = '取消房管';
-  userActionTheme.value = 'warning';
-  userActionMessage.value = `确定要取消 "${user.nickname}" 的房管权限吗？`;
-  showUserActionDialog.value = true;
-}
-
-// 处理踢出用户
-function handleKickUser(user: User) {
-  pendingUserAction.value = { type: 'kick', user };
-  userActionTitle.value = '踢出直播间';
-  userActionTheme.value = 'danger';
-  userActionMessage.value = `确定要将 "${user.nickname}" 踢出直播间吗？`;
-  showUserActionDialog.value = true;
-}
-
-
-
-// 确认用户操作
-async function confirmUserAction() {
-  if (!pendingUserAction.value) return;
-  
-  const { type, user } = pendingUserAction.value;
-  
-  try {
-    if (type === 'addManager') {
-      // TODO: 调用添加房管接口
-      // await window.electronApi.manager.addManager(user.userID);
-      user.isManager = true;
-      MessagePlugin.success('已设为房管');
-    } else if (type === 'removeManager') {
-      // TODO: 调用删除房管接口
-      // await window.electronApi.manager.deleteManager(user.userID);
-      user.isManager = false;
-      MessagePlugin.success('已取消房管');
-    } else if (type === 'kick') {
-      // TODO: 调用踢人接口
-      // await window.electronApi.manager.authorKick(liveId.value, user.userID);
-      audienceList.value = audienceList.value.filter(u => u.userID !== user.userID);
-      MessagePlugin.success('已踢出直播间');
-    }
-  } catch (error) {
-    console.error('用户操作失败:', error);
-    MessagePlugin.error('操作失败，请检查网络连接或稍后重试');
-  }
-  
-  cancelUserAction();
-}
-
-// 取消用户操作
-function cancelUserAction() {
-  showUserActionDialog.value = false;
-  pendingUserAction.value = null;
-}
-
-
-
-// 切换直播状态
-async function toggleLive() {
-  try {
-    if (liveStatus.value === 'live') {
-      // TODO: 调用停止直播接口
-      // const result = await window.electronApi.live.stopLiveStream(liveId.value);
-      // if (result.success) {
-      //   liveStatus.value = 'offline';
-      //   MessagePlugin.success('直播已结束');
-      // }
-      
-      // 模拟成功
-      liveStatus.value = 'offline';
-      MessagePlugin.success('直播已结束');
-    } else {
-      // 跳转到创建直播页面
-      // router.push('/live/create');
-      MessagePlugin.info('请重新创建直播');
-    }
-  } catch (error) {
-    console.error('切换直播状态失败:', error);
-    MessagePlugin.error('切换直播状态失败，请检查网络连接或稍后重试');
-  }
-}
-
-// 封面上传处理
-const beforeCoverUpload = (file: File) => {
-  const isImage = file.type === 'image/jpeg' || file.type === 'image/jpg' || file.type === 'image/png';
-  const isLt5M = file.size / 1024 / 1024 < 5;
-  
-  if (!isImage) {
-    MessagePlugin.error('只能上传 JPG/PNG 格式的图片!');
-    return false;
-  }
-  if (!isLt5M) {
-    MessagePlugin.error('图片大小不能超过 5MB!');
-    return false;
-  }
-  return true;
+// State
+const inputMessage = ref('');
+const chatContainer = ref<HTMLElement | null>(null);
+const isAtBottom = ref(true);
+const newMsgCount = ref(0);
+const editDialogVisible = ref(false);
+const editFormRef = ref();
+const editForm = ref<{ title: string; cover: string }>({ title: '', cover: '' });
+const editFormRules = {
+  title: [ { required: true, message: '请输入直播标题', type: 'error' } ]
 };
 
-function handleCoverSuccess(response: any) {
-  liveInfo.value.cover = response.url || '';
-  MessagePlugin.success('封面更新成功');
-}
-
-// 更新房间信息
-async function updateRoomInfo() {
-  if (!liveInfo.value.title.trim()) {
-    MessagePlugin.error('请输入直播标题');
-    return;
-  }
-  
-  updatingRoom.value = true;
+const CREATE_DRAFT_KEY = 'LIVE_CREATE_BASIC_FORM_V1';
+function syncCreateDraft(title: string, cover?: string) {
   try {
-    // TODO: 调用更新房间信息接口
-    // const result = await window.electronApi.live.updateLiveRoom(
-    //   liveInfo.value.title,
-    //   liveInfo.value.cover,
-    //   liveId.value
-    // );
-    
-    // if (result.success) {
-    //   MessagePlugin.success('房间信息更新成功');
-    // } else {
-    //   throw new Error(result.error || '更新失败');
-    // }
-    
-    // 模拟成功
-    MessagePlugin.success('房间信息更新成功');
-  } catch (error) {
-    console.error('更新房间信息失败:', error);
-    MessagePlugin.error(error instanceof Error ? error.message : '更新房间信息失败，请检查网络连接或稍后重试');
-  } finally {
-    updatingRoom.value = false;
-  }
-}
-
-// 辅助函数
-function getStatusTheme(status: string) {
-  switch (status) {
-    case 'live': return 'success';
-    case 'preparing': return 'warning';
-    case 'offline': return 'default';
-    default: return 'default';
-  }
-}
-
-function getStatusText(status: string) {
-  switch (status) {
-    case 'live': return '直播中';
-    case 'preparing': return '准备中';
-    case 'offline': return '已结束';
-    default: return '未知';
-  }
-}
-
-// 图表相关函数
-function initChart() {
-  if (!chartRef.value) return;
-  
-  chartInstance = echarts.init(chartRef.value);
-  
-  const option = {
-    tooltip: {
-      trigger: 'axis',
-      axisPointer: {
-        type: 'cross'
-      }
-    },
-    legend: {
-      data: ['在线观看', '点赞数', '礼物数', '礼物价值', '香蕉数'],
-      bottom: 0
-    },
-    grid: {
-      left: '3%',
-      right: '4%',
-      bottom: '15%',
-      containLabel: true
-    },
-    xAxis: {
-      type: 'category',
-      boundaryGap: false,
-      data: chartData.value.map(item => item.time)
-    },
-    yAxis: {
-      type: 'value'
-    },
-    series: [
-      {
-        name: '在线观看',
-        type: 'line',
-        smooth: true,
-        data: chartData.value.map(item => item.onlineCount),
-        itemStyle: { color: '#1890ff' }
-      },
-      {
-        name: '点赞数',
-        type: 'line',
-        smooth: true,
-        data: chartData.value.map(item => item.likeCount),
-        itemStyle: { color: '#52c41a' }
-      },
-      {
-        name: '礼物数',
-        type: 'line',
-        smooth: true,
-        data: chartData.value.map(item => item.giftCount),
-        itemStyle: { color: '#faad14' }
-      },
-      {
-        name: '礼物价值',
-        type: 'line',
-        smooth: true,
-        data: chartData.value.map(item => item.giftValue),
-        itemStyle: { color: '#f5222d' }
-      },
-      {
-        name: '香蕉数',
-        type: 'line',
-        smooth: true,
-        data: chartData.value.map(item => item.bananaCount),
-        itemStyle: { color: '#722ed1' }
-      }
-    ]
-  };
-  
-  chartInstance.setOption(option);
-}
-
-function updateChart() {
-  if (!chartInstance) return;
-  
-  const option = {
-    xAxis: {
-      data: chartData.value.map(item => item.time)
-    },
-    series: [
-      { data: chartData.value.map(item => item.onlineCount) },
-      { data: chartData.value.map(item => item.likeCount) },
-      { data: chartData.value.map(item => item.giftCount) },
-      { data: chartData.value.map(item => item.giftValue) },
-      { data: chartData.value.map(item => item.bananaCount) }
-    ]
-  };
-  
-  chartInstance.setOption(option);
-}
-
-function disposeChart() {
-  if (chartInstance) {
-    chartInstance.dispose();
-    chartInstance = null;
-  }
-}
-
-function startTrendDataCollection() {
-  // 添加初始数据（使用当前统计数据）
-  const now = new Date();
-  for (let i = 9; i >= 0; i--) {
-    const time = new Date(now.getTime() - i * 60000);
-    chartData.value.push({
-      time: time.toLocaleTimeString('zh-CN', { hour: '2-digit', minute: '2-digit' }),
-      onlineCount: stats.onlineCount || 0,
-      likeCount: stats.likeCount || 0,
-      giftCount: stats.giftCount || 0,
-      giftValue: Math.floor((stats.giftCount || 0) * 2.5), // 估算礼物价值
-      bananaCount: stats.bananaCount || 0
-    });
-  }
-  
-  // 初始化图表
-  nextTick(() => {
-    initChart();
-  });
-  
-  // 开始数据收集
-  trendTimer.value = setInterval(async () => {
-    try {
-      // 重新加载统计数据
-      await loadStats();
-      
-      const now = new Date();
-      const newData = {
-        time: now.toLocaleTimeString('zh-CN', { hour: '2-digit', minute: '2-digit' }),
-        onlineCount: stats.onlineCount,
-        likeCount: stats.likeCount,
-        giftCount: stats.giftCount,
-        giftValue: Math.floor(stats.giftCount * 2.5), // 估算礼物价值
-        bananaCount: stats.bananaCount
-      };
-      
-      chartData.value.push(newData);
-      
-      // 保持最多20个数据点
-      if (chartData.value.length > 20) {
-        chartData.value.shift();
-      }
-      
-      updateChart();
-    } catch (error) {
-      console.error('趋势数据收集失败:', error);
+    const raw = localStorage.getItem(CREATE_DRAFT_KEY);
+    let payload: any = {};
+    try { payload = raw ? JSON.parse(raw) : {}; } catch {}
+    payload = payload && typeof payload === 'object' ? payload : {};
+    payload.title = String(title || '');
+    if (cover && String(cover).trim().length > 0) {
+      payload.cover = String(cover);
     }
-  }, 30000); // 30秒更新一次
+    localStorage.setItem(CREATE_DRAFT_KEY, JSON.stringify(payload));
+  } catch {}
 }
 
-function stopTrendDataCollection() {
-  if (trendTimer.value) {
-    clearInterval(trendTimer.value);
-    trendTimer.value = null;
+// Computed
+const routeRoomId = computed(() => String(route.params.roomId || ''));
+const isMyRoom = computed(() => {
+  const uid = String(accountStore.userInfo?.userID || '');
+  const rid = currentRoomId.value;
+  if (!uid) return false;
+  if (rid) {
+    const r = roomStore.getRoomById(rid);
+    const owner = String(r?.streamer?.userId || r?.liverUID || '');
+    if (owner) return owner === uid;
   }
+  const rrid = routeRoomId.value;
+  if (String(rrid || '') === uid) return true;
+  if (String(liveStore.liveId || '') === String(rrid || '')) return true;
+  return false;
+});
+const liveInfo = computed(() => liveStore.liveInfo);
+const currentRoomId = computed(() => {
+  const rid = routeRoomId.value;
+  if (rid) {
+    const rooms = roomStore.rooms;
+    const r = rooms.find(x => String(x.id) === rid || String(x.liverUID) === rid || String(x.streamer?.userId || '') === rid);
+    return String(r?.id || rid || '');
+  }
+  const rooms = roomStore.rooms;
+  const liveKey = String(liveStore.liveId || '');
+  let r = liveKey ? rooms.find(x => String(x.liveId) === liveKey) : undefined;
+  if (!r) {
+    const uid = String(accountStore.userInfo?.userID || '');
+    r = uid ? rooms.find(x => String(x.liverUID) === uid || String(x.streamer?.userId || '') === uid) : undefined;
+  }
+  return String(r?.id || '');
+});
+const liveStatus = computed(() => {
+  const rid = currentRoomId.value;
+  if (rid) {
+    const r = roomStore.getRoomById(rid);
+    if (r) return r.isLive ? 'live' : 'offline';
+  }
+  return liveStore.isLive ? 'live' : 'offline';
+});
+const stats = computed(() => liveStore.getRoomStats(currentRoomId.value || ''));
+const giftLeaderboard = computed(() => liveStore.getRoomGiftLeaderboard(currentRoomId.value || ''));
+const hostAvatar = computed(() => accountStore.userInfo?.avatar || 'https://cdn.ui-avatars.com/api/?name=Host');
+const audienceList = computed(() => liveStore.getRoomAudience(currentRoomId.value || ''));
+const messages = computed(() => liveStore.getRoomMessages(currentRoomId.value || '').map((msg: any) => ({
+  ...msg,
+  isHost: String(msg?.userId || '') === String(accountStore.userInfo?.userID || ''),
+  isManager: audienceList.value.some(u => Number(u.userID) === Number(msg?.userId || 0) && u.isManager)
+})));
+const leaderboardExpanded = ref(false);
+
+/* streams moved below displayRoom to avoid TDZ */
+
+const displayRoom = computed(() => {
+  const rid = routeRoomId.value;
+  const rooms = roomStore.rooms;
+  if (rid) {
+    let r = rooms.find(x => String(x.id) === rid);
+    if (!r) {
+      r = rooms.find(x => String(x.liverUID) === rid || String(x.streamer?.userId || '') === rid);
+    }
+    return r;
+  }
+  const liveId = String(liveStore.liveId || '');
+  const uid = String(accountStore.userInfo?.userID || '');
+  let r = rooms.find(x => String(x.liveId) === liveId);
+  if (!r && uid) {
+    r = rooms.find(x => String(x.liverUID) === uid || String(x.streamer?.userId || '') === uid);
+  }
+  return r;
+});
+const hostName = computed(() => String(displayRoom.value?.streamer?.userName || '').trim() || String(accountStore.userInfo?.nickname || '').trim());
+const roomTitle = computed(() => {
+  const t = String(displayRoom.value?.title || '').trim();
+  if (t) return t;
+  const lt = String(liveInfo.value.title || '').trim();
+  if (lt) return lt;
+  const name = String(displayRoom.value?.streamer?.userName || accountStore.userInfo?.nickname || '').trim();
+  const id = String(liveStore.liveId || accountStore.userInfo?.userID || '').trim();
+  return t || lt || (name ? `${name}的直播间` : (id ? `直播间 ${id}` : '直播间'));
+});
+const roomCover = computed(() => {
+  const c = String(displayRoom.value?.coverUrl || '').trim();
+  if (c) return c;
+  const lc = String(liveInfo.value.cover || '').trim();
+  return lc || '';
+});
+
+const rawStreams = computed(() => {
+  const si: any = displayRoom.value?.streamInfo || null
+  if (!si) return []
+  const cands: any[] = Array.isArray((si as any)?.streamList) ? (si as any).streamList
+    : Array.isArray((si as any)?.flvList) ? (si as any).flvList
+    : Array.isArray((si as any)?.playbackUrls) ? (si as any).playbackUrls
+    : Array.isArray((si as any)?.streams?.flv) ? (si as any).streams.flv
+    : Array.isArray((si as any)?.streams) ? (si as any).streams : []
+  return cands.filter(Boolean)
+})
+const streams = computed(() => {
+  return rawStreams.value.map((it: any) => {
+    const url = String(it?.url || it?.playUrl || '')
+    const bitrate = Number(it?.bitrate || it?.br || 0)
+    const qualityType = String(it?.qualityType || it?.type || '')
+    const qualityName = String(it?.qualityName || it?.name || '')
+    return { url, bitrate, qualityType, qualityName }
+  }).filter(x => x.url && /\.flv(\?|$)/i.test(x.url))
+})
+const qualityOptions = computed(() => streams.value.map(s => ({ value: s.url, label: s.qualityName || s.qualityType || ((s.bitrate > 0 ? Math.round(s.bitrate/1000) : 0) + 'M') })))
+const selectedUrl = ref('')
+const playerError = ref(false)
+const showVideo = computed(() => !isMyRoom.value && liveStatus.value === 'live' && streams.value.length > 0 && !playerError.value)
+const showPlaceholder = computed(() => !isMyRoom.value && liveStatus.value === 'live' && streams.value.length === 0)
+watch(streams, (list) => {
+  if (!list.length) { selectedUrl.value = '' ; return }
+  const preferred = list.find(x => String(x.qualityType).toUpperCase() === 'BLUE_RAY')
+  const highest = [...list].sort((a,b) => (b.bitrate||0)-(a.bitrate||0))[0]
+  selectedUrl.value = (preferred?.url || highest?.url || list[0].url)
+}, { immediate: true })
+
+watch(selectedUrl, () => { playerError.value = false })
+
+// Timer for duration
+const startTime = ref(Date.now());
+const now = ref(Date.now());
+const durationTimer = ref<NodeJS.Timeout | null>(null);
+
+const liveDuration = computed(() => {
+  if (liveStatus.value !== 'live') return '00:00:00';
+  const originStart = Number(displayRoom.value?.startTime || liveInfo.value.startTime || startTime.value || Date.now());
+  const diff = Math.max(0, now.value - originStart);
+  const h = Math.floor(diff / 3600000);
+  const m = Math.floor((diff % 3600000) / 60000);
+  const s = Math.floor((diff % 60000) / 1000);
+  return `${h.toString().padStart(2, '0')}:${m.toString().padStart(2, '0')}:${s.toString().padStart(2, '0')}`;
+});
+
+const liveRoomPlugins = computed(() => pluginStore.plugins.filter(p => p.liveRoomDisplay?.show));
+
+  const giftLoading = ref(true);
+
+// Methods
+async function openLiveRoomPlugin(pluginId: string) {
+  const plugin = pluginStore.getPluginById(pluginId);
+  if (!plugin) return;
+  if (plugin.status !== 'active' || !plugin.enabled) return;
+  try {
+    const primary = await resolvePrimaryHostingType(pluginId);
+    if (primary.type === 'ui') {
+      await router.push(`/plugins/${pluginId}`);
+      return;
+    }
+    if (primary.type === 'window') {
+      await window.electronApi.plugin.window.open(pluginId);
+      return;
+    }
+  } catch {}
+  try { await router.push(`/plugins/${pluginId}`); } catch {}
 }
-
-
+function getStatusText(status: string) {
+  return status === 'live' ? '直播中' : '未开播';
+}
 
 function formatNumber(num: number) {
   if (num >= 10000) {
@@ -940,483 +498,845 @@ function formatNumber(num: number) {
   }
   return num.toString();
 }
+async function toggleLive() {
+  try {
+    if (liveStatus.value === 'live') {
+      const resp: any = await window.electronApi.popup.confirm(
+        '确定结束直播？',
+        '结束直播后将生成本场数据报告。',
+        { confirmBtn: { content: '确认结束', theme: 'danger' }, cancelBtn: { content: '取消' }, contextId: 'live-stop-confirm' }
+      );
+      const ok = resp?.result === true || resp === true;
+      if (!ok) return;
+      const currentLiveId = liveStore.liveId;
+      if (!currentLiveId) return;
 
-function formatTime(timestamp: number) {
-  const date = new Date(timestamp);
-  return date.toLocaleTimeString();
+      const res = await fetch(new URL('/api/acfun/live/stop', getApiBase()).toString(), {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ liveId: currentLiveId })
+      });
+      const result = await res.json();
+      if (result && result.success) {
+        liveStore.handleLiveStop();
+        MessagePlugin.success('直播已结束');
+        summaryOverlayVisible.value = true;
+        summaryLoading.value = true;
+        try {
+          const sres = await fetch(new URL('/api/acfun/live/summary', getApiBase()).toString() + `?liveId=${encodeURIComponent(String(currentLiveId))}`);
+          const sjson = await sres.json();
+          if (sjson && sjson.success) {
+            summaryData.value = sjson.data || {};
+          }
+        } catch {}
+        summaryLoading.value = false;
+      }
+    } else {
+       MessagePlugin.info('请前往首页或使用OBS推流开始直播');
+    }
+  } catch (error) {
+    console.error('操作失败:', error);
+  }
 }
 
+async function updateRoomInfo(title: string, coverFile?: string) {
+  if (!String(title || '').trim()) return;
+  try {
+    if (coverFile && !/^data:image\/jpeg/i.test(String(coverFile))) {
+      MessagePlugin.error('封面仅支持 JPG 格式')
+      return
+    }
+    const currentLiveId = liveStore.liveId;
+    if (!currentLiveId) {
+      syncCreateDraft(title, coverFile);
+      MessagePlugin.info('未开播，已更新本地信息');
+      return;
+    }
+    const res = await fetch(new URL('/api/acfun/live/update', getApiBase()).toString(), {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        title,
+        coverFile: coverFile || '',
+        liveId: currentLiveId
+      })
+    });
+    const result = await res.json();
+    if (result && result.success) {
+      syncCreateDraft(title, coverFile);
+      MessagePlugin.success('房间更新信息已推送，视审核情况等待生效');
+    } else {
+      MessagePlugin.error(String(result?.error || '更新失败'));
+    }
+  } catch (e: any) {
+    MessagePlugin.error(String(e?.message || '网络错误'));
+  }
+}
 
+ 
+
+
+
+function openEditDialog() {
+  editForm.value = { title: roomTitle.value || '', cover: roomCover.value || '' };
+  editDialogVisible.value = true;
+}
+
+async function confirmEditInfo() {
+  const resp: any = await window.electronApi.popup.confirm(
+    '确认修改信息？',
+    '将当前标题和封面应用到房间信息，是否确认？',
+    { confirmBtn: { content: '确认', theme: 'primary' }, cancelBtn: { content: '取消' }, contextId: 'live-edit-confirm' }
+  );
+  const valid = await editFormRef.value?.validate();
+  if (!valid) return;
+  const ok = resp?.result === true || resp === true;
+  if (!ok) return;
+  await updateRoomInfo(editForm.value.title, editForm.value.cover);
+  editDialogVisible.value = false;
+}
+
+async function sendMessage() {
+  if (!inputMessage.value.trim()) return;
+  const content = inputMessage.value.trim().slice(0, 50);
+  const uid = accountStore.userInfo?.userID ? String(accountStore.userInfo.userID) : '';
+  if (!uid) {
+    MessagePlugin.error('请先登录');
+    return;
+  }
+  try {
+    let liveIdStr = String((displayRoom.value as any)?.liveId || liveStore.liveId || '');
+    if (!liveIdStr && isMyRoom.value) {
+      try { await liveStore.ensureLiveId(); } catch {}
+      liveIdStr = String((displayRoom.value as any)?.liveId || liveStore.liveId || '');
+    }
+    if (!liveIdStr) {
+      MessagePlugin.error('当前未直播或未获取到房间ID');
+      return;
+    }
+    const res = await fetch(new URL('/api/acfun/danmu/send', getApiBase()).toString(), {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ liveId: liveIdStr, content })
+    });
+    const result = await res.json();
+    if (result && result.success) {
+      MessagePlugin.success('弹幕已发送');
+      inputMessage.value = '';
+    } else {
+      MessagePlugin.error(String(result?.error || '发送失败'));
+    }
+  } catch (e: any) {
+    MessagePlugin.error(String(e?.message || '网络错误'));
+  }
+}
+
+function onInputKeydown(ev: KeyboardEvent) {
+  if (ev.key === 'Enter' && ev.shiftKey) {
+    ev.preventDefault();
+    ev.stopPropagation();
+  }
+}
+
+function scrollToBottom() {
+  nextTick(() => {
+    if (chatContainer.value) {
+      chatContainer.value.scrollTop = chatContainer.value.scrollHeight;
+      isAtBottom.value = true;
+      newMsgCount.value = 0;
+    }
+  });
+}
+
+function scrollToBottomAnimated() {
+  const el = chatContainer.value;
+  if (!el) return;
+  el.scrollTo({ top: el.scrollHeight, behavior: 'smooth' });
+  isAtBottom.value = true;
+  newMsgCount.value = 0;
+}
+
+function updateScrollState() {
+  const el = chatContainer.value;
+  if (!el) return;
+  const nearBottom = el.scrollHeight - el.scrollTop - el.clientHeight <= 8;
+  isAtBottom.value = nearBottom;
+  if (nearBottom) {
+    newMsgCount.value = 0;
+  }
+  if (userMenuVisible.value) { updateUserMenuPosition(); }
+}
+
+// User context menu
+const userMenuVisible = ref(false);
+const userMenuX = ref(0);
+const userMenuY = ref(0);
+const selectedUserId = ref<number | null>(null);
+const selectedUserName = ref('');
+const kickConfirmVisible = ref(false);
+const kickTargetName = ref('');
+const selectedAnchorEl = ref<HTMLElement | null>(null);
+const autoScrollTimer = ref<NodeJS.Timeout | null>(null);
+const myUidNum = computed(() => Number(accountStore.userInfo?.userID || 0));
+const currentRoom = computed(() => roomStore.getRoomById(currentRoomId.value || ''));
+const myManagerState = computed(() => Number(currentRoom.value?.myManagerState || 0));
+const selectedIsSelf = computed(() => Number(selectedUserId.value || 0) === myUidNum.value);
+const showSetManager = computed(() => isMyRoom.value && !selectedIsSelf.value);
+const showKickUser = computed(() => ((isMyRoom.value || myManagerState.value === 3) && !selectedIsSelf.value));
+let outsideHandler: any = null;
+let outsideClickHandler: any = null;
+let giftCollapseTimer: NodeJS.Timeout | null = null;
+let userMenuOutsideHandler: any = null;
+
+function openUserMenu(msg: any, ev: MouseEvent) {
+  selectedUserId.value = Number(msg?.userId || 0) || null;
+  selectedUserName.value = String(msg?.nickname || '');
+  selectedAnchorEl.value = (ev.currentTarget as HTMLElement) || (ev.target as HTMLElement) || null;
+  updateUserMenuPosition();
+  userMenuVisible.value = true;
+}
+
+function hideUserMenu() { userMenuVisible.value = false; }
+
+function updateUserMenuPosition() {
+  const el = selectedAnchorEl.value;
+  const container = document.querySelector('.right-main-area') as HTMLElement;
+  if (!el || !container) return;
+  const rect = el.getBoundingClientRect();
+  const crect = container.getBoundingClientRect();
+  const left = rect.left - crect.left;
+  const top = rect.bottom - crect.top + 4;
+  userMenuX.value = Math.round(left);
+  userMenuY.value = Math.round(top);
+  const visible = rect.bottom > crect.top && rect.top < crect.bottom;
+  if (!visible) { userMenuVisible.value = false; }
+}
+
+async function setAsManager() {
+  try {
+    const uid = String(selectedUserId.value || '');
+    if (!uid) return;
+    const res = await fetch(new URL('/api/acfun/manager/add', getApiBase()).toString(), {
+      method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ managerUID: uid })
+    });
+    const result = await res.json();
+    if (result && result.success) {
+      MessagePlugin.success(`已设为房管：${selectedUserName.value}`);
+      try { await liveStore.fetchWatchingListForRoom(currentRoomId.value || ''); } catch {}
+      hideUserMenu();
+    } else {
+      MessagePlugin.error(String(result?.error || '操作失败，请重试'));
+    }
+  } catch (e: any) {
+    MessagePlugin.error(String(e?.message || '网络错误'));
+  }
+}
+
+function promptKick() {
+  kickTargetName.value = selectedUserName.value || '';
+  kickConfirmVisible.value = true;
+  hideUserMenu();
+}
+
+async function openUserPage() {
+  try {
+    const uid = String(selectedUserId.value || '');
+    if (!uid) return;
+    const url = `https://www.acfun.cn/u/${uid}`;
+    if ((window as any).electronApi?.system?.openExternal) {
+      await (window as any).electronApi.system.openExternal(url);
+    } else {
+      window.open(url, '_blank');
+    }
+    hideUserMenu();
+  } catch {}
+}
+
+async function confirmKick() {
+  try {
+    const liveID = String(liveStore.liveId || '');
+    const kickedUID = String(selectedUserId.value || '');
+    if (!liveID || !kickedUID) {
+      MessagePlugin.error('信息不完整');
+      return;
+    }
+    const res = await fetch(new URL('/api/acfun/manager/kick', getApiBase()).toString(), {
+      method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ liveID, kickedUID, kickType: 'author' })
+    });
+    const result = await res.json();
+    if (result && result.success) {
+      MessagePlugin.success(`已将 ${kickTargetName.value} 踢出直播间`);
+      kickConfirmVisible.value = false;
+    } else {
+      MessagePlugin.error('操作失败，请重试');
+    }
+  } catch (e: any) {
+    MessagePlugin.error('操作失败，请重试');
+  }
+}
+
+function onGiftMouseLeave() {
+  try {
+    if (giftCollapseTimer) { clearTimeout(giftCollapseTimer); giftCollapseTimer = null; }
+    if (leaderboardExpanded.value) {
+      giftCollapseTimer = setTimeout(() => {
+        leaderboardExpanded.value = false;
+        giftCollapseTimer = null;
+      }, 2000) as unknown as NodeJS.Timeout;
+    }
+  } catch {}
+}
+
+function onGiftMouseEnter() {
+  try { if (giftCollapseTimer) { clearTimeout(giftCollapseTimer); giftCollapseTimer = null; } } catch {}
+}
+
+watch(() => messages.value.length, () => {
+  if (isAtBottom.value) {
+    scrollToBottom();
+  } else {
+    newMsgCount.value += 1;
+  }
+});
+
+watch(currentRoomId, (rid) => {
+  if (rid) {
+    try { liveStore.loadRoomMessageHistory(rid) } catch {}
+  }
+}, { immediate: true })
+
+onMounted(() => {
+  liveStore.startPolling();
+  durationTimer.value = setInterval(() => {
+    now.value = Date.now();
+  }, 1000);
+  nextTick(() => {
+    if (chatContainer.value) {
+      chatContainer.value.addEventListener('scroll', updateScrollState);
+      chatContainer.value.addEventListener('mouseenter', () => {
+        if (autoScrollTimer.value) { clearTimeout(autoScrollTimer.value); autoScrollTimer.value = null; }
+      });
+      chatContainer.value.addEventListener('mouseleave', () => {
+        if (autoScrollTimer.value) { clearTimeout(autoScrollTimer.value); }
+        autoScrollTimer.value = setTimeout(() => { scrollToBottomAnimated(); }, 6000);
+      });
+      updateScrollState();
+    }
+  });
+  nextTick(() => { scrollToBottom(); });
+  // 初次拉取礼物榜数据，结束后 giftLoading=false
+  const rid = currentRoomId.value || '';
+  if (rid) {
+    giftLoading.value = true;
+    liveStore.fetchWatchingListForRoom(rid).finally(() => { giftLoading.value = false; });
+  } else {
+    giftLoading.value = false;
+  }
+  // 收起机制改为 mouseleave（见模板 gift-leaderboard 容器），不再注册 document 级外部点击监听
+  userMenuOutsideHandler = (ev: PointerEvent) => {
+    try {
+      if (!userMenuVisible.value) return;
+      const target = ev.target as Node;
+      const pop = document.querySelector('.user-context-popover') as HTMLElement | null;
+      const anchor = selectedAnchorEl.value;
+      const path = (ev as any).composedPath ? (ev as any).composedPath() as Node[] : [];
+      const inPopover = !!(pop && (pop.contains(target) || (path.length && path.includes(pop))));
+      const inAnchor = !!(anchor && (anchor.contains(target) || (path.length && path.includes(anchor))));
+      if (!inPopover && !inAnchor) {
+        userMenuVisible.value = false;
+      }
+    } catch {}
+  };
+  document.addEventListener('pointerdown', userMenuOutsideHandler, { capture: true });
+});
+
+onUnmounted(() => {
+  if (durationTimer.value) clearInterval(durationTimer.value);
+  liveStore.stopPolling();
+  try { chatContainer.value?.removeEventListener('scroll', updateScrollState); } catch {}
+  try { chatContainer.value?.removeEventListener('mouseenter', () => {}); } catch {}
+  try { chatContainer.value?.removeEventListener('mouseleave', () => {}); } catch {}
+  if (autoScrollTimer.value) { try { clearTimeout(autoScrollTimer.value); } catch {} autoScrollTimer.value = null }
+  // 无 document 监听需移除
+  if (giftCollapseTimer) { try { clearTimeout(giftCollapseTimer); } catch {} giftCollapseTimer = null }
+  try { document.removeEventListener('pointerdown', userMenuOutsideHandler as any); } catch {}
+});
+
+function onAvatarError(e: Event) {
+  const t = e.target as HTMLImageElement
+  if (t) t.src = '/default-avatar.png'
+}
+
+const summaryOverlayVisible = ref(false);
+const summaryLoading = ref(false);
+const summaryData = ref<any>({});
 </script>
 
 <style scoped>
+.t-statistic-content{
+  font-size: 9px!important;
+}
 .live-manage-page {
   height: 100%;
   display: flex;
   flex-direction: column;
-  background-color: var(--td-bg-color-container);
-  overflow: hidden;
-}
-
-.loading-container {
-  flex: 1;
-  display: flex;
-  flex-direction: column;
-  align-items: center;
-  justify-content: center;
   gap: 16px;
-  color: var(--td-text-color-secondary);
-}
-
-.loading-container p {
-  margin: 0;
-  font-size: 14px;
+  padding: 16px;
+  background-color: var(--td-bg-color-page);
+  overflow: hidden;
+  font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif;
 }
 
 .page-header {
   display: flex;
   justify-content: space-between;
   align-items: center;
-  padding: 20px 24px;
-  border-bottom: 1px solid var(--td-border-level-1-color);
-  background-color: var(--td-bg-color-container);
 }
-.page-header .header-left {
+
+.page-header h2 {
+  margin: 0;
+  color: var(--td-text-color-primary);
+}
+
+.title-with-status {
   display: flex;
   align-items: center;
+  gap: 8px;
+}
+
+
+.content-layout {
+  display: flex;
+  gap: 16px;
+  flex: 1;
+  min-height: 0;
+}
+
+/* Left Sidebar */
+.left-sidebar {
+  width: 320px;
+  background-color: #FFFFFF;
+  border-right: 1px solid #E7E7E7;
+  display: flex;
+  flex-direction: column;
+  padding: 24px;
+  gap: 12px;
+  flex-shrink: 0;
+}
+
+/* Metadata Section */
+.metadata-section {
+  display: flex;
+  flex-direction: column;
   gap: 16px;
 }
-.page-header .header-left h1 {
-  margin: 0;
-  color: var(--td-text-color-primary);
-  font-size: 20px;
-  font-weight: 600;
-}
-/* 统计摘要样式 */
-.stats-summary {
-  display: flex;
-  background-color: var(--td-bg-color-container);
-  border: 1px solid var(--td-border-level-1-color);
-  border-radius: 8px;
-  padding: 16px 0;
-  margin-bottom: 16px;
-  box-shadow: 0 1px 2px rgba(0, 0, 0, 0.05);
-}
 
-.stat-summary-item {
-  flex: 1;
-  display: flex;
-  flex-direction: column;
-  align-items: center;
-  padding: 8px 12px;
-  border-right: 1px solid var(--td-border-level-1-color);
-}
-
-.stat-summary-item:last-child {
-  border-right: none;
-}
-
-.stat-summary-item .stat-number {
-  font-size: 20px;
-  font-weight: 600;
-  color: var(--td-text-color-primary);
-  margin-bottom: 2px;
-  line-height: 1;
-}
-
-.stat-summary-item .stat-label {
-  font-size: 12px;
-  color: var(--td-text-color-secondary);
-  text-align: center;
-}
-
-/* 趋势图样式 */
-.stats-trend-card {
-  background-color: var(--td-bg-color-container);
-  border: 1px solid var(--td-border-level-1-color);
-  border-radius: 8px;
-  box-shadow: 0 1px 2px rgba(0, 0, 0, 0.05);
-}
-
-.chart-container {
-  height: 300px;
+.thumbnail-container {
   position: relative;
-}
-
-.chart-empty {
-  display: flex;
-  flex-direction: column;
-  align-items: center;
-  justify-content: center;
-  height: 100%;
-  color: var(--td-text-color-secondary);
-  gap: 8px;
-}
-
-.chart-empty p {
-  margin: 0;
-  font-size: 14px;
-}
-
-.chart-content {
   width: 100%;
-  height: 100%;
+  padding-top: 56.25%; /* 16:9 */
+  border-radius: 12px;
+  overflow: hidden;
+  background-color: #e0e0e0;
+  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.05);
 }
 
-.room-info-card :deep(.t-card__header),
-.stats-card :deep(.t-card__header),
-.audience-card :deep(.t-card__header) {
-  padding: 16px 20px;
-  border-bottom: 1px solid var(--td-border-level-1-color);
-}
+/* 让封面裁剪组件填充缩略容器并可见 */
+.thumbnail-container :deep(.cover-cropper) { position: absolute; inset: 0; }
+.thumbnail-container :deep(.cover-cropper .uploader) { width: 100%; height: 100%; }
 
-.room-info-card :deep(.t-card__title),
-.stats-card :deep(.t-card__title),
-.audience-card :deep(.t-card__title) {
-  font-size: 16px;
-  font-weight: 500;
-  color: var(--td-text-color-primary);
-}
+.cover-readonly { position: absolute; inset: 0; }
+.cover-readonly img { width: 100%; height: 100%; object-fit: cover; }
+.placeholder-wrapper { position: absolute; inset: 0; display:flex; align-items:center; justify-content:center; }
+.placeholder-text { color:#595959; font-size:14px }
 
-.room-info-card :deep(.t-card__body),
-.stats-card :deep(.t-card__body),
-.audience-card :deep(.t-card__body) {
-  padding: 20px;
-}
 
-.room-info-content {
-  display: flex;
-  flex-direction: column;
-  gap: 20px;
-}
-
-.cover-section {
-  display: flex;
-  flex-direction: column;
-  align-items: center;
-  gap: 8px;
-}
-
-.cover-container {
-  position: relative;
+.live-status-badge {
+  position: absolute;
+  top: 12px;
+  left: 12px;
   display: inline-block;
 }
 
-.room-cover {
-  width: 200px;
-  height: 112px;
-  object-fit: cover;
-  border-radius: 8px;
-  border: 1px solid var(--td-border-level-1-color);
-  background-color: var(--td-bg-color-secondarycontainer);
-}
 
-.room-cover-placeholder {
-  background-color: var(--td-bg-color-secondarycontainer);
-}
+.section-subtitle { font-size: 13px; font-weight: 600; color: var(--td-text-color-primary); margin: 8px 0; }
 
-.cover-overlay {
-  position: absolute;
-  bottom: 8px;
-  right: 8px;
-  background-color: rgba(0, 0, 0, 0.6);
-  border-radius: 4px;
-  padding: 4px 8px;
-  opacity: 0;
-  transition: opacity 0.2s;
-}
+/* Control Section */
+.control-section { display: flex; flex-direction: column; gap: 20px; }
+.end-stream-btn { border-radius: 8px; font-weight: 600; }
 
-.cover-container:hover .cover-overlay {
-  opacity: 1;
-}
-
-.cover-edit-btn {
-  color: white;
-  font-size: 12px;
-}
-
-.cover-edit-btn:hover {
-  color: white;
-  background-color: rgba(255, 255, 255, 0.1);
-}
-
-.info-form {
-  flex: 1;
-}
-
-.title-textarea :deep(.t-textarea__inner) {
-  font-size: 14px;
-  line-height: 1.5;
-}
-
-.update-btn {
-  min-width: 80px;
-}
-
-.end-live-btn {
-  min-width: 80px;
-}
-
-.stats-card {
-  flex-shrink: 0;
-}
-
-.stats-card :deep(.t-card__body) {
-  padding: 16px;
-}
-
-.stats-grid {
-  display: grid;
-  grid-template-columns: repeat(2, 1fr);
-  gap: 12px;
-}
-
-.stat-item {
+.custom-stat {
   display: flex;
   flex-direction: column;
-  align-items: center;
-  padding: 16px 12px;
-  background-color: var(--td-bg-color-container-hover);
-  border-radius: 8px;
-  transition: all 0.2s;
+  width: 60px;
 }
 
-.stat-item:hover {
-  background-color: var(--td-bg-color-container-active);
-}
-
-.stat-item .stat-number {
-  font-size: 24px;
-  font-weight: 600;
-  color: var(--td-text-color-primary);
-  margin-bottom: 4px;
-  line-height: 1;
-}
-
-.stat-item .stat-label {
+.custom-stat .stat-title {
   font-size: 12px;
-  color: var(--td-text-color-secondary);
   text-align: center;
+  color: var(--td-text-color-secondary);
 }
 
-
-
-.content-area {
-  flex: 1;
-  display: grid;
-  grid-template-columns: 380px 1fr;
-  gap: 16px;
-  padding: 16px 24px;
-  overflow: hidden;
-  background-color: var(--td-bg-color-secondarycontainer);
-}
-
-.left-panel {
-  display: flex;
-  flex-direction: column;
-  gap: 16px;
-  overflow: hidden;
-}
-
-.right-panel {
-  overflow: hidden;
-}
-
-.audience-card {
-  height: 100%;
-  display: flex;
-  flex-direction: column;
-}
-
-.audience-card :deep(.t-card__body) {
-  flex: 1;
-  display: flex;
-  flex-direction: column;
-  overflow: hidden;
-  padding: 16px;
-}
-.audience-card :deep(.t-card__title) {
+.custom-stat .stat-value {
   font-size: 16px;
-  font-weight: 500;
-}
-
-.audience-actions {
-  display: flex;
-  gap: 8px;
-  align-items: center;
-}
-
-.loading-state,
-.empty-state {
-  display: flex;
-  flex-direction: column;
-  align-items: center;
-  justify-content: center;
-  gap: 12px;
-  padding: 40px;
-  color: var(--td-text-color-secondary);
-}
-.loading-state p,
-.empty-state p {
-  margin: 0;
-  font-size: 14px;
-}
-
-.audience-list {
-  flex: 1;
-  overflow-y: auto;
-  display: flex;
-  flex-direction: column;
-  gap: 1px;
-  background-color: var(--td-border-level-1-color);
-}
-
-.audience-item {
-  display: flex;
-  align-items: center;
-  gap: 16px;
-  padding: 16px 20px;
-  background-color: var(--td-bg-color-container);
-  transition: all 0.2s;
-  min-height: 72px;
-  border-bottom: 1px solid var(--td-border-level-1-color);
-}
-.audience-item:hover {
-  background-color: var(--td-bg-color-container-hover);
-  transform: translateY(-1px);
-  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.08);
-}
-.audience-item.is-manager {
-  background-color: var(--td-brand-color-1);
-}
-
-.user-selection {
-  flex-shrink: 0;
-}
-
-.user-avatar {
-  position: relative;
-  width: 48px;
-  height: 48px;
-  flex-shrink: 0;
-}
-.user-avatar img {
-  width: 100%;
-  height: 100%;
-  border-radius: 50%;
-  object-fit: cover;
-  background-color: var(--td-bg-color-secondarycontainer);
-}
-
-.badge-indicator {
-  position: absolute;
-  bottom: -4px;
-  right: -4px;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  width: 24px;
-  height: 24px;
-  background: linear-gradient(135deg, var(--td-warning-color-5), var(--td-warning-color-6));
-  border-radius: 50%;
-  font-size: 12px;
-  color: white;
-  font-weight: bold;
-  box-shadow: 0 2px 6px rgba(0, 0, 0, 0.25);
-  border: 2px solid var(--td-bg-color-container);
-}
-.badge-indicator span {
-  font-weight: bold;
-}
-
-.user-info {
-  flex: 1;
-  display: flex;
-  flex-direction: column;
-  gap: 8px;
-  min-width: 0;
-}
-
-.user-name {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  font-size: 15px;
-  font-weight: 500;
-  color: var(--td-text-color-primary);
-  margin-bottom: 4px;
-}
-
-.user-name {
-  display: flex;
-  align-items: center;
-  gap: 6px;
-  font-weight: 500;
-  color: var(--td-text-color-primary);
-  margin-bottom: 4px;
-  font-size: 14px;
-}
-
-.manager-tag {
-  font-size: 11px;
-  padding: 1px 4px;
-  height: 18px;
-  line-height: 16px;
-}
-
-.user-stats {
-  display: flex;
-  gap: 24px;
-  color: var(--td-text-color-secondary);
-}
-
-.stat-item {
-  display: flex;
-  flex-direction: column;
-  align-items: center;
-  gap: 2px;
-  min-width: 40px;
-}
-
-.stat-value {
-  font-size: 14px;
   font-weight: 600;
+  text-align: center;
   color: var(--td-text-color-primary);
 }
 
-.stat-label {
-  font-size: 11px;
-  color: var(--td-text-color-secondary);
+/* Plugin Section */
+.plugin-section {
+  margin-top: auto;
 }
 
-.user-actions {
-  flex-shrink: 0;
-  opacity: 0;
-  transition: opacity 0.2s;
-}
-.audience-item:hover .user-actions {
-  opacity: 1;
+
+.plugin-grid {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: 12px;
 }
 
-.upload-trigger {
+.plugin-card {
   display: flex;
   flex-direction: column;
   align-items: center;
-  justify-content: center;
-  width: 120px;
-  height: 68px;
-  border: 2px dashed var(--td-border-level-2-color);
+  gap: 8px;
+  padding: 8px;
   border-radius: 8px;
   cursor: pointer;
   transition: all 0.2s;
 }
-.upload-trigger:hover {
-  border-color: var(--td-brand-color);
-  background-color: var(--td-bg-color-container-hover);
+
+.plugin-card.disabled {
+  opacity: 0.5;
+  pointer-events: none;
 }
-.upload-trigger p {
-  margin: 4px 0;
+
+.plugin-card:hover {
+  background-color: #FFFFFF;
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.05);
+}
+
+.plugin-card:hover .plugin-icon {
+  transform: translateY(-2px);
+  box-shadow: 0 6px 18px rgba(0, 0, 0, 0.12);
+}
+
+.plugin-icon {
+  width: 32px;
+  height: 32px;
+  border-radius: 12px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: white;
+  font-size: 20px;
+  transition: all 0.3s;
+}
+.plugin-icon img{
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+}
+.plugin-card.is-running .plugin-icon {
+  box-shadow: 0 0 0 2px rgba(24, 144, 255, 0.2);
+}
+
+.plugin-name {
+  font-size: 11px;
+  color: #595959;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  width: 64px;
+}
+
+/* Right Main Area */
+.right-main-area {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  background-color: #FFFFFF;
+  width: 100px;
+  position: relative;
+}
+
+/* Gift Leaderboard */
+.gift-leaderboard {
+  padding: 20px 32px;
+  border-bottom: 1px solid #F0F0F0;
+}
+
+.leaderboard-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 8px;
+}
+
+.leaderboard-title { font-size: 14px; font-weight: 600; color: var(--td-text-color-primary); }
+
+
+.leaderboard-content { overflow: hidden; }
+.leaderboard-list {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 12px;
+  padding-bottom: 8px;
+  align-items: center;
+  overflow-x: hidden;
+  overflow-y: hidden;
+}
+
+.leaderboard-vertical {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  max-height: 100%;
+  overflow-y: auto;
+}
+
+.leaderboard-vertical-item {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding:6px
+}
+
+.leaderboard-vertical-item:hover {
+  background: var(--td-bg-color-component-hover, #F5F7FA);
+  border-radius: 4px;
+}
+
+.leaderboard-vertical-item img {
+  width: 36px;
+  height: 36px;
+  border-radius: 50%;
+  object-fit: cover;
+  cursor: pointer;
+  border: 2px solid #E0E0E0;
+}
+
+.lv-name { font-size: 12px; color: var(--td-text-color-primary); }
+.lv-value { font-size: 12px; color: var(--td-text-color-secondary); }
+
+.leaderboard-item {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 8px;
+  position: relative;
+  cursor: pointer;
+}
+
+.avatar-wrapper {
+  position: relative;
+  width: 24px;
+  height: 24px;
+}
+
+.leaderboard-item img {
+  width: 100%;
+  height: 100%;
+  border-radius: 50%;
+  object-fit: cover;
+  border: 2px solid #E0E0E0;
+  cursor: pointer;
+}
+
+/* Top 3 Styles */
+.leaderboard-item.rank-1 img { border-color: #FFD700; }
+.leaderboard-item.rank-2 img { border-color: #C0C0C0; }
+.leaderboard-item.rank-3 img { border-color: #CD7F32; }
+
+.rank-badge {
+  position: absolute;
+  bottom: -4px;
+  right: -4px;
+  width: 18px;
+  height: 18px;
+  background-color: #1D1D1D;
+  color: white;
+  border-radius: 50%;
+  font-size: 10px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border: 2px solid #FFFFFF;
+}
+
+.leaderboard-item.rank-1 .rank-badge { background-color: #FFD700; color: #8B4513; }
+.leaderboard-item.rank-2 .rank-badge { background-color: #C0C0C0; color: #333; }
+.leaderboard-item.rank-3 .rank-badge { background-color: #CD7F32; color: #fff; }
+
+.user-tooltip {
   font-size: 12px;
-  color: var(--td-text-color-secondary);
+  color: #595959;
+  max-width: 64px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.empty-leaderboard {
+  color: #8C8C8C;
+  font-size: 14px;
+  padding: 10px 0;
+}
+
+/* Chat Stream */
+.chat-stream {
+  flex: 1;
+  padding: 24px 32px;
+  overflow-y: auto;
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+  background-color: #FFFFFF;
+}
+
+.chat-empty {
+  height: 100%;
+  width: 100%;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: #8C8C8C;
+}
+
+.chat-message {
+  display: flex;
+  gap: 12px;
+  max-width: 80%;
+}
+
+.chat-message.is-host {
+  align-self: flex-end;
+}
+
+.message-avatar img {
+  width: 36px;
+  height: 36px;
+  border-radius: 50%;
+  object-fit: cover;
+  cursor: pointer;
+}
+
+.message-bubble {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.message-sender {
+  font-size: 12px;
+  color: #8C8C8C;
+}
+.manager-shield { margin-left: 6px; font-size: 12px; }
+.sender-medal { margin-left: 6px; font-size: 12px; color: var(--td-text-color-secondary); }
+
+.chat-message.is-host .message-sender {
+  text-align: right;
+}
+
+.message-content {
+  padding: 10px 16px;
+  border-radius: 12px;
+  font-size: 14px;
+  line-height: 1.5;
+  word-break: break-word;
+}
+
+/* Audience Message */
+.chat-message:not(.is-host) .message-content {
+  background-color: #F0F2F5;
+  color: #000000;
+  border-top-left-radius: 2px;
+}
+
+.message-content:hover {
+  filter: brightness(0.98);
+}
+
+/* Host Message */
+.chat-message.is-host .message-content {
+  background-color: #1890FF;
+  color: #FFFFFF;
+  border-top-right-radius: 2px;
+  box-shadow: 0 2px 8px rgba(24, 144, 255, 0.25);
+}
+
+.chat-message.is-host .message-content:hover {
+  box-shadow: 0 3px 12px rgba(24, 144, 255, 0.35);
+}
+
+/* Input Area */
+.input-area {
+  padding: 20px 32px;
+  background-color: #FFFFFF;
+  border-top: 1px solid #F0F0F0;
+}
+.user-context-popover {
+  position: absolute;
+  z-index: 10;
+  background: #FFFFFF;
+  border: 1px solid #E7E7E7;
+  border-radius: 8px;
+  box-shadow: 0 4px 16px rgba(0,0,0,0.08);
+  min-width: 128px;
+}
+.popover-item { padding: 8px 12px; font-size: 12px; color: var(--td-text-color-primary); cursor: pointer; }
+.popover-item:hover { background: #F5F7FA; }
+.popover-item.danger { color: #D54941; }
+
+.new-messages-bubble {
+  position: absolute;
+  left: 50%;
+  bottom: 84px;
+  transform: translateX(-50%);
+  background: #FFFFFF;
+  border-radius: 16px;
+  box-shadow: 0 2px 10px rgba(0,0,0,0.12);
+  padding: 8px 12px;
+  font-size: 12px;
+  color: var(--td-text-color-primary);
+  cursor: pointer;
+  user-select: none;
+}
+
+.summary-overlay {
+  position: fixed;
+  inset: 0;
+  background: rgba(0,0,0,0.4);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  z-index: 100;
+}
+.summary-card {
+  width: 560px;
+  background: #FFFFFF;
+  border-radius: 12px;
+  box-shadow: 0 12px 32px rgba(0,0,0,0.2);
+  padding: 24px;
+}
+.summary-title { font-size: 18px; font-weight: 600; margin-bottom: 12px; color: var(--td-text-color-primary); }
+.summary-loading { font-size: 14px; color: var(--td-text-color-secondary); text-align: center; }
+.summary-content { display: flex; flex-direction: column; gap: 8px; }
+.summary-row { display: flex; align-items: center; justify-content: space-between; font-size: 14px; }
+
+.chat-input :deep(.t-input) {
+  background-color: #F5F7FA; /* Light grey background */
+  border: none;
+  border-radius: 24px;
+  padding: 8px 16px;
+}
+
+.chat-input :deep(.t-input:focus-within) {
+  background-color: #FFFFFF;
+  box-shadow: 0 0 0 2px rgba(24, 144, 255, 0.2);
 }
 </style>
+.lv-text { display: flex; flex-direction: column; gap: 2px; }
+.lv-name { font-size: 12px; color: var(--td-text-color-primary); }
+.lv-value { font-size: 12px; color: var(--td-text-color-secondary); }

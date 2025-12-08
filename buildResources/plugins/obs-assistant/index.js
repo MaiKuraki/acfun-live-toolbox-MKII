@@ -33,6 +33,8 @@ let state = {
   configLoaded: false,
   lastErrorToastAt: 0,
   overlayLastId: "",
+  autoObsFlowTimer: null,
+  autoFlowActive: false,
 };
 
 async function isObsRunning() {
@@ -135,7 +137,7 @@ async function connectObs() {
     try { console.error('[obs-assistant] connectObs failed', { host, port, hasPassword: !!password, error: state.lastError }); } catch {}
     try { if (e && e.stack) { console.error('[obs-assistant] connectObs stack', e.stack); } } catch {}
     try { tryShowErrorToast(state.lastError); } catch {}
-    try { scheduleObsReconnect('connect_failed'); } catch {}
+    try { if (!(state.autoFlowActive || state.autoObsFlowTimer)) { scheduleObsReconnect('connect_failed'); } } catch {}
     return { ok: false, error: e && e.message ? e.message : String(e) };
   }
 }
@@ -159,7 +161,6 @@ async function getStatus() {
   }
 }
 
-// removed: parseResolution (unused)
 
 async function applyObsSettings(stream, transcodes) {
   const server = String((stream && stream.rtmpUrl) || "").trim();
@@ -243,19 +244,6 @@ async function onConfigUpdated(merged) {
   }
 }
 
-async function cleanup() {
-  try {
-    if (state.obs && typeof state.obs.disconnect === "function") {
-      try {
-        await state.obs.disconnect();
-      } catch {}
-    }
-  } catch {}
-  state.obs = null;
-  state.connected = false;
-  state.connecting = false;
-  return { ok: true };
-}
 
 async function beforeUnloaded() {
   try {
@@ -286,22 +274,13 @@ async function onError(err, context) {
   }
 }
 
+ 
 
-
-function getApiPort() {
-  try {
-    const p = Number((process && process.env && process.env.ACFRAME_API_PORT) || 18299);
-    if (!isNaN(p) && p > 0) return p;
-    return 18299;
-  } catch {
-    return 18299;
-  }
-}
-
-function httpGetJson(pathname) {
+async function httpGetJson(pathname) {
+  const port = await (window && window.getApiPort ? window.getApiPort() : Promise.resolve(0));
+  if (!port) throw new Error('API_PORT_NOT_CONFIGURED');
   return new Promise((resolve, reject) => {
     try {
-      const port = getApiPort();
       const options = { hostname: "127.0.0.1", port, path: String(pathname || "/"), method: "GET", headers: { Accept: "application/json" } };
       const req = http.request(options, (res) => {
         let buf = "";
@@ -321,21 +300,29 @@ function httpGetJson(pathname) {
 }
 async function loadInitialConfig() {
   try {
+    const p = await (window && window.getApiPort ? window.getApiPort() : Promise.resolve(0));
+    if (!p) { try { if (!state.initialConfigRetryTimer) { state.initialConfigRetryTimer = setTimeout(() => { try { state.initialConfigRetryTimer = null; } catch {} try { loadInitialConfig(); } catch {} }, 3000); } } catch {} return; }
     const j = await httpGetJson('/api/plugins/obs-assistant/config');
     if (j && j.success && j.data) {
       const next = Object.assign({}, state.config, j.data || {});
       state.config = next;
+      state.configLoaded = true;
     }
   } catch (e) {
-    try { console.warn('[obs-assistant] initial config load failed', e && e.message ? e.message : String(e)); } catch {}
+    try {
+      if (!state.initialConfigRetryTimer) {
+        state.initialConfigRetryTimer = setTimeout(() => { try { state.initialConfigRetryTimer = null; } catch {} try { loadInitialConfig(); } catch {} }, 3000);
+      }
+    } catch {}
   }
 }
 
-function httpPostJson(pathname, body) {
+async function httpPostJson(pathname, body) {
+  const port = await (window && window.getApiPort ? window.getApiPort() : Promise.resolve(0));
+  if (!port) throw new Error('API_PORT_NOT_CONFIGURED');
+  const payload = JSON.stringify(body || {});
   return new Promise((resolve, reject) => {
     try {
-      const port = getApiPort();
-      const payload = JSON.stringify(body || {});
       const options = { hostname: "127.0.0.1", port, path: String(pathname || "/"), method: "POST", headers: { "Accept": "application/json", "Content-Type": "application/json", "Content-Length": Buffer.byteLength(payload) } };
       const req = http.request(options, (res) => {
         let buf = "";
@@ -355,20 +342,20 @@ function httpPostJson(pathname, body) {
   });
 }
 
-// removed: readonly-store SSE functions and state (now using active fetch before start)
 
-function openPluginOverlaySse() {
+async function openPluginOverlaySse() {
   try {
     try {
       if (state.overlaySseConn) {
         return;
       }
     } catch {}
-    const port = getApiPort();
+    const port = await (window && window.getApiPort ? window.getApiPort() : Promise.resolve(0));
+    if (!port) { try { scheduleOverlaySseReconnect(); } catch {} return; }
     const lastId = String(state.overlayLastId || "").trim();
     const headers = { Accept: "text/event-stream" };
     try { if (lastId) { headers["Last-Event-ID"] = lastId; } } catch {}
-    const options = { hostname: "127.0.0.1", port, path: "/sse/plugins/obs-assistant/overlay", method: "GET", headers };
+    const options = { hostname: "127.0.0.1", port, path: "/sse/plugins/obs-assistant/overlay?types=ui,lifecycle", method: "GET", headers };
   const req = http.request(options, (res) => {
     try {
       if (typeof res.statusCode === 'number' && res.statusCode !== 200) {
@@ -471,6 +458,19 @@ function scheduleObsReconnect(reason) {
   }
 }
 
+function scheduleAutoFlowRetry(reason) {
+  try {
+    if (state.autoObsFlowTimer) {
+      clearTimeout(state.autoObsFlowTimer);
+      state.autoObsFlowTimer = null;
+    }
+  } catch {}
+  const delay = 3000;
+  if (state.currentRoutePath !== "/live/create") return;
+  if (state.connecting) return;
+  try { state.autoObsFlowTimer = setTimeout(() => { tryAutoObsFlow(); state.autoObsFlowTimer = null; }, delay); } catch {}
+}
+
 function postOverlayEvent(event, payload) {
   try {
     const body = { event: String(event || ''), payload: payload || {} };
@@ -481,7 +481,6 @@ function postOverlayEvent(event, payload) {
   }
 }
 
-// removed: emitOverlayEvent; plugin-side now always posts via ApiServer
 let obsTimer = null;
 async function onPluginOverlayEvent(ev, rec) {
   clearTimeout(obsTimer);
@@ -503,6 +502,7 @@ async function onPluginOverlayEvent(ev, rec) {
             state.obsReconnectTimer = null;
           }
           state.obsRetryCount = 0;
+          if (state.autoObsFlowTimer) { clearTimeout(state.autoObsFlowTimer); state.autoObsFlowTimer = null; }
         } catch {}
         obsTimer = setTimeout(()=>{
           tryAutoObsFlow();
@@ -515,6 +515,7 @@ async function onPluginOverlayEvent(ev, rec) {
             state.obsReconnectTimer = null;
           }
           state.obsRetryCount = 0;
+          if (state.autoObsFlowTimer) { clearTimeout(state.autoObsFlowTimer); state.autoObsFlowTimer = null; }
         } catch {}
       }
     } else if (ev === "lifecycle") {
@@ -533,6 +534,7 @@ async function onPluginOverlayEvent(ev, rec) {
 
 async function tryAutoObsFlow() {
   try {
+    state.autoFlowActive = true;
     try { await loadInitialConfig(); } catch {}
     try {
       const auto = !!(state.config && state.config.autoStartObs);
@@ -548,36 +550,55 @@ async function tryAutoObsFlow() {
         if (res && res.ok) {
           try { await showToast("已成功连接，开始尝试推流"); } catch {}
           try {
+            const live = await fetchIsLiveFlag();
+            if (live) {
+              return;
+            }
+          } catch {}
+          try {
             await obsEnsureStopped(5000);
           } catch {}
           try {
             const stream = await fetchLatestStreamInfo();
-            if (stream && stream.rtmpUrl && stream.streamKey) {
+            const url = String(stream && stream.rtmpUrl || "").trim();
+            const key = String(stream && stream.streamKey || "").trim();
+            if (url && key) {
               const cfg = await applyObsSettings({ rtmpUrl: stream.rtmpUrl, streamKey: stream.streamKey }, null);
               if (!cfg || !cfg.ok) {
                 try { await showToast(`推流参数设置失败：${String((cfg && cfg.error) || "未知错误")}`); } catch {}
+                try { scheduleAutoFlowRetry('apply_failed'); } catch {}
                 return;
               }
               const st = await startStreaming();
               if (!st || !st.ok) {
                 try { await showToast(`启动OBS推流失败：${String((st && st.error) || "未知错误")}`); } catch {}
+                try { scheduleAutoFlowRetry('start_failed'); } catch {}
                 return;
               }
+              try {
+                if (state.autoObsFlowTimer) { clearTimeout(state.autoObsFlowTimer); state.autoObsFlowTimer = null; }
+              } catch {}
             } else {
               try { await showToast("未获取到推流地址与密钥"); } catch {}
+              try { scheduleAutoFlowRetry('missing_stream'); } catch {}
             }
           } catch (e2) {
             try { await showToast(`推流流程执行出错：${String((e2 && e2.message) || e2 || "未知错误")}`); } catch {}
+            try { scheduleAutoFlowRetry('flow_exception'); } catch {}
           }
         } else {
           const msg = (res && res.error) ? res.error : "";
-          try { await showToast(`obs连接失败：${String(msg || "未知错误")}`); } catch {}
+          try { tryShowErrorToast(msg); } catch {}
+          try { scheduleAutoFlowRetry('connect_failed'); } catch {}
         }
       }
-    } catch {}
+    } catch {
+      
+    }
   } catch (e) {
     try { console.warn('[obs-assistant] tryAutoObsFlow error', e && e.message ? e.message : String(e)); } catch {}
   }
+  try { state.autoFlowActive = false; } catch {}
 }
 
 async function obsEnsureStopped(timeoutMs) {
@@ -613,6 +634,21 @@ async function fetchLatestStreamInfo() {
     }
   } catch {}
   return null;
+}
+
+async function fetchIsLiveFlag() {
+  try {
+    const j = await httpPostJson("/api/renderer/readonly-store/snapshot", { keys: ["live"] });
+    const d = j && j.data ? j.data : {};
+    const v = d && d.live ? d.live : null;
+    if (!v) return false;
+    if (typeof v.isLive === "boolean") return v.isLive;
+    try {
+      const lid = v && (v.liveId || v.liveID);
+      if (lid) return true;
+    } catch {}
+  } catch {}
+  return false;
 }
 
  

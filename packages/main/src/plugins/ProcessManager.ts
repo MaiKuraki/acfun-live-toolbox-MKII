@@ -17,6 +17,7 @@ export interface PluginProcessInfo {
   pluginId: string;
   workerId: string;
   channelId: string;
+  pluginPath: string;
   status: 'starting' | 'running' | 'stopping' | 'stopped' | 'error';
   startedAt: number;
   lastActivity: number;
@@ -85,7 +86,7 @@ export class ProcessManager extends TypedEventEmitter<ProcessManagerEvents> {
   public async startPluginProcess(
     pluginId: string, 
     pluginPath: string,
-    options: { autoRestart?: boolean } = {},
+    options: { autoRestart?: boolean; apiPort?: number } = {},
     manifest?: any
   ): Promise<PluginProcessInfo> {
     if (this.processes.has(pluginId)) {
@@ -97,7 +98,7 @@ export class ProcessManager extends TypedEventEmitter<ProcessManagerEvents> {
     }
 
     try {
-      const sandboxConfig = this.buildSandboxConfig(pluginId, manifest);
+      const sandboxConfig = this.buildSandboxConfig(pluginId, manifest, options?.apiPort);
       const workerId = await this.workerPool.createWorker(pluginId, pluginPath, sandboxConfig);
       const channelId = `${pluginId}-${workerId}`;
 
@@ -105,6 +106,7 @@ export class ProcessManager extends TypedEventEmitter<ProcessManagerEvents> {
         pluginId,
         workerId,
         channelId,
+        pluginPath,
         status: 'starting',
         startedAt: Date.now(),
         lastActivity: Date.now(),
@@ -135,7 +137,7 @@ export class ProcessManager extends TypedEventEmitter<ProcessManagerEvents> {
     }
   }
 
-  private buildSandboxConfig(pluginId: string, manifest?: any): any {
+  private buildSandboxConfig(pluginId: string, manifest?: any, apiPort?: number): any {
     const roots = [
       path.resolve(process.cwd(), 'packages', 'main'),
       path.resolve(process.cwd()),
@@ -152,7 +154,8 @@ export class ProcessManager extends TypedEventEmitter<ProcessManagerEvents> {
       },
       libs,
       sandbox: {
-        pluginId
+        pluginId,
+        apiPort
       }
     };
   }
@@ -214,10 +217,10 @@ export class ProcessManager extends TypedEventEmitter<ProcessManagerEvents> {
       throw new Error(`Plugin process ${pluginId} not found`);
     }
 
-    // Allow executing 'init' during the 'starting' phase
     if (processInfo.status !== 'running') {
       const allowDuringStarting = processInfo.status === 'starting' && method === 'init';
-      if (!allowDuringStarting) {
+      const allowDuringStopping = processInfo.status === 'stopping' && (method === 'beforeUnloaded' || method === 'cleanup');
+      if (!allowDuringStarting && !allowDuringStopping) {
         throw new Error(`Plugin process ${pluginId} is not running (status: ${processInfo.status})`);
       }
     }
@@ -359,19 +362,22 @@ export class ProcessManager extends TypedEventEmitter<ProcessManagerEvents> {
     try {
       pluginLogger.info('Attempting process recovery', pluginId, { attempt: attempts + 1, reason });
 
-      // Stop current process if it exists
-      if (this.processes.has(pluginId)) {
+      let pluginPath: string | undefined;
+      const existing = this.processes.get(pluginId);
+      if (existing) {
+        pluginPath = existing.pluginPath;
         await this.stopPluginProcess(pluginId, 'recovery');
       }
 
-      // Wait before restart
       await new Promise(resolve => setTimeout(resolve, 1000 * (attempts + 1)));
 
-      // Restart process (this would need plugin path - simplified for now)
-      // await this.startPluginProcess(pluginId, pluginPath);
-
-      this.emit('process.recovered', { pluginId, attempt: attempts + 1 });
-      pluginLogger.info('Process recovery successful', pluginId, { attempt: attempts + 1 });
+      if (pluginPath) {
+        await this.startPluginProcess(pluginId, pluginPath);
+        this.emit('process.recovered', { pluginId, attempt: attempts + 1 });
+        pluginLogger.info('Process recovery successful', pluginId, { attempt: attempts + 1 });
+      } else {
+        throw new Error('Missing pluginPath for recovery');
+      }
 
     } catch (error: any) {
       pluginLogger.error('Process recovery failed', pluginId, error instanceof Error ? error : new Error(String(error)), { attempt: attempts + 1 });
@@ -446,8 +452,7 @@ export class ProcessManager extends TypedEventEmitter<ProcessManagerEvents> {
     }
 
     await this.stopPluginProcess(pluginId, 'restart');
-    // Note: Would need to store plugin path to restart
-    // await this.startPluginProcess(pluginId, pluginPath);
+    await this.startPluginProcess(pluginId, processInfo.pluginPath);
   }
 
   public cleanup(): void {

@@ -2,6 +2,7 @@ import type { NormalizedEvent, NormalizedEventType } from '../types';
 
 const ALLOWED_TYPES: NormalizedEventType[] = [
   'danmaku','gift','follow','like','enter','system',
+  'shareLive','richText','recentComment',
   'bananaCount','displayInfo','topUsers','redpackList',
   'chatCall','chatAccept','chatReady','chatEnd',
   'kickedOut','violationAlert','managerState','end'
@@ -88,6 +89,9 @@ function clampType(t: any): NormalizedEventType {
     s === 'displayinfo' ? 'displayInfo' :
     s === 'topusers' ? 'topUsers' :
     s === 'redpacklist' ? 'redpackList' :
+    s === 'sharelive' ? 'shareLive' :
+    s === 'richtext' ? 'richText' :
+    s === 'recentcomment' ? 'recentComment' :
     s === 'chatcall' ? 'chatCall' :
     s === 'chataccept' ? 'chatAccept' :
     s === 'chatready' ? 'chatReady' :

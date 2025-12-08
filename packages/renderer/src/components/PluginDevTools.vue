@@ -1,19 +1,37 @@
 <template>
   <div class="plugin-dev-tools">
-    <div class="dev-tools-header">
-      <h3>插件开发工具</h3>
-      <p class="description">
-        配置外部Vue/React项目进行插件开发和调试
-      </p>
-    </div>
-
     <div class="dev-tools-content">
       <!-- 外部项目配置 -->
       <div class="config-section">
         <h4>外部项目配置</h4>
         
+        <!-- 1. 插件配置文件 (Moved to top) -->
         <div class="form-group">
-          <label>项目URL地址：</label>
+          <label>插件配置文件(manifest)：</label>
+          <div class="path-input-group">
+            <t-input
+              v-model="config.manifestPath"
+              placeholder="C:\path\to\your\plugin\manifest.json"
+              readonly
+            />
+            <t-button
+              variant="outline"
+              @click="selectManifestPath"
+            >
+              选择文件
+            </t-button>
+          </div>
+          <div class="help-text">
+            选择插件的 manifest.json 文件
+          </div>
+        </div>
+
+        <!-- 2. 开发服务器地址 (Renamed, Conditional) -->
+        <div 
+          v-if="showDevServer"
+          class="form-group"
+        >
+          <label>开发服务器地址：</label>
           <t-input
             v-model="config.projectUrl"
             placeholder="http://localhost:3000"
@@ -30,36 +48,70 @@
           </div>
         </div>
 
-        <div class="form-group">
-          <label>Node.js代码路径：</label>
+        <!-- 2.1 Overlay地址 (Derived) -->
+        <div 
+          v-if="showDevServer && manifestContent?.overlay"
+          class="form-group"
+        >
+          <label>对应的Overlay地址：</label>
+          <t-input
+            :value="overlayUrl"
+            readonly
+            placeholder="等待配置开发服务器地址..."
+          />
+        </div>
+
+        <!-- 2.2 UI地址 (Derived) -->
+        <div 
+          v-if="showDevServer && manifestContent?.ui"
+          class="form-group"
+        >
+          <label>对应的UI地址：</label>
+          <t-input
+            :value="uiUrl"
+            readonly
+            placeholder="等待配置开发服务器地址..."
+          />
+        </div>
+
+        <!-- 2.3 Window地址 (Derived) -->
+        <div 
+          v-if="showDevServer && manifestContent?.window"
+          class="form-group"
+        >
+          <label>对应的Window地址：</label>
+          <t-input
+            :value="windowUrl"
+            readonly
+            disabled
+            placeholder="等待配置开发服务器地址..."
+          />
+        </div>
+
+        <!-- 3. index.js代码路径 (Renamed, Conditional, File selection) -->
+        <div 
+          v-if="showNodePath"
+          class="form-group"
+        >
+          <label>index.js代码路径：</label>
           <div class="path-input-group">
             <t-input
               v-model="config.nodePath"
-              placeholder="C:\path\to\your\plugin\backend"
+              placeholder="C:\path\to\your\plugin\index.js"
               readonly
             />
             <t-button
               variant="outline"
               @click="selectNodePath"
             >
-              选择目录
+              选择文件
             </t-button>
           </div>
           <div class="help-text">
-            选择包含Node.js后端代码的目录
+            选择插件的 index.js 入口文件
           </div>
         </div>
-
-        <div class="form-group">
-          <label>插件ID：</label>
-          <t-input
-            v-model="config.pluginId"
-            placeholder="my-dev-plugin"
-          />
-          <div class="help-text">
-            用于标识开发中的插件
-          </div>
-        </div>
+        
       </div>
 
       <!-- 调试选项 -->
@@ -74,31 +126,16 @@
             文件变化时自动重新加载插件
           </div>
         </div>
-
-        <div class="checkbox-group">
-          <t-checkbox v-model="config.debugMode">
-            调试模式
-          </t-checkbox>
-          <div class="help-text">
-            启用详细的调试日志输出
-          </div>
-        </div>
-
-        <div class="checkbox-group">
-          <t-checkbox v-model="config.autoConnect">
-            自动连接
-          </t-checkbox>
-          <div class="help-text">
-            启动时自动连接到外部项目
-          </div>
-        </div>
       </div>
 
       <!-- 状态显示 -->
       <div class="status-section">
         <h4>连接状态</h4>
         
-        <div class="status-item">
+        <div 
+          v-if="showDevServer"
+          class="status-item"
+        >
           <span class="status-label">前端项目：</span>
           <t-tag :theme="frontendStatus.connected ? 'success' : 'default'">
             {{ frontendStatus.connected ? '已连接' : '未连接' }}
@@ -109,7 +146,10 @@
           >{{ frontendStatus.url }}</span>
         </div>
 
-        <div class="status-item">
+        <div 
+          v-if="showNodePath"
+          class="status-item"
+        >
           <span class="status-label">后端代码：</span>
           <t-tag :theme="backendStatus.loaded ? 'success' : 'default'">
             {{ backendStatus.loaded ? '已加载' : '未加载' }}
@@ -121,89 +161,20 @@
         </div>
       </div>
 
-      <!-- 操作按钮 -->
-      <div class="actions-section">
-        <t-button 
-          theme="primary" 
-          :loading="starting"
-          :disabled="!canStart"
-          @click="startDebugging"
-        >
-          开始调试
-        </t-button>
-        
-        <t-button 
-          :disabled="!isDebugging"
-          @click="stopDebugging"
-        >
-          停止调试
-        </t-button>
-        
-        <t-button 
-          variant="outline"
-          :loading="testing"
-          @click="testConnection"
-        >
-          测试连接
-        </t-button>
-        
-        <t-button 
-          variant="outline"
-          :loading="saving"
-          @click="saveConfig"
-        >
-          保存配置
-        </t-button>
-      </div>
-
-      <!-- 日志输出 -->
-      <div
-        v-if="config.debugMode"
-        class="logs-section"
-      >
-        <h4>调试日志</h4>
-        <div class="logs-container">
-          <div 
-            v-for="(log, index) in debugLogs" 
-            :key="index"
-            class="log-entry"
-            :class="log.level"
-          >
-            <span class="log-time">{{ formatTime(log.timestamp) }}</span>
-            <span class="log-level">{{ log.level.toUpperCase() }}</span>
-            <span class="log-message">{{ log.message }}</span>
-          </div>
-        </div>
-        <div class="logs-actions">
-          <t-button
-            size="small"
-            @click="clearLogs"
-          >
-            清空日志
-          </t-button>
-          <t-button
-            size="small"
-            variant="outline"
-            @click="exportLogs"
-          >
-            导出日志
-          </t-button>
-        </div>
-      </div>
+      <!-- 操作按钮移除，统一由父对话框页脚控制 -->
     </div>
   </div>
 </template>
 
 <script setup lang="ts">
 import { ref, computed, onMounted, onUnmounted } from 'vue';
+const props = defineProps<{ pluginId?: string }>();
 
 interface DevConfig {
   projectUrl: string;
   nodePath: string;
-  pluginId: string;
+  manifestPath: string;
   hotReload: boolean;
-  debugMode: boolean;
-  autoConnect: boolean;
 }
 
 interface ConnectionStatus {
@@ -222,33 +193,90 @@ interface LogEntry {
   timestamp: number;
 }
 
+interface ManifestContent {
+  main?: string;
+  ui?: any;
+  overlay?: any;
+  window?: any;
+  [key: string]: any;
+}
+
 const config = ref<DevConfig>({
   projectUrl: 'http://localhost:3000',
   nodePath: '',
-  pluginId: '',
-  hotReload: true,
-  debugMode: false,
-  autoConnect: false
+  manifestPath: '',
+  hotReload: true
 });
+const derivedPluginId = ref('');
+const manifestContent = ref<ManifestContent | null>(null);
 
 const frontendStatus = ref<ConnectionStatus>({ connected: false });
 const backendStatus = ref<BackendStatus>({ loaded: false });
 const debugLogs = ref<LogEntry[]>([]);
 
 const urlError = ref('');
-const starting = ref(false);
 const testing = ref(false);
-const saving = ref(false);
-const isDebugging = ref(false);
+const testPassed = ref(false);
 
-const canStart = computed(() => {
-  return config.value.projectUrl && 
-         config.value.nodePath && 
-         config.value.pluginId && 
-         !urlError.value;
+// Computed properties for visibility
+const showDevServer = computed(() => {
+  // If manifest is not loaded yet, show by default (or user preference? assuming show all as fallback)
+  if (!manifestContent.value) return true;
+  // Show if any UI related field exists
+  return !!(manifestContent.value.ui || manifestContent.value.overlay || manifestContent.value.window);
+});
+
+const showNodePath = computed(() => {
+  // If manifest is not loaded yet, show by default
+  if (!manifestContent.value) return true;
+  // Show if main field exists
+  return !!manifestContent.value.main;
+});
+
+const canTest = computed(() => {
+  const devServerReady = !showDevServer.value || (config.value.projectUrl && !urlError.value);
+  const nodePathReady = !showNodePath.value || config.value.nodePath;
+  const manifestReady = !!config.value.manifestPath;
+  
+  return devServerReady && nodePathReady && manifestReady;
+});
+
+// Derived URLs
+function joinUrl(base: string, path: string): string {
+  if (!base) return '';
+  if (!path) return base;
+  const baseUrl = base.endsWith('/') ? base : `${base}/`;
+  const cleanPath = path.startsWith('/') ? path.slice(1) : path;
+  return `${baseUrl}${cleanPath}`;
+}
+
+const overlayUrl = computed(() => {
+  if (!config.value.projectUrl || !manifestContent.value?.overlay) return '';
+  // Handle various manifest formats: object with html/path or direct string (though schema usually implies object)
+  const entry = manifestContent.value.overlay;
+  const path = typeof entry === 'string' ? entry : (entry.html || entry.route || '');
+  return joinUrl(config.value.projectUrl, path);
+});
+
+const uiUrl = computed(() => {
+  if (!config.value.projectUrl || !manifestContent.value?.ui) return '';
+  const entry = manifestContent.value.ui;
+  const path = typeof entry === 'string' ? entry : (entry.html || entry.route || '');
+  return joinUrl(config.value.projectUrl, path);
+});
+
+const windowUrl = computed(() => {
+  if (!config.value.projectUrl || !manifestContent.value?.window) return '';
+  const entry = manifestContent.value.window;
+  const path = typeof entry === 'string' ? entry : (entry.html || entry.route || '');
+  return joinUrl(config.value.projectUrl, path);
 });
 
 function validateUrl() {
+  if (!showDevServer.value) {
+    urlError.value = '';
+    return;
+  }
   urlError.value = '';
   if (config.value.projectUrl) {
     try {
@@ -262,119 +290,137 @@ function validateUrl() {
 async function selectNodePath() {
   try {
     const result = await window.electronApi.dialog.showOpenDialog({
-      properties: ['openDirectory'],
-      title: '选择Node.js代码目录'
+      properties: ['openFile'],
+      filters: [{ name: 'JavaScript', extensions: ['js'] }],
+      title: '选择插件入口文件(index.js)'
     });
     
     if (!result.canceled && result.filePaths && result.filePaths.length > 0) {
       config.value.nodePath = result.filePaths[0];
     }
   } catch (error) {
-    addLog('error', `选择目录失败: ${error}`);
+    addLog('error', `选择文件失败: ${error}`);
   }
 }
 
-async function testConnection() {
-  testing.value = true;
-  
+async function selectManifestPath() {
   try {
-    // 测试前端连接
-    const response = await fetch(config.value.projectUrl);
-    if (response.ok) {
-      frontendStatus.value = { connected: true, url: config.value.projectUrl };
-      addLog('info', '前端项目连接成功');
-    } else {
-      throw new Error(`HTTP ${response.status}`);
+    const result = await window.electronApi.dialog.showOpenDialog({
+      properties: ['openFile'],
+      filters: [{ name: 'JSON', extensions: ['json'] }],
+      title: '选择manifest.json文件'
+    });
+    if (!result.canceled && result.filePaths && result.filePaths.length > 0) {
+      config.value.manifestPath = result.filePaths[0];
+      await loadManifestContent();
     }
+  } catch (error) {
+    addLog('error', `选择文件失败: ${error}`);
+  }
+}
+
+async function loadManifestContent() {
+  if (!config.value.manifestPath) {
+    manifestContent.value = null;
+    return;
+  }
+  try {
+    const text = await window.electronApi.fs.readFile(config.value.manifestPath);
+    manifestContent.value = JSON.parse(String(text || '{}'));
+    
+    // Auto-update derivedPluginId if possible
+    const pid = String(manifestContent.value?.id || '').trim();
+    if (pid) derivedPluginId.value = pid;
+    
+  } catch (error) {
+    // console.error('Failed to load manifest:', error);
+    addLog('warn', `无法读取或解析manifest: ${error}`);
+    manifestContent.value = null;
+  }
+}
+
+async function testLoad() {
+  testing.value = true;
+  testPassed.value = false;
+  let lastError = '';
+  let passed = false;
+  try {
+    const payload = {
+      projectUrl: config.value.projectUrl,
+      nodePath: config.value.nodePath,
+      manifestPath: config.value.manifestPath
+    };
+    const res = await window.electronApi.plugin.testConnection(payload);
+    const inner = (res && (res as any).data) || {};
+    const ok = !!inner.success;
+    
+    if (showDevServer.value) {
+      frontendStatus.value = ok && (inner.projectUrl || payload.projectUrl) ? { connected: true, url: payload.projectUrl } : { connected: false };
+    } else {
+      frontendStatus.value = { connected: false };
+    }
+    
+    if (showNodePath.value) {
+      backendStatus.value = ok && (inner.nodePath || payload.nodePath) ? { loaded: true, path: payload.nodePath } : { loaded: false };
+    } else {
+      backendStatus.value = { loaded: false };
+    }
+
+    // Try to update ID if not already set (though loadManifestContent should have done it)
+    if (ok && config.value.manifestPath && !manifestContent.value) {
+      await loadManifestContent();
+    }
+    
+    testPassed.value = !!ok;
+    passed = !!ok;
+    lastError = ok ? '' : String(inner?.error || '测试加载失败');
+    addLog(ok ? 'info' : 'error', ok ? '测试加载通过' : lastError);
   } catch (error) {
     frontendStatus.value = { connected: false };
-    addLog('error', `前端项目连接失败: ${error}`);
-  }
-  
-  // 测试后端路径
-  if (config.value.nodePath) {
-    try {
-      const exists = await window.electronApi.fs.exists(config.value.nodePath);
-      if (exists) {
-        backendStatus.value = { loaded: true, path: config.value.nodePath };
-        addLog('info', '后端代码路径有效');
-      } else {
-        throw new Error('路径不存在');
-      }
-    } catch (error) {
-      backendStatus.value = { loaded: false };
-      addLog('error', `后端路径验证失败: ${error}`);
-    }
-  }
-  
-  testing.value = false;
-}
-
-async function startDebugging() {
-  starting.value = true;
-  
-  try {
-    // 保存配置
-    await saveConfig();
-    
-    // 启动调试会话
-    const debugSession = {
-      pluginId: config.value.pluginId,
-      frontendUrl: config.value.projectUrl,
-      backendPath: config.value.nodePath,
-      hotReload: config.value.hotReload,
-      debugMode: config.value.debugMode
-    };
-    
-    await window.electronApi.plugin.startDebugSession(debugSession);
-    
-    isDebugging.value = true;
-    addLog('info', '调试会话已启动');
-    
-    // 如果启用热重载，开始监听文件变化
-    if (config.value.hotReload) {
-      await window.electronApi.plugin.enableHotReload(config.value.pluginId);
-      addLog('info', '热重载已启用');
-    }
-    
-  } catch (error) {
-    addLog('error', `启动调试失败: ${error}`);
+    backendStatus.value = { loaded: false };
+    lastError = String((error as any)?.message || error);
+    addLog('error', `测试加载失败: ${lastError}`);
+    return { pass: false, error: lastError };
   } finally {
-    starting.value = false;
+    testing.value = false;
   }
-}
-
-async function stopDebugging() {
-  try {
-    await window.electronApi.plugin.stopDebugSession(config.value.pluginId);
-    isDebugging.value = false;
-    addLog('info', '调试会话已停止');
-  } catch (error) {
-    addLog('error', `停止调试失败: ${error}`);
-  }
+  return { pass: passed, error: passed ? '' : lastError } as any;
 }
 
 async function saveConfig() {
-  saving.value = true;
-  
   try {
-    await window.electronApi.plugin.saveDevConfig(config.value);
+    const payload = { ...config.value, pluginId: derivedPluginId.value } as any;
+    await window.electronApi.plugin.saveDevConfig(payload);
     addLog('info', '配置已保存');
   } catch (error) {
     addLog('error', `保存配置失败: ${error}`);
-  } finally {
-    saving.value = false;
   }
 }
 
 async function loadConfig() {
   try {
-    const result = await window.electronApi.plugin.loadDevConfig();
-    if (result && (result as any).success) {
-      const savedConfig = (result as any).data || {};
-      config.value = { ...config.value, ...savedConfig };
-    } else if (result && (result as any).error) {
-      addLog('error', `加载配置失败: ${(result as any).error}`);
+    if (props.pluginId) {
+      const res = await window.electronApi.plugin.loadDevConfig(props.pluginId);
+      if (res && (res as any).success) {
+        const saved = (res as any).data || {};
+        config.value = { ...config.value, ...saved };
+        derivedPluginId.value = props.pluginId || '';
+      } else if (res && (res as any).error) {
+        addLog('error', `加载配置失败: ${(res as any).error}`);
+      }
+    } else {
+      const result = await window.electronApi.plugin.loadDevConfig();
+      if (result && (result as any).success) {
+        const savedConfig = (result as any).data || {};
+        config.value = { ...config.value, ...savedConfig };
+      } else if (result && (result as any).error) {
+        addLog('error', `加载配置失败: ${(result as any).error}`);
+      }
+    }
+    
+    // After loading config, try to load manifest if path exists
+    if (config.value.manifestPath) {
+      await loadManifestContent();
     }
   } catch (error) {
     addLog('error', `加载配置失败: ${error}`);
@@ -418,44 +464,24 @@ function formatTime(timestamp: number): string {
 
 onMounted(async () => {
   await loadConfig();
-  
-  // 如果启用自动连接，尝试连接
-  if (config.value.autoConnect) {
-    await testConnection();
-  }
 });
 
-onUnmounted(() => {
-  // 清理资源
-  if (isDebugging.value) {
-    stopDebugging();
-  }
+onUnmounted(() => {});
+
+defineExpose({
+  testLoad,
+  saveConfig,
+  getConfig: () => ({ ...config.value, pluginId: derivedPluginId.value }),
+  getTestPassed: () => !!testPassed.value
 });
 </script>
 
 <style scoped>
 .plugin-dev-tools {
   padding: 24px;
-  max-width: 800px;
   margin: 0 auto;
 }
 
-.dev-tools-header {
-  margin-bottom: 32px;
-}
-
-.dev-tools-header h3 {
-  margin: 0 0 8px 0;
-  font-size: 24px;
-  font-weight: 600;
-  color: var(--td-text-color-primary);
-}
-
-.description {
-  margin: 0;
-  color: var(--td-text-color-secondary);
-  font-size: 14px;
-}
 
 .config-section {
   margin-bottom: 32px;

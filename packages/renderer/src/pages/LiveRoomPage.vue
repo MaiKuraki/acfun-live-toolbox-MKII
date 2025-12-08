@@ -134,7 +134,7 @@
       >
         <div 
           v-for="room in filteredRooms" 
-          :key="room.liveId"
+          :key="room.id"
           class="room-item"
           :class="{ 
             online: room.status === 'connected',
@@ -158,23 +158,29 @@
           
           <div class="room-info">
             <div class="room-title">
-              {{ room.title || '未知标题' }}
+              {{ displayRoomTitle(room) }}
             </div>
             <div class="room-streamer">
               {{ room.streamer?.userName || '未知主播' }}（UID: {{ room.liverUID }}）
               <a class="t-link t-link--theme-primary t-size-s t-link--hover-underline" @click="openUserSpace(room)">个人空间</a>
             </div>
-            <div class="room-stats">
-              <span class="viewer-count">
+  <div class="room-stats">
+              <span class="viewer-count"  v-if="room.isLive">
                 <t-icon name="user" />
                 {{ room.onlineCount?.toLocaleString() || 0 }}
               </span>
               <span
-                v-if="room.likeCount"
+                 v-if="room.isLive"
                 class="like-count"
               >
                 <t-icon name="thumb-up" />
                 {{ room.likeCount.toLocaleString() }}
+              </span>
+              <span
+                class="status-text live-tag owner"
+                v-if="isCurrentUserRoom(room)"
+              >
+                当前用户
               </span>
               <span
                 class="status-text live-tag"
@@ -185,8 +191,9 @@
               <span
                 class="status-text collect-tag"
                 :class="room.status"
+                v-if="room.isLive"
               >
-                {{ collectStatusLabel(room.status) }}
+                {{ collectStatusLabel(room) }}
               </span>
             </div>
           </div>
@@ -202,10 +209,10 @@
               {{ room.status === 'connected' ? '断开采集' : (room.status === 'connecting' ? '连接采集中' : '连接采集') }}
             </t-button>
             <t-button
-              v-if="room.isLive"
+             v-if="room.isLive"
               size="small"
-              variant="outline"
-              @click="openLivePage(room)"
+              theme="primary"
+              @click="enterLiveRoom(room)"
             >
               进入直播间
             </t-button>
@@ -246,6 +253,7 @@
             v-model="addForm.roomId"
             :options="hotOptions"
             filterable
+            creatable
             clearable
             :loading="hotLoading"
             placeholder="输入房间ID，或下拉选择热门直播"
@@ -270,12 +278,12 @@
     </t-dialog>
 
     <!-- 房间设置对话框 -->
-    <t-dialog 
-      v-model:visible="showSettingsDialog" 
-      width="500px"
-      @confirm="saveSettings"
-      @cancel="closeSettings"
-    >
+        <t-dialog 
+          v-model:visible="showSettingsDialog" 
+          width="500px"
+          @confirm="saveSettings"
+          @cancel="closeSettings"
+        >
       <template #header>{{ settingsRoomTitle }}</template>
       <t-form :data="settingsForm" class="room-settings-form" layout="horizontal" label-align="left" :label-width="180">
         <t-form-item label="是否自动连接采集弹幕" name="autoConnect">
@@ -285,7 +293,17 @@
           <t-switch v-model="settingsForm.notifyOnLiveStart" />
         </t-form-item>
       </t-form>
-    </t-dialog>
+      </t-dialog>
+
+      <t-dialog 
+        v-model:visible="confirmConnectVisible"
+        title="提示"
+        :confirmBtn="{ content: '开启', theme: 'primary', loading: confirmConnectLoading }"
+        @confirm="confirmConnectAndEnter"
+        @cancel="closeConfirmConnect"
+      >
+        开启弹幕采集才能进入直播间查看弹幕及统计数据，需要现在开启吗？
+      </t-dialog>
 
     <!-- 房间详情对话框 -->
     <t-dialog 
@@ -356,10 +374,13 @@ import { ref, computed, onMounted } from 'vue';
 import { useRouter } from 'vue-router';
 import { useRoomStore, type Room } from '../stores/room';
 import { useConsoleStore } from '../stores/console';
+import { getApiBase } from '../utils/hosting';
+import { useAccountStore } from '../stores/account';
 
 const router = useRouter();
 const roomStore = useRoomStore();
 const consoleStore = useConsoleStore();
+const accountStore = useAccountStore();
 
 // 响应式状态
 const searchKeyword = ref('');
@@ -389,15 +410,43 @@ const addFormRules = {
 
 // 计算属性
 const filteredRooms = computed(() => {
-  if (!searchKeyword.value) return roomStore.rooms;
-  
-  const keyword = searchKeyword.value.toLowerCase();
-  return roomStore.rooms.filter(room => 
-    room.liveId.includes(keyword) ||
-    room.title?.toLowerCase().includes(keyword) ||
-    room.streamer?.userName?.toLowerCase().includes(keyword)
-  );
+  const base = (() => {
+    if (!searchKeyword.value) return [...roomStore.rooms];
+    const keyword = searchKeyword.value.toLowerCase();
+    return roomStore.rooms.filter(room =>
+      room.id.includes(keyword) ||
+      room.liveId.includes(keyword) ||
+      (room.title || '').toLowerCase().includes(keyword) ||
+      (room.streamer?.userName || '').toLowerCase().includes(keyword)
+    );
+  })();
+  const myUid = Number(accountStore?.userInfo?.userID || 0) || 0;
+  const isMine = (r: Room) => {
+    const uidStr = String(myUid || '');
+    return uidStr && (String(r.liverUID || '') === uidStr || String(r.id || '') === uidStr || String(r.streamer?.userId || '') === uidStr);
+  };
+  base.sort((a, b) => {
+    const aLive = a.isLive ? 1 : 0;
+    const bLive = b.isLive ? 1 : 0;
+    if (aLive !== bLive) return bLive - aLive;
+    const aMine = isMine(a) ? 1 : 0;
+    const bMine = isMine(b) ? 1 : 0;
+    if (aMine !== bMine) return bMine - aMine;
+    const ap = typeof a.priority === 'number' ? a.priority : 999;
+    const bp = typeof b.priority === 'number' ? b.priority : 999;
+    if (ap !== bp) return ap - bp;
+    const aTs = typeof a.lastEventAt === 'number' ? a.lastEventAt : (a.lastUpdate?.getTime?.() || 0);
+    const bTs = typeof b.lastEventAt === 'number' ? b.lastEventAt : (b.lastUpdate?.getTime?.() || 0);
+    return bTs - aTs;
+  });
+  return base;
 });
+
+const isCurrentUserRoom = (room: Room) => {
+  const myUid = Number(accountStore?.userInfo?.userID || 0) || 0;
+  const uidStr = String(myUid || '');
+  return uidStr && (String(room.liverUID || '') === uidStr || String(room.id || '') === uidStr || String(room.streamer?.userId || '') === uidStr);
+};
 
 // 方法
 const refreshRooms = async () => {
@@ -406,6 +455,9 @@ const refreshRooms = async () => {
 
 
 
+onMounted(() => {
+  try { refreshRooms(); } catch {}
+});
 const getStatusText = (status: string) => {
   switch (status) {
     case 'connected': return '直播中';
@@ -416,14 +468,29 @@ const getStatusText = (status: string) => {
   }
 };
 
-const collectStatusLabel = (status: string) => {
-  switch (status) {
-    case 'connected': return '😊 弹幕获取中';
-    case 'connecting': return '⏳ 连接采集中';
-    case 'error': return '采集错误';
-    default: return '未连接采集';
-  }
-};
+  const collectStatusLabel = (room: any) => {
+    const status = room?.status;
+    const isLive = Boolean(room?.isLive);
+    switch (status) {
+      case 'connected':
+        return isLive ? '😊 弹幕获取中' : '未开播';
+      case 'connecting':
+        return '⏳ 连接采集中';
+      case 'error':
+        return '采集错误';
+      default:
+        return '弹幕未采集';
+    }
+  };
+
+  const displayRoomTitle = (room: Room) => {
+    const t = String(room?.title || '').trim();
+    if (t) return t;
+    const name = String(room?.streamer?.userName || '').trim();
+    if (name) return `${name}的直播间`;
+    const id = String(room?.liveId || room?.id || '').trim();
+    return id ? `直播间 ${id}` : '直播间';
+  };
 
 const validateRoomId = () => {
   const roomId = addForm.value.roomId.trim();
@@ -441,21 +508,26 @@ const validateRoomId = () => {
 const hotLives = ref<any[]>([]);
 const hotLoading = ref(false);
 const hotError = ref<string | null>(null);
-const hotOptions = computed(() => {
-  const list = hotLives.value || [];
-  return list.map((item: any) => {
-    const uid = item?.streamer?.userId ?? item?.owner?.userID ?? item?.userId;
-    const title = String(item?.title || '未知标题');
-    const name = String((item?.streamer && item.streamer.userName) || (item?.owner && item.owner.username) || '未知主播');
-    const viewers = typeof item?.onlineCount === 'number' ? item.onlineCount : (typeof item?.viewerCount === 'number' ? item.viewerCount : 0);
-    return { label: `${title} ｜ ${name} ｜ 观众 ${viewers}`, value: String(uid || '') };
+  const hotOptions = computed(() => {
+    const list = hotLives.value || [];
+    return list.map((item: any) => {
+      const uid = item?.streamer?.userId ?? item?.owner?.userID ?? item?.userId;
+      const name = String((item?.streamer && item.streamer.userName) || (item?.owner && item.owner.username) || '').trim();
+      const titleRaw = String(item?.title || '').trim();
+      const title = titleRaw || (name ? `${name}的直播间` : '直播间');
+      const viewers = typeof item?.onlineCount === 'number' ? item.onlineCount : (typeof item?.viewerCount === 'number' ? item.viewerCount : 0);
+      return { label: `${title} ｜ ${name} ｜ 观众 ${viewers}`, value: String(uid || '') };
+    });
   });
-});
 const fetchHotLives = async () => {
   try {
     hotLoading.value = true;
     hotError.value = null;
-    const res = await window.electronApi.http.get('/api/acfun/live/hot-lives', { page: 0, size: 20 });
+    const url = new URL('/api/acfun/live/hot-lives', getApiBase());
+    url.searchParams.set('page', '0');
+    url.searchParams.set('size', '20');
+    const r = await fetch(url.toString(), { method: 'GET' });
+    const res = await r.json();
     if (res && res.success) {
       const list = Array.isArray(res?.data?.lives) ? res.data.lives : [];
       hotLives.value = Array.isArray(list) ? list : [];
@@ -511,13 +583,23 @@ const resetAddForm = () => {
 
 const toggleConnection = async (room: Room) => {
   try {
-    if (room.status === 'connected') {
+    const st = await window.electronApi.room.status(room.id);
+    const status = String(st?.status || '');
+    const mapped = status.toLowerCase();
+    if (mapped === 'connected' || mapped === 'open') {
       const res = await window.electronApi.room.disconnect(room.id);
-      if (!res?.success) console.warn('disconnect failed:', res?.error || res);
-    } else {
-      const res = await window.electronApi.room.connect(room.id);
-      if (!res?.success) console.warn('connect failed:', res?.error || res);
+      if (res?.success) {
+        try { window.electronApi.popup.toast('已断开采集'); } catch {}
+        try { roomStore.updateRoomStatus(room.id, 'disconnected'); } catch {}
+      } else {
+        try { window.electronApi.popup.toast('断开采集失败'); } catch {}
+        try { roomStore.updateRoomStatus(room.id, mapped); } catch {}
+      }
+      await refreshRooms();
+      return;
     }
+    const res = await window.electronApi.room.connect(room.id);
+    if (!res?.success) console.warn('connect failed:', res?.error || res);
     await refreshRooms();
   } catch (error) {
     console.error('切换连接状态失败:', error);
@@ -525,13 +607,74 @@ const toggleConnection = async (room: Room) => {
 };
 
 const viewRoomDetails = (room: Room) => {
-  selectedRoomId.value = room.liveId;
+  selectedRoomId.value = room.id;
   showDetailsDialog.value = true;
 };
 
 const openLivePage = (room: Room) => {
-  const url = `https://live.acfun.cn/live/${room.liveId}`;
+  const url = `https://live.acfun.cn/live/${room.liveId || room.id}`;
   window.electronApi.system.openExternal(url);
+};
+
+const confirmConnectVisible = ref(false);
+const confirmConnectRoomId = ref<string | null>(null);
+const confirmConnectLoading = ref(false);
+
+const enterLiveRoom = async (room: Room) => {
+  try {
+    const st = await window.electronApi.room.status(room.id);
+    const s = String(st?.status || '').toLowerCase();
+    if (s === 'connected' || s === 'open') {
+      router.push({ name: 'LiveManage', params: { roomId: room.id } });
+      return;
+    }
+    if (room.isLive) {
+      confirmConnectRoomId.value = room.id;
+      confirmConnectVisible.value = true;
+      return;
+    }
+    router.push({ name: 'LiveManage', params: { roomId: room.id } });
+  } catch {
+    if (room.isLive) {
+      confirmConnectRoomId.value = room.id;
+      confirmConnectVisible.value = true;
+      return;
+    }
+    router.push({ name: 'LiveManage', params: { roomId: room.id } });
+  }
+};
+
+const closeConfirmConnect = () => {
+  confirmConnectVisible.value = false;
+  confirmConnectRoomId.value = null;
+};
+
+const confirmConnectAndEnter = async () => {
+  if (!confirmConnectRoomId.value) return;
+  try {
+    confirmConnectLoading.value = true;
+    await window.electronApi.room.connect(confirmConnectRoomId.value);
+    let ok = false;
+    for (let i = 0; i < 10; i++) {
+      await new Promise(r => setTimeout(r, 500));
+      const st = await window.electronApi.room.status(confirmConnectRoomId.value);
+      const s = String(st?.status || '').toLowerCase();
+      if (s === 'connected' || s === 'open') { ok = true; break; }
+    }
+    confirmConnectVisible.value = false;
+    confirmConnectLoading.value = false;
+    if (ok) {
+      try { await refreshRooms(); } catch {}
+      router.push({ name: 'LiveManage', params: { roomId: confirmConnectRoomId.value } });
+    } else {
+      try { window.electronApi.popup.toast('连接失败，请稍后重试'); } catch {}
+    }
+  } catch (e) {
+    confirmConnectLoading.value = false;
+    try { window.electronApi.popup.toast('连接失败'); } catch {}
+  } finally {
+    confirmConnectRoomId.value = null;
+  }
 };
 
 const openUserSpace = (room: Room) => {
@@ -545,43 +688,57 @@ const onCoverError = (e: Event) => {
   if (target) target.src = '/default-cover.png';
 };
 
-const getRoomMenuOptions = (room: Room) => [
+const getRoomMenuOptions = (room: Room) => {
+  const opts = [
+    {
+      content: '房间设置',
+      value: 'settings',
+      onClick: () => openSettings(room)
+    },
   {
-    content: '房间设置',
-    value: 'settings',
-    onClick: () => openSettings(room)
-  },
-  {
-    content: '查看弹幕',
-    value: 'danmu',
-    onClick: () => router.push(`/live/danmu/${room.liveId}`)
-  },
-  {
-    content: '复制链接',
-    value: 'copy',
-    onClick: () => copyRoomLink(room)
-  },
-  {
-    content: '删除房间',
-    value: 'delete',
-    theme: 'error',
-    onClick: () => deleteRoom(room)
+      content: '查看弹幕',
+      value: 'danmu',
+      onClick: () => router.push(`/live/danmu/${room.id}`)
+    },
+    {
+      content: '复制链接',
+      value: 'copy',
+      onClick: () => copyRoomLink(room)
+    },
+    {
+      content: '删除房间',
+      value: 'delete',
+      theme: 'error',
+      onClick: () => deleteRoom(room)
+    }
+  ];
+  if (room.isLive) {
+    opts.splice(2, 0, {
+      content: '查看网页',
+      value: 'web',
+      onClick: () => openLivePage(room)
+    });
   }
-];
+  return opts;
+};
 
 const copyRoomLink = (room: Room) => {
-  const url = `https://live.acfun.cn/live/${room.liveId}`;
+  const url = `https://live.acfun.cn/live/${room.liveId || room.id}`;
   navigator.clipboard.writeText(url);
   // TODO: 显示成功提示
 };
 
-const editRoom = (_room: Room) => {
-  // TODO: 实现房间编辑功能
-};
 
 const deleteRoom = async (room: Room) => {
   try {
-    await roomStore.removeRoom(room.liveId);
+    const resp: any = await window.electronApi.popup.confirm(
+      '确认删除房间？',
+      '删除房间后将无法采集弹幕，历史弹幕仍然保留。确定删除该房间吗？',
+      { confirmBtn: { content: '删除', theme: 'danger' }, cancelBtn: { content: '取消' }, contextId: 'room-delete' }
+    );
+    const ok = resp?.result === true || resp === true;
+    if (!ok) return;
+    await roomStore.removeRoom(room.id);
     await refreshRooms();
   } catch (error) {
     console.error('删除房间失败:', error);
@@ -874,6 +1031,11 @@ const formatLastActivity = (timestamp: number | null) => {
   border-radius: 4px;
   font-size: 11px;
   font-weight: 500;
+  background-color: var(--td-brand-color-1);
+  color: var(--td-brand-color);
+}
+
+.status-text.owner {
   background-color: var(--td-brand-color-1);
   color: var(--td-brand-color);
 }

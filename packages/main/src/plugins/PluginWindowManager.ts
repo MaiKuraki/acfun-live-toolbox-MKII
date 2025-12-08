@@ -1,6 +1,8 @@
 import { BrowserWindow } from 'electron';
 import path from 'path';
 import { getLogManager } from '../logging/LogManager';
+import { ConfigManager } from '../config/ConfigManager';
+import type { PluginManager } from './PluginManager';
 
 const VITE_DEV_SERVER_URL = process.env['VITE_DEV_SERVER_URL'];
 
@@ -10,6 +12,22 @@ const VITE_DEV_SERVER_URL = process.env['VITE_DEV_SERVER_URL'];
  */
 export class PluginWindowManager {
   private windows: Map<string, BrowserWindow> = new Map();
+  private configManager?: ConfigManager;
+  private pluginManager?: PluginManager;
+
+  constructor(configManager?: ConfigManager) {
+    this.configManager = configManager;
+  }
+
+  public setPluginManager(pluginManager: PluginManager): void {
+    this.pluginManager = pluginManager;
+  }
+
+  public getWindow(pluginId: string): BrowserWindow | undefined {
+    const win = this.windows.get(pluginId);
+    if (win && !win.isDestroyed()) return win;
+    return undefined;
+  }
 
   public async open(pluginId: string): Promise<{ success: boolean; error?: string }> {
     try {
@@ -20,14 +38,41 @@ export class PluginWindowManager {
         return { success: true };
       }
 
+      // Get window config from manifest
+      let width = 800;
+      let height = 600;
+      let minWidth = 480;
+      let minHeight = 360;
+      let resizable = true;
+      let frame = false;
+      let transparent = false;
+      let alwaysOnTop = false;
+
+      if (this.pluginManager) {
+        const plugin = this.pluginManager.getPlugin(pluginId);
+        if (plugin?.manifest?.window) {
+          const conf = plugin.manifest.window;
+          if (typeof conf.width === 'number') width = conf.width;
+          if (typeof conf.height === 'number') height = conf.height;
+          if (typeof conf.minWidth === 'number') minWidth = conf.minWidth;
+          if (typeof conf.minHeight === 'number') minHeight = conf.minHeight;
+          if (typeof conf.resizable === 'boolean') resizable = conf.resizable;
+          if (typeof conf.frame === 'boolean') frame = conf.frame;
+          if (typeof conf.transparent === 'boolean') transparent = conf.transparent;
+          if (typeof conf.alwaysOnTop === 'boolean') alwaysOnTop = conf.alwaysOnTop;
+        }
+      }
+
       const win = new BrowserWindow({
         show: false,
-        width: 800,
-        height: 600,
-        minWidth: 480,
-        minHeight: 360,
-        frame: false,
-        resizable: true,
+        width,
+        height,
+        minWidth,
+        minHeight,
+        frame,
+        resizable,
+        transparent,
+        alwaysOnTop,
         webPreferences: {
           nodeIntegration: false,
           contextIsolation: true,
@@ -57,10 +102,20 @@ export class PluginWindowManager {
 
       // Load renderer with route
       const hashRoute = `#/plugins/${encodeURIComponent(pluginId)}/window`;
+      const port = (() => {
+        try {
+          if (this.configManager) {
+            const p = Number(this.configManager.get<number>('server.port'));
+            if (Number.isFinite(p) && p > 0 && p <= 65535) return p;
+          }
+        } catch {}
+        return undefined;
+      })();
+      const search = port ? `?apiPort=${port}` : '';
       if (VITE_DEV_SERVER_URL) {
-        await win.loadURL(`${VITE_DEV_SERVER_URL}${hashRoute}`);
+        await win.loadURL(`${VITE_DEV_SERVER_URL}${search}${hashRoute}`);
       } else {
-        await win.loadFile(path.join(__dirname, '../../renderer/dist/index.html'), { hash: hashRoute.replace(/^#/, '') });
+        await win.loadFile(path.join(__dirname, '../../renderer/dist/index.html'), { hash: hashRoute.replace(/^#/, ''), search });
       }
 
       win.on('closed', () => {
@@ -133,4 +188,3 @@ export class PluginWindowManager {
     try { win.webContents.send(channel, payload); return true; } catch { return false; }
   }
 }
-

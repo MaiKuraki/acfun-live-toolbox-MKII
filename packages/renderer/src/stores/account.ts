@@ -113,7 +113,9 @@ export const useAccountStore = defineStore('account', () => {
         console.warn('Startup auth check error:', error);
       }
       try {
-        const s = await window.electronApi.http.get('/api/acfun/auth/status');
+        const base = (await import('../utils/hosting')).getApiBase()
+        const r = await fetch(new URL('/api/acfun/auth/status', base).toString(), { method: 'GET' })
+        const s = await r.json()
         const authed = !!(s && s.success && s.data && s.data.authenticated);
         if (!authed) {
           userInfo.value = null;
@@ -130,7 +132,9 @@ export const useAccountStore = defineStore('account', () => {
 
   async function syncAuthStatus() {
     try {
-      const s = await window.electronApi.http.get('/api/acfun/auth/status');
+      const base = (await import('../utils/hosting')).getApiBase()
+      const r = await fetch(new URL('/api/acfun/auth/status', base).toString(), { method: 'GET' })
+      const s = await r.json()
       const authed = !!(s && s.success && s.data && s.data.authenticated);
       if (!authed) {
         userInfo.value = null;

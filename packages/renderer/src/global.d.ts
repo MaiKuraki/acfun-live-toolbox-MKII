@@ -62,6 +62,8 @@ declare global {
       system: {
         getConfig: () => Promise<Record<string, any>>;
         updateConfig: (newConfig: any) => Promise<{ success: boolean; error?: string }>;
+        serverStatus: () => Promise<{ success: boolean; data?: { running: boolean; port: number; error?: string; health?: any }; error?: string }>;
+        restartServer: (opts?: { port?: number }) => Promise<{ success: boolean; error?: string }>;
         getSystemLog: (count?: number) => Promise<any>;
         genDiagnosticZip: () => Promise<any>;
         showItemInFolder: (path: string) => Promise<{ success: boolean; error?: string }>;
@@ -89,6 +91,10 @@ declare global {
         importZip: (zipPath: string) => Promise<{ success: boolean; error?: string }>;
         setDir: (dir: string) => Promise<{ success: boolean; error?: string }>;
       };
+      db: {
+        setPath: (p: string) => Promise<{ success: boolean; error?: string }>;
+        getPath: () => Promise<{ success: boolean; path?: string; error?: string }>;
+      };
       room: {
         connect: (roomId: string) => Promise<{ success: boolean; code?: string; error?: string }>;
         disconnect: (roomId: string) => Promise<{ success: boolean; code?: string; error?: string }>;
@@ -107,7 +113,7 @@ declare global {
               success: true;
               data: {
                 roomId: string;
-                liveId?: string;
+                liveId: string;
                 title: string;
                 isLive: boolean;
                 status: string;
@@ -176,6 +182,7 @@ declare global {
         enableHotReload: (pluginId: string) => Promise<{ success: boolean; error?: string }>;
         disableHotReload: (pluginId: string) => Promise<{ success: boolean; error?: string }>;
         testConnection: (config: any) => Promise<{ success: boolean; error?: string }>;
+        openPluginsDir: () => Promise<{ success: boolean; error?: string }>;
         // 插件窗口能力：提供打开/关闭/聚焦/查询等接口
         window: {
           open: (pluginId: string) => Promise<{ success: boolean; error?: string }>;
@@ -243,5 +250,6 @@ declare global {
       on: (channel: string, listener: (...args: any[]) => void) => void;
       off: (channel: string, listener: (...args: any[]) => void) => void;
     };
+    __runtime?: { apiPort?: number };
   }
 }

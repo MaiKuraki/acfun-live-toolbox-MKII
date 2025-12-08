@@ -18,7 +18,7 @@ export interface PluginAPI {
   callAcfun(req: { method: 'GET' | 'POST' | 'PUT' | 'DELETE'; path: string; body?: any }): Promise<any>;
 
   pluginStorage: {
-    write(table: string, row: any): Promise<void>;
+    write(row: any): Promise<void>;
   };
 
   registerHttpRoute(
@@ -526,33 +526,25 @@ export class ApiBridge implements PluginAPI {
   }
 
   /**
-   * 插件存储：每插件独立前缀表，写入 JSON 行。主进程代写。
+   * 插件存储：写入统一的 plugin_storage 表。
    */
-  async pluginStorageWrite(table: string, row: any): Promise<void> {
-    await this.pluginStorage.write(table, row);
+  async pluginStorageWrite(row: any): Promise<void> {
+    await this.pluginStorage.write(row);
   }
 
   public pluginStorage = {
-    write: async (table: string, row: any): Promise<void> => {
-      const validName = /^[a-zA-Z0-9_]+$/;
-      if (!validName.test(table)) {
-        throw new Error('INVALID_TABLE_NAME');
-      }
-      const pluginId = this.pluginId;
-      if (!validName.test(pluginId)) {
-        throw new Error('INVALID_PLUGIN_ID');
-      }
-
+    write: async (row: any): Promise<void> => {
       const db = this.databaseManager.getDb();
-      const tableName = `plugin_${pluginId}_${table}`;
+      const tableName = `plugin_storage`;
 
-      // 建表（若不存在），包含 id/data/created_at
+      // 建表（若不存在），包含 id/plugin_id/createTime/data
       await new Promise<void>((resolve, reject) => {
         db.run(
           `CREATE TABLE IF NOT EXISTS ${tableName} (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
-            data TEXT NOT NULL,
-            created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+            plugin_id TEXT NOT NULL,
+            createTime INTEGER NOT NULL,
+            data TEXT NOT NULL
           )`,
           (err) => (err ? reject(err) : resolve())
         );
@@ -561,8 +553,8 @@ export class ApiBridge implements PluginAPI {
       // 插入 JSON 数据
       await new Promise<void>((resolve, reject) => {
         db.run(
-          `INSERT INTO ${tableName} (data) VALUES (?)`,
-          [JSON.stringify(row ?? {})],
+          `INSERT INTO ${tableName} (plugin_id, createTime, data) VALUES (?, ?, ?)`,
+          [this.pluginId, Date.now(), JSON.stringify(row ?? {})],
           (err) => (err ? reject(err) : resolve())
         );
       });
@@ -611,11 +603,35 @@ export class ApiBridge implements PluginAPI {
       startDanmu: async (liverUID: string, callback?: (event: any) => void) => {
         const db = this.databaseManager.getDb();
         const writer = new (require('../persistence/DanmuSQLiteWriter').DanmuSQLiteWriter)(db);
+        let currentSessionId: string | null = null;
+        let currentLiveId: string | null = null;
         const cb = (e: any) => {
-          try { writer.handleEvent(String(liverUID), e); } catch {}
+          try {
+            if (!currentLiveId && currentSessionId && this.acfunApi?.danmu) {
+              const detail = this.acfunApi.danmu.getSessionDetail(currentSessionId);
+              if (detail && detail.success && (detail as any).data) {
+                currentLiveId = String((detail as any).data.liveID || '');
+              }
+            }
+            if (currentLiveId) {
+              writer.handleEvent(String(currentLiveId), e);
+            }
+          } catch {}
           try { if (typeof callback === 'function') callback(e); } catch {}
         };
-        return this.invokeAcfun(() => this.acfunApi.danmu.startDanmu(liverUID, cb));
+        const res = await this.invokeAcfun(() => this.acfunApi.danmu.startDanmu(liverUID, cb));
+        try {
+          if (res && (res as any).success && (res as any).data) {
+            currentSessionId = String((res as any).data.sessionId || '');
+            if (currentSessionId && this.acfunApi?.danmu) {
+              const detail = this.acfunApi.danmu.getSessionDetail(currentSessionId);
+              if (detail && detail.success && (detail as any).data) {
+                currentLiveId = String((detail as any).data.liveID || '');
+              }
+            }
+          }
+        } catch {}
+        return res;
       },
       stopDanmu: async (sessionId: string) => {
         return this.invokeAcfun(() => this.acfunApi.danmu.stopDanmu(sessionId));

@@ -1,10 +1,9 @@
 import express from 'express';
 import { DataManager } from '../persistence/DataManager';
 import { IPluginManager } from '../types/contracts';
-import { EventSourceService } from 'acfunlive-http-api/dist/services/EventSourceService';
-import { ImageService } from 'acfunlive-http-api/dist/services/ImageService';
-import { HttpClient } from 'acfunlive-http-api/dist/core/HttpClient';
+
 import { TokenManager } from './TokenManager';
+import { RoomManager } from '../rooms/RoomManager';
 import { DatabaseManager } from '../persistence/DatabaseManager';
 import { rateLimitManager } from './ApiRateLimitManager';
 import { AcfunApiProxyConfig,  ApiResponse } from './types/AcfunApiTypes';
@@ -18,12 +17,14 @@ export class AcfunApiProxy {
   private acfunApi: any;
   private tokenManager: TokenManager;
   private config: AcfunApiProxyConfig;
-  private eventSourceService: EventSourceService;
-  private imageService: ImageService;
-  private httpClient: HttpClient;
+  
   private databaseManager?: DatabaseManager;
   private pluginManager?: IPluginManager;
   private dataManager = DataManager.getInstance();
+  private roomManager?: RoomManager;
+  private static readonly STREAM_STATUS_TTL_MS = 3000;
+  private streamStatusCache = new Map<string, { ts: number; resp: ApiResponse }>();
+  private streamStatusInFlight = new Map<string, Promise<ApiResponse>>();
 
   constructor(config: AcfunApiProxyConfig = {}, tokenManager?: TokenManager, databaseManager?: DatabaseManager) {
     this.config = {
@@ -41,16 +42,7 @@ export class AcfunApiProxy {
     this.acfunApi = this.tokenManager.getApiInstance();
 
     // 初始化独立的服务
-    this.httpClient = new HttpClient({
-      timeout: 30000,
-      retryCount: 3,
-      baseUrl: 'https://api-plus.acfun.cn',
-      headers: {
-        'User-Agent': 'AcFun Live Toolbox'
-      }
-    });
-    this.eventSourceService = new EventSourceService(this.httpClient);
-    this.imageService = new ImageService(this.httpClient);
+    
     this.databaseManager = databaseManager;
 
     this.initializeAuthentication();
@@ -58,6 +50,10 @@ export class AcfunApiProxy {
 
   public setPluginManager(pm: IPluginManager): void {
     this.pluginManager = pm;
+  }
+
+  public setRoomManager(rm: RoomManager): void {
+    this.roomManager = rm;
   }
 
   private broadcast(kind: string, event: string, data: any): void {
@@ -201,6 +197,11 @@ export class AcfunApiProxy {
       return await this.handleManagerEndpoints(method, pathSegments.slice(1), req);
     }
 
+    // 本地房间管理端点
+    if (pathSegments[0] === 'room') {
+      return await this.handleRoomEndpoints(method, pathSegments.slice(1), req);
+    }
+
     // 徽章相关端点
     if (pathSegments[0] === 'badge') {
       return await this.handleBadgeEndpoints(method, pathSegments.slice(1), req);
@@ -217,16 +218,88 @@ export class AcfunApiProxy {
     }
 
     // EventSource 相关端点
-    if (pathSegments[0] === 'eventsource') {
-      return await this.handleEventSourceEndpoints(method, pathSegments.slice(1), req);
-    }
-
-    // 图片相关端点
-    if (pathSegments[0] === 'image') {
-      return await this.handleImageEndpoints(method, pathSegments.slice(1), req);
-    }
+    
 
     return null; // 未匹配到特定端点，使用通用代理
+  }
+
+  /**
+   * 处理本地房间管理相关端点
+   */
+  private async handleRoomEndpoints(method: string, pathSegments: string[], req: express.Request): Promise<ApiResponse> {
+    try {
+      if (!this.roomManager) {
+        return { success: false, error: 'RoomManager not initialized', code: 503 };
+      }
+
+      switch (pathSegments[0]) {
+        case 'list':
+          if (method === 'GET') {
+            const rooms = this.roomManager.getAllRooms();
+            // 过滤掉 circular structure (adapter) 避免序列化错误
+            const safeRooms = rooms.map(r => ({
+              roomId: r.roomId,
+              status: r.status,
+              connectedAt: r.connectedAt,
+              eventCount: r.eventCount,
+              priority: r.priority,
+              label: r.label,
+              liveId: r.liveId,
+              streamInfo: r.streamInfo,
+              isManager: r.isManager,
+              lastError: r.lastError?.message
+            }));
+            return { success: true, data: safeRooms, code: 200 };
+          }
+          break;
+
+        case 'status':
+          if (method === 'GET') {
+            const roomId = req.query.roomId as string;
+            if (!roomId) return { success: false, error: 'roomId is required', code: 400 };
+            const room = this.roomManager.getRoomInfo(roomId);
+            if (!room) return { success: false, error: `找不到房间id${roomId}的信息`, code: 404 };
+            
+            const safeRoom = {
+              roomId: room.roomId,
+              status: room.status,
+              connectedAt: room.connectedAt,
+              eventCount: room.eventCount,
+              priority: room.priority,
+              label: room.label,
+              liveId: room.liveId,
+              streamInfo: room.streamInfo,
+              isManager: room.isManager,
+              lastError: room.lastError?.message
+            };
+            return { success: true, data: safeRoom, code: 200 };
+          }
+          break;
+          
+        case 'add':
+          if (method === 'POST') {
+             const { roomId } = req.body;
+             if (!roomId) return { success: false, error: 'roomId is required', code: 400 };
+             const success = await this.roomManager.addRoom(String(roomId));
+             return { success, code: success ? 200 : 400, error: success ? undefined : 'Failed to add room' };
+          }
+          break;
+
+        case 'remove':
+          if (method === 'POST') {
+             const { roomId } = req.body;
+             if (!roomId) return { success: false, error: 'roomId is required', code: 400 };
+             const success = await this.roomManager.removeRoom(String(roomId));
+             return { success, code: success ? 200 : 400, error: success ? undefined : 'Failed to remove room' };
+          }
+          break;
+      }
+
+      return { success: false, error: `Unsupported room endpoint: ${method} /${pathSegments.join('/')}`, code: 404 };
+    } catch (error: any) {
+      console.error('[AcfunApiProxy] Room endpoint error:', error);
+      return { success: false, error: error.message || 'Room endpoint error', code: 500 };
+    }
   }
 
   /**
@@ -322,6 +395,23 @@ export class AcfunApiProxy {
   private async handleDanmuEndpoints(method: string, pathSegments: string[], req: express.Request): Promise<ApiResponse> {
     try {
       switch (pathSegments[0]) {
+        case 'connection-state':
+          if (method === 'GET') {
+            const tokenInfo = this.acfunApi.getHttpClient().getValidatedTokenInfo();
+            if (!tokenInfo.tokenInfo) {
+              return { success: false, error: '未登录或token无效', code: 401 };
+            }
+            const uid = String(tokenInfo.tokenInfo.userID || '');
+            if (!uid) {
+              return { success: false, error: '无法解析用户ID', code: 400 };
+            }
+            const rm = this.roomManager;
+            const info = rm ? rm.getRoomInfo(uid) : null;
+            const connected = !!info && String(info.status) === 'connected';
+            const sessionId = (connected && (rm as any)?.getAdapterSessionId ? String((rm as any).getAdapterSessionId(uid) || '') : undefined);
+            return { success: true, data: { connected, sessionId }, code: 200 };
+          }
+          break;
         case 'start':
           if (method === 'POST') {
             const { liverUID, callback } = req.body;
@@ -335,15 +425,36 @@ export class AcfunApiProxy {
 
             const db = this.databaseManager?.getDb();
             const writer = db ? new DanmuSQLiteWriter(db) : null;
+            let startedSessionId: string | null = null;
+            let currentLiveId: string | null = null;
             const danmuCallback = (event: any) => {
               if (writer) {
-                writer.handleEvent(String(liverUID), event).catch(err => { try { console.warn('[AcfunApiProxy] persist error:', err); } catch {} });
+                try {
+                  if (!currentLiveId && startedSessionId && this.acfunApi?.danmu) {
+                    const detail = this.acfunApi.danmu.getSessionDetail(startedSessionId);
+                    if (detail && detail.success && (detail as any).data) {
+                      currentLiveId = String((detail as any).data.liveID || '');
+                    }
+                  }
+                  if (currentLiveId) {
+                    writer.handleEvent(String(currentLiveId), String(liverUID), event).catch(err => { try { console.warn('[AcfunApiProxy] persist error:', err); } catch {} });
+                  }
+                } catch {}
               }
               try { console.log('[AcfunApiProxy] Danmu event:', event); } catch {}
             };
 
             const result = await this.acfunApi.danmu.startDanmu(liverUID, danmuCallback);
             if (result && result.success) {
+              try {
+                startedSessionId = String((result as any).data?.sessionId || '');
+                if (startedSessionId && this.acfunApi?.danmu) {
+                  const detail = this.acfunApi.danmu.getSessionDetail(startedSessionId);
+                  if (detail && detail.success && (detail as any).data) {
+                    currentLiveId = String((detail as any).data.liveID || '');
+                  }
+                }
+              } catch {}
               this.broadcast('room', 'danmu-start', { liverUID, ts: Date.now(), sessionId: (result.data as any)?.sessionId });
             }
             return {
@@ -396,12 +507,29 @@ export class AcfunApiProxy {
                 const db = this.databaseManager.getDb();
                 const stmt = db.prepare(`
                   INSERT INTO rooms_meta (
+                    live_id,
                     room_id, streamer_name, streamer_user_id,
                     title, cover_url, status, is_live,
                     viewer_count, online_count, like_count, live_cover,
                     category_id, category_name, sub_category_id, sub_category_name,
-                    updated_at
-                  ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
+                    created_at
+                  ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
+                  ON CONFLICT(live_id) DO UPDATE SET
+                    room_id=excluded.room_id,
+                    streamer_name=excluded.streamer_name,
+                    streamer_user_id=excluded.streamer_user_id,
+                    title=excluded.title,
+                    cover_url=excluded.cover_url,
+                    status=excluded.status,
+                    is_live=excluded.is_live,
+                    viewer_count=excluded.viewer_count,
+                    online_count=excluded.online_count,
+                    like_count=excluded.like_count,
+                    live_cover=excluded.live_cover,
+                    category_id=excluded.category_id,
+                    category_name=excluded.category_name,
+                    sub_category_id=excluded.sub_category_id,
+                    sub_category_name=excluded.sub_category_name
                 `);
                 const data: any = result.data || {};
                 const owner = data.owner || {};
@@ -417,6 +545,7 @@ export class AcfunApiProxy {
                 const subCategoryName = data.subCategoryName ?? null;
                 const likeCount = typeof data.likeCount === 'number' ? data.likeCount : 0;
                 stmt.run(
+                  String(data.liveID ? String(data.liveID) : String(liverUID)),
                   String(liverUID),
                   owner.userName || owner.nickname || owner.name || '',
                   owner.userID != null ? String(owner.userID) : String(liverUID),
@@ -440,6 +569,31 @@ export class AcfunApiProxy {
                 );
               }
             } catch {}
+            return {
+              success: result.success,
+              data: result.data,
+              error: result.error,
+              code: result.success ? 200 : 400
+            };
+          }
+          break;
+
+        case 'send':
+          if (method === 'POST') {
+            const { liveId, content } = req.body as { liveId?: string; content?: string };
+            const lid = String(liveId || '').trim();
+            const text = String(content || '').trim();
+            if (!lid) {
+              return { success: false, error: 'liveId is required', code: 400 };
+            }
+            if (!text) {
+              return { success: false, error: 'content is required', code: 400 };
+            }
+            const validation = await this.tokenManager.validateToken();
+            if (!validation.isValid) {
+              return { success: false, error: validation.reason || 'unauthorized', code: 401 };
+            }
+            const result = await this.acfunApi.danmu.sendDanmu(lid, text);
             return {
               success: result.success,
               data: result.data,
@@ -536,7 +690,7 @@ export class AcfunApiProxy {
       switch (pathSegments[0]) {
         case 'permission':
           if (method === 'GET') {
-            const tokenInfo = this.acfunApi.httpClient.getValidatedTokenInfo();
+            const tokenInfo = this.acfunApi.getHttpClient().getValidatedTokenInfo();
             if (!tokenInfo.tokenInfo) {
               return { success: false, error: '未登录或token无效', code: 401 };
             }
@@ -588,7 +742,7 @@ export class AcfunApiProxy {
             try {
               console.debug('[AcfunApiProxy][stream-status] incoming GET');
               // 检查是否有有效的token信息
-              const tokenInfo = this.acfunApi.httpClient.getValidatedTokenInfo();
+              const tokenInfo = this.acfunApi.getHttpClient().getValidatedTokenInfo();
               if (!tokenInfo.tokenInfo) {
                 console.warn('[AcfunApiProxy][stream-status] token invalid');
                 return {
@@ -596,6 +750,24 @@ export class AcfunApiProxy {
                   error: '未登录或token无效',
                   code: 401
                 };
+              }
+              const now = Date.now();
+              const qRoomId = String((req.query as any)?.roomId || '').trim();
+              const userIdKey = tokenInfo?.tokenInfo?.userID ? String(tokenInfo.tokenInfo.userID) : '';
+              const params = new URLSearchParams();
+              try {
+                const keys = Object.keys((req.query as any) || {}).sort();
+                for (const k of keys) { const v = (req.query as any)[k]; params.set(k, String(v)); }
+              } catch {}
+              const cacheKey = `stream-status:${qRoomId || userIdKey}:${params.toString()}`;
+              const cachedEntry = this.streamStatusCache.get(cacheKey);
+              if (cachedEntry && (now - cachedEntry.ts) < AcfunApiProxy.STREAM_STATUS_TTL_MS) {
+                return { ...cachedEntry.resp };
+              }
+              const inflight = this.streamStatusInFlight.get(cacheKey);
+              if (inflight) {
+                const cached = await inflight;
+                return { ...cached };
               }
               try {
                 const cookiesCount = Array.isArray(tokenInfo.tokenInfo.cookies) ? tokenInfo.tokenInfo.cookies.length : 0;
@@ -606,7 +778,41 @@ export class AcfunApiProxy {
                 });
               } catch {}
               
-            const result = await this.acfunApi.live.getLiveStreamStatus();
+            const p = (async () => {
+                const upstream = await this.acfunApi.live.getLiveStreamStatus();
+                const err = upstream.error || '';
+                if (!upstream.success) {
+                  const maybeJson = (() => {
+                    try { const m = err.match(/\{[^]*\}/); if (m && m[0]) return JSON.parse(m[0]); } catch {} return null; })();
+                  const notLive = err.includes('未开播') || (maybeJson && (Number(maybeJson.result) === 380023 || String(maybeJson.error_msg || '').includes('未开播')));
+                  if (notLive) {
+                    return {
+                      success: true,
+                      data: {
+                        liveID: '',
+                        streamName: '',
+                        title: '',
+                        liveCover: '',
+                        liveStartTime: 0,
+                        panoramic: false,
+                        bizUnit: '',
+                        bizCustomData: '',
+                        isLive: false
+                      },
+                      error: undefined,
+                      code: 200
+                    } as ApiResponse;
+                  }
+                }
+                return {
+                  success: upstream.success,
+                  data: upstream.data,
+                  error: upstream.error,
+                  code: 200
+                } as ApiResponse;
+              })();
+              this.streamStatusInFlight.set(cacheKey, p);
+              const result = await p;
               try {
                 console.debug('[AcfunApiProxy][stream-status] upstream resp', {
                   success: result.success,
@@ -618,90 +824,103 @@ export class AcfunApiProxy {
                   } : null
                 });
               } catch {}
-            try {
-              if (result && result.success && this.databaseManager) {
-                const tokenInfo = this.acfunApi.httpClient.getValidatedTokenInfo();
-                const roomId = tokenInfo?.tokenInfo?.userID ? String(tokenInfo.tokenInfo.userID) : undefined;
-                if (roomId) {
-                  const db = this.databaseManager.getDb();
+              if (!result.success && cachedEntry) {
+                this.streamStatusInFlight.delete(cacheKey);
+                const stale = { ...cachedEntry.resp } as any;
+                stale.meta = { ...(stale.meta || {}), stale: true };
+                return { ...stale };
+              }
+
+              try {
+                if (result && result.success && this.databaseManager) {
+                  const tokenInfo = this.acfunApi.getHttpClient().getValidatedTokenInfo();
+                  const roomId = tokenInfo?.tokenInfo?.userID ? String(tokenInfo.tokenInfo.userID) : undefined;
+                  if (roomId) {
+                    const db = this.databaseManager.getDb();
                 const stmt = db.prepare(`
                     INSERT INTO rooms_meta (
+                      live_id,
                       room_id, streamer_name, streamer_user_id,
                       title, cover_url, status, is_live,
                       viewer_count, online_count, like_count, live_cover,
                       category_id, category_name, sub_category_id, sub_category_name,
-                      updated_at
-                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
+                      created_at
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
+                    ON CONFLICT(live_id) DO UPDATE SET
+                      room_id=excluded.room_id,
+                      streamer_name=excluded.streamer_name,
+                      streamer_user_id=excluded.streamer_user_id,
+                      title=excluded.title,
+                      cover_url=excluded.cover_url,
+                      status=excluded.status,
+                      is_live=excluded.is_live,
+                      viewer_count=excluded.viewer_count,
+                      online_count=excluded.online_count,
+                      like_count=excluded.like_count,
+                      live_cover=excluded.live_cover,
+                      category_id=excluded.category_id,
+                      category_name=excluded.category_name,
+                      sub_category_id=excluded.sub_category_id,
+                      sub_category_name=excluded.sub_category_name
                   `);
-                  const data: any = result.data || {};
-                  const status = data.liveID ? 'open' : 'closed';
-                  const isLive = data.liveID ? 1 : 0;
-                  stmt.run(
-                    roomId,
-                    '',
-                    roomId,
-                    typeof data.title === 'string' ? data.title : '',
-                    null,
-                    status,
-                    isLive,
-                    0,
-                    0,
-                  0,
-                  '',
-                  '',
-                  '',
-                  '',
-                  (err: any) => {
-                      try { stmt.finalize(); } catch {}
-                      if (err) { try { console.warn('[rooms_meta] upsert error via /api/acfun/live/stream-status', err); } catch {} }
-                      else { try { console.info('[rooms_meta] upsert route=/api/acfun/live/stream-status room=' + String(roomId) + ' status=' + String(status) + ' isLive=' + String(isLive)); } catch {} }
+                    const data: any = result.data || {};
+                    const liveIdVal: string | undefined = typeof data.liveID === 'string' && data.liveID ? String(data.liveID) : undefined;
+                    const status = liveIdVal ? 'open' : 'closed';
+                    const isLive = liveIdVal ? 1 : 0;
+                    if (liveIdVal) {
+                      stmt.run(
+                        liveIdVal,
+                        roomId,
+                        '',
+                        roomId,
+                        typeof data.title === 'string' ? data.title : '',
+                        null,
+                        status,
+                        isLive,
+                        0,
+                        0,
+                        0,
+                        '',
+                        '',
+                        '',
+                        '',
+                        (err: any) => {
+                          try { stmt.finalize(); } catch {}
+                          if (err) { try { console.warn('[rooms_meta] upsert error via /api/acfun/live/stream-status', err); } catch {} }
+                          else { try { console.info('[rooms_meta] upsert route=/api/acfun/live/stream-status room=' + String(roomId) + ' status=' + String(status) + ' isLive=' + String(isLive)); } catch {} }
+                        }
+                      );
                     }
-                  );
+                  }
                 }
+              } catch {}
+              if (result && result.success) {
+                this.streamStatusCache.set(cacheKey, { ts: Date.now(), resp: { ...result } });
               }
-            } catch {}
-            const err = result.error || '';
-            if (!result.success) {
-              // 认证错误 → 401
-              if (err.includes('cookies') || err.includes('token') || err.includes('unauthorized')) {
-                return { success: false, error: result.error, data: null, code: 401 };
-              }
-              // 未开播错误 → 归一为 success:true + 默认对象
-              const maybeJson = (() => {
-                try {
-                  const m = err.match(/\{[^]*\}/);
-                  if (m && m[0]) return JSON.parse(m[0]);
-                } catch {}
-                return null;
-              })();
-              const notLive = err.includes('未开播') || (maybeJson && (Number(maybeJson.result) === 380023 || String(maybeJson.error_msg || '').includes('未开播')));
-              if (notLive) {
-                return {
-                  success: true,
-                  data: {
-                    liveID: '',
-                    streamName: '',
-                    title: '',
-                    liveCover: '',
-                    liveStartTime: 0,
-                    panoramic: false,
-                    bizUnit: '',
-                    bizCustomData: '',
-                    isLive: false
-                  },
-                  error: undefined,
-                  code: 200
-                };
-              }
-            }
-            return {
-              success: result.success,
-              data: result.data,
-              error: result.error,
-              code: 200
-            };
+              this.streamStatusInFlight.delete(cacheKey);
+              return { ...result };
             } catch (error: any) {
               console.error('[AcfunApiProxy] Stream status error:', error);
+              const cachedEntry = this.streamStatusCache.get(
+                (() => {
+                  try {
+                    const tokenInfo = this.acfunApi.getHttpClient().getValidatedTokenInfo();
+                    const now = Date.now();
+                    const qRoomId = String((req.query as any)?.roomId || '').trim();
+                    const userIdKey = tokenInfo?.tokenInfo?.userID ? String(tokenInfo.tokenInfo.userID) : '';
+                    const params = new URLSearchParams();
+                    const keys = Object.keys((req.query as any) || {}).sort();
+                    for (const k of keys) { const v = (req.query as any)[k]; params.set(k, String(v)); }
+                    const cacheKey = `stream-status:${qRoomId || userIdKey}:${params.toString()}`;
+                    return cacheKey;
+                  } catch { return ''; }
+                })()
+              );
+              if (cachedEntry) {
+                const stale = { ...cachedEntry.resp } as any;
+                stale.meta = { ...(stale.meta || {}), stale: true };
+                return { ...stale };
+              }
               return {
                 success: false,
                 error: error.message || 'Failed to get stream status',
@@ -714,7 +933,7 @@ export class AcfunApiProxy {
         case 'transcode-info':
           if (method === 'GET') {
             try {
-              const tokenInfo = this.acfunApi.httpClient.getValidatedTokenInfo();
+              const tokenInfo = this.acfunApi.getHttpClient().getValidatedTokenInfo();
               if (!tokenInfo.tokenInfo) {
                 return {
                   success: false,
@@ -777,6 +996,14 @@ export class AcfunApiProxy {
                 isDataUri: typeof coverFile === 'string' && /^data:image\//i.test(coverFile),
                 isHttp: typeof coverFile === 'string' && /^https?:\/\//i.test(coverFile),
               });
+              if (typeof coverFile === 'string' && /^data:image\//i.test(coverFile) && !/^data:image\/jpeg/i.test(coverFile)) {
+                return { success: false, error: '仅支持JPG封面', code: 400 };
+              }
+              if (typeof coverFile === 'string' && /^https?:\/\//i.test(coverFile)) {
+                const lower = coverFile.toLowerCase();
+                const isJpg = /\.jpe?g(\?.*)?$/.test(lower);
+                if (!isJpg) return { success: false, error: '仅支持JPG封面', code: 400 };
+              }
             } catch {}
 
             const result = await this.acfunApi.live.startLiveStream(
@@ -834,7 +1061,14 @@ export class AcfunApiProxy {
                 code: 400
               };
             }
-
+            if (typeof coverFile === 'string' && /^data:image\//i.test(coverFile) && !/^data:image\/jpeg/i.test(coverFile)) {
+              return { success: false, error: '仅支持JPG封面', code: 400 };
+            }
+            if (typeof coverFile === 'string' && /^https?:\/\//i.test(coverFile)) {
+              const lower = coverFile.toLowerCase();
+              const isJpg = /\.jpe?g(\?.*)?$/.test(lower);
+              if (!isJpg) return { success: false, error: '仅支持JPG封面', code: 400 };
+            }
             const result = await this.acfunApi.live.updateLiveRoom(title, coverFile || '', liveId);
             return {
               success: result.success,
@@ -959,6 +1193,33 @@ export class AcfunApiProxy {
             }
 
             const result = await this.acfunApi.live.getUserLiveInfo(userID);
+            return {
+              success: result.success,
+              data: result.data,
+              error: result.error,
+              code: result.success ? 200 : 400
+            };
+          }
+          break;
+
+        case 'list':
+          if (method === 'GET') {
+            const page = parseInt(req.query.page as string) || 1;
+            const pageSize = parseInt(req.query.pageSize as string) || 20;
+            const result = await this.acfunApi.live.getLiveList(page, pageSize);
+            return {
+              success: result.success,
+              data: result.data,
+              error: result.error,
+              code: result.success ? 200 : 400
+            };
+          }
+          break;
+
+        case 'statistics-by-days':
+          if (method === 'GET') {
+            const days = parseInt(req.query.days as string) || 7;
+            const result = await this.acfunApi.live.getLiveStatisticsByDays(days);
             return {
               success: result.success,
               data: result.data,
@@ -1453,97 +1714,10 @@ export class AcfunApiProxy {
   /**
    * 处理图片相关端点
    */
-  private async handleImageEndpoints(method: string, pathSegments: string[], req: express.Request): Promise<ApiResponse | null> {
-    if (method === 'POST' && pathSegments[0] === 'upload') {
-      const { imageFile } = req.body;
-      if (!imageFile) {
-        return {
-          success: false,
-          error: 'Missing imageFile parameter',
-          data: null
-        };
-      }
-
-      try {
-        const result = await this.imageService.uploadImage(imageFile);
-        return {
-          success: result.success,
-          data: result.data,
-          error: result.success ? undefined : result.error
-        };
-      } catch (error) {
-        return {
-          success: false,
-          error: error instanceof Error ? error.message : 'Unknown error',
-          data: null
-        };
-      }
-    }
-
-    return null;
-  }
+  
 
   /**
    * 处理EventSource相关端点
    */
-  private async handleEventSourceEndpoints(method: string, pathSegments: string[], req: express.Request): Promise<ApiResponse | null> {
-    if (method === 'POST' && pathSegments[0] === 'connect') {
-      const { liverUID, eventTypes } = req.body;
-      if (!liverUID) {
-        return {
-          success: false,
-          error: 'Missing liverUID parameter',
-          data: null
-        };
-      }
-
-      try {
-        const eventSource = this.eventSourceService.connectToLiveEvents({
-          liverUID,
-          eventTypes,
-          onMessage: (event: MessageEvent) => {
-            // 这里可以添加消息处理逻辑
-            console.log('EventSource message:', event);
-          },
-          onError: (event: Event) => {
-            console.error('EventSource error:', event);
-          },
-          onOpen: (event: Event) => {
-            console.log('EventSource opened:', event);
-          }
-        });
-
-        return {
-          success: true,
-          data: { message: 'EventSource created successfully' },
-          error: undefined
-        };
-      } catch (error) {
-        return {
-          success: false,
-          error: error instanceof Error ? error.message : 'Unknown error',
-          data: null
-        };
-      }
-    }
-
-    if (method === 'POST' && pathSegments[0] === 'disconnect') {
-      try {
-        this.eventSourceService.disconnect();
-        return {
-          success: true,
-          data: { message: 'EventSource disconnected successfully' },
-          error: undefined
-        };
-      } catch (error) {
-        return {
-          success: false,
-          error: error instanceof Error ? error.message : 'Unknown error',
-          data: null
-        };
-      }
-    }
-
-    return null;
-  }
+  
 }

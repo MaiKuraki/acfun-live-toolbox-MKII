@@ -15,6 +15,7 @@
         :name="wujieName"
         :url="wujieUrl"
         :props="wujieProps"
+        :plugins="wujiePlugins"
         :sync="true"
         :alive="false"
         :width="'100%'"
@@ -32,7 +33,8 @@
 import { ref, computed, watch } from 'vue';
 import { useRoute } from 'vue-router';
 import WujieVue from 'wujie-vue3';
-import { buildPluginPageUrl, getApiBase } from '../utils/hosting';
+import { buildPluginPageUrl } from '../utils/hosting';
+import { createPluginApi, getWujiePlugins, type PluginApiContext } from '../utils/plugin-injection';
 // Popups are bridged to main window via preload popup API
 
 interface PluginUiConfig { html?: string; spa?: boolean; route?: string }
@@ -46,6 +48,7 @@ const wujieUrl = ref('');
 const wujieName = ref('');
 const uiKey = ref('');
 const wujieProps = ref<Record<string, any>>({});
+const wujiePlugins = ref<any[]>([]);
 
 const pluginId = computed(() => String((route.params as any).plugname || '').trim());
 const titleText = computed(() => pluginInfo.value?.name ? `${pluginInfo.value.name}` : `插件窗口 - ${pluginId.value}`);
@@ -64,18 +67,67 @@ async function resolveWujieWindowConfig(id: string) {
       const conf = (info?.manifest?.window || {}) as PluginUiConfig;
       const hasConf = !!(conf.html || conf.spa);
       if (hasConf) {
-        const url = buildPluginPageUrl(id, 'window', {
-          spa: !!conf.spa,
-          route: conf.route || '/',
-          html: conf.html || 'window.html'
-        });
+        let url = '';
+
+        // 尝试加载开发配置，若存在 projectUrl 则优先使用（调试模式）
+        try {
+          const devRes = await window.electronApi.plugin.loadDevConfig(id);
+          if (devRes && (devRes as any).success && (devRes as any).data) {
+            const devCfg = (devRes as any).data;
+            if (devCfg && devCfg.projectUrl) {
+              const devBase = String(devCfg.projectUrl).trim().replace(/\/$/, '');
+              // 开发模式处理
+              if (conf.spa) {
+                // SPA模式：使用 projectUrl 作为根，直接拼接路由
+                const r = conf.route || '/';
+                url = new URL(r, devBase).toString();
+              } else {
+                // MPA模式：追加 html 文件名（如果 projectUrl 不含文件名）
+                // 假设 projectUrl 是目录根
+                const u = new URL(devBase);
+                if (!u.pathname.endsWith('.html') && !u.pathname.endsWith('.htm')) {
+                   const htmlFile = conf.html || 'window.html';
+                   // 简单拼接，注意 devBase 已去除结尾斜杠
+                   url = `${devBase}/${htmlFile}`;
+                } else {
+                   url = devBase;
+                }
+              }
+              console.log('[WindowFramePluginPage] Using dev project url:', url);
+            }
+          }
+        } catch (e) {
+          console.warn('[WindowFramePluginPage] Failed to load dev config:', e);
+        }
+
+        if (!url) {
+          url = buildPluginPageUrl(id, 'window', {
+            spa: !!conf.spa,
+            route: conf.route || '/',
+            html: conf.html || 'window.html'
+          });
+        }
+        
         isWujieWindow.value = true;
         wujieUrl.value = url;
         wujieName.value = `window-${id}`;
         uiKey.value = `${id}-${Date.now()}`;
+        
+        // 构建 API 上下文
+        const apiContext: PluginApiContext = {
+          pluginId: id,
+          version: info.version,
+          mode: 'window'
+        };
+        
+        // 使用统一注入工具
+        const toolboxApi = createPluginApi(apiContext);
+        wujiePlugins.value = getWujiePlugins(apiContext);
+        
         wujieProps.value = {
           pluginId: id,
           version: info.version,
+          toolboxApi: toolboxApi,
           initialRoute: conf.spa ? (conf.route || '/') : undefined
         };
       } else {

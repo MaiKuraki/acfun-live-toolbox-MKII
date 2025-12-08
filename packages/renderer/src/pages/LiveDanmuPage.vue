@@ -22,6 +22,9 @@
         <t-button theme="primary" @click="onSubmit" :loading="loadingDanmu">
           查询
         </t-button>
+        <t-button theme="danger" variant="outline" @click="onClean" :loading="cleaning">
+          清理
+        </t-button>
         <t-button
           variant="outline"
           @click="exportDanmu"
@@ -78,28 +81,27 @@
                   <t-option value="like" label="点赞" />
                   <t-option value="enter" label="进入直播间" />
                   <t-option value="follow" label="关注" />
-                  <t-option value="system" label="系统" />
                 </t-select>
-              </t-form-item>
+            </t-form-item>
 
               <!-- 第二行：关键词1（左）、用户（右） -->
-              <t-form-item label="关键词" name="keyword1">
-                <t-input v-model="formData.keyword1" placeholder="请输入关键词" style="width: 260px;" />
+              <t-form-item label="关键词" name="keyword">
+                <t-input v-model="formData.keyword" placeholder="请输入关键词" style="width: 260px;" />
               </t-form-item>
 
             <t-form-item label="用户" name="users">
-              <t-select-input
-                v-model="formData.users"
-                :options="userOptions"
-                :input-props="{ placeholder: '搜索用户以添加筛选' }"
-                allow-input
-                clearable
-                @input-change="onUserSearch"
-                @popup-visible-change="onUserPopupVisible"
-                :popup-visible="userPopupVisible"
-                @change="onUserSelect"
+              <t-select
+                v-model="usersValue"
+                multiple
+                remote
+                filterable
+                :loading="usersLoading"
+                @search="remoteSearchUsers"
+                @change="onUsersChange"
                 style="width: 100%;"
-              />
+              >
+                <t-option v-for="opt in usersOptions" :key="opt.value" :value="opt.value" :label="opt.label" />
+              </t-select>
             </t-form-item>
             </div>
           </t-form>
@@ -138,6 +140,9 @@
           size="small"
           bordered
           hover
+          height="410px"
+          :ellipsis="true"
+          cellEllipsisType="title"
         />
       </div>
       
@@ -197,10 +202,11 @@
 </template>
 
 <script setup lang="ts">
-import { ref, computed, onMounted, watch, h } from 'vue';
+import { ref, computed, watch, onMounted, h } from 'vue';
 import { useRoute } from 'vue-router';
 import { useRoomStore } from '../stores/room';
-import { MessagePlugin } from 'tdesign-vue-next';
+import { MessagePlugin, DialogPlugin } from 'tdesign-vue-next';
+import { getApiBase } from '../utils/hosting';
 
 // 弹幕组件
  
@@ -216,19 +222,21 @@ const showDetailsDialog = ref(false);
 const selectedDanmu = ref<any>(null);
 const loadingDanmu = ref(false);
 const exportingDanmu = ref(false);
+const cleaning = ref(false);
 
 // 过滤器状态
-const selectedEventTypes = ref<string[]>(['danmaku', 'gift', 'like', 'enter', 'follow', 'system']);
+const selectedEventTypes = ref<string[]>(['danmaku', 'gift', 'like', 'enter', 'follow']);
 const formRef = ref();
-const formData = ref<{ types: string[]; keyword: string; users: string | number | null; date: string | null }>({
+const formData = ref<{ types: string[]; keyword: string; users: string[]; date: string | null }>({
   types: selectedEventTypes.value,
   keyword: '',
-  users: null,
+  users: [],
   date: null
 });
-const userOptions = ref<Array<{ label: string; value: string }>>([]);
+const usersOptions = ref<Array<{ label: string; value: string }>>([]);
+const usersLoading = ref(false);
+const usersValue = ref<string[]>([]);
 const disableDate = ref<any>(null);
-const userPopupVisible = ref(false);
 
 // 分页状态
 const currentPage = ref(1);
@@ -248,7 +256,9 @@ const filteredDanmu = computed(() => danmuList.value);
 // 方法
 const loadHistoricalRooms = async () => {
   try {
-    const data = await window.electronApi.http.get('/api/events/rooms');
+    const base = getApiBase();
+    const res = await fetch(new URL('/api/events/rooms', base).toString(), { method: 'GET' });
+    const data = await res.json();
     historicalRooms.value = (data && data.rooms) ? data.rooms : [];
   } catch (error) {
     console.error('加载历史房间失败:', error);
@@ -270,7 +280,7 @@ const loadHistoricalDanmu = async (roomId: string, page: number = 1) => {
   if (!roomId) return;
   loadingDanmu.value = true;
   try {
-    const allTypes = ['danmaku','gift','like','enter','follow','system'];
+    const allTypes = ['danmaku','gift','like','enter','follow'];
     const hasAllTypes = formData.value.types.length === allTypes.length && allTypes.every(t => formData.value.types.includes(t));
     const params: Record<string, any> = {
       room_id: roomId,
@@ -280,24 +290,29 @@ const loadHistoricalDanmu = async (roomId: string, page: number = 1) => {
     if (!hasAllTypes && formData.value.types.length > 0) {
       params.type = formData.value.types.join(',');
     }
-    if (formData.value.keyword1 && String(formData.value.keyword1).trim().length > 0) {
-      params.q = String(formData.value.keyword1).trim();
+    if (formData.value.keyword && String(formData.value.keyword).trim().length > 0) {
+      params.q = String(formData.value.keyword).trim();
     }
-    if (formData.value.users) {
-      params.user_id = String(formData.value.users);
-    }
+  if (formData.value.users && formData.value.users.length > 0) {
+      params.user_ids = formData.value.users.join(',');
+  }
     if (formData.value.date) {
       const d = new Date(formData.value.date);
-      const from = new Date(d.getFullYear(), d.getMonth(), d.getDate(), 0, 0, 0, 0).getTime();
-      const to = new Date(d.getFullYear(), d.getMonth(), d.getDate(), 23, 59, 59, 999).getTime();
-      params.from_ts = from;
-      params.to_ts = to;
+      const ymd = formatYMD(d);
+      params.from_date = ymd;
+      params.to_date = ymd;
     }
-    const data = await window.electronApi.http.get('/api/events', params);
+    const base = getApiBase();
+    const url = new URL('/api/events', base);
+    for (const [key, value] of Object.entries(params)) {
+      if (value !== undefined && value !== null) url.searchParams.append(key, String(value));
+    }
+    const res = await fetch(url.toString(), { method: 'GET' });
+    const data = await res.json();
     danmuList.value = (data.items || []).map((item: any) => ({
       id: item.id || `${item.ts}_${Math.random()}`,
       type: item.event_type === 'danmaku' ? 'comment' : item.event_type,
-      timestamp: item.ts,
+      timestamp: Number(item.ts) || Date.now(),
       userId: item.user_id,
       userName: item.user_name,
       content: item.content,
@@ -323,18 +338,24 @@ const exportDanmu = async () => {
       room_id: selectedRoomId.value,
       filename: `danmu_${selectedRoomId.value}_${new Date().toISOString().slice(0, 10)}.csv`
     });
-    const allTypes = ['danmaku','gift','like','enter','follow','system'];
+    const allTypes = ['danmaku','gift','like','enter','follow'];
     const hasAll = formData.value.types.length === allTypes.length && allTypes.every(t => formData.value.types.includes(t));
     if (!hasAll && formData.value.types.length > 0) params.set('type', formData.value.types.join(','));
     if (formData.value.date) {
       const d = new Date(formData.value.date);
-      const from = new Date(d.getFullYear(), d.getMonth(), d.getDate(), 0, 0, 0, 0).getTime();
-      const to = new Date(d.getFullYear(), d.getMonth(), d.getDate(), 23, 59, 59, 999).getTime();
-      params.set('from_ts', String(from));
-      params.set('to_ts', String(to));
+      const ymd = formatYMD(d);
+      params.set('from_date', ymd);
+      params.set('to_date', ymd);
+    }
+    if (formData.value.users && formData.value.users.length > 0) {
+      params.set('user_ids', formData.value.users.join(','));
+    }
+    if (formData.value.keyword && String(formData.value.keyword).trim().length > 0) {
+      params.set('q', String(formData.value.keyword).trim());
     }
 
-    const response = await fetch(`/api/export?${params}`);
+    const base = getApiBase();
+    const response = await fetch(`${new URL('/api/export', base).toString()}?${params}`);
     if (response.ok) {
       const blob = await response.blob();
       const url = URL.createObjectURL(blob);
@@ -355,6 +376,67 @@ const exportDanmu = async () => {
   }
 };
 
+const onClean = async () => {
+  if (!selectedRoomId.value) {
+    MessagePlugin.warning('请先选择一个房间');
+    return;
+  }
+
+  const confirmDialog = DialogPlugin.confirm({
+    header: '确认清理',
+    body: '确定要根据当前筛选条件清理弹幕数据吗？此操作不可恢复。',
+    theme: 'warning',
+    onConfirm: async () => {
+      confirmDialog.hide();
+      cleaning.value = true;
+      try {
+        const params: Record<string, any> = {
+          room_id: selectedRoomId.value
+        };
+        const allTypes = ['danmaku','gift','like','enter','follow'];
+        const hasAllTypes = formData.value.types.length === allTypes.length && allTypes.every(t => formData.value.types.includes(t));
+        
+        if (!hasAllTypes && formData.value.types.length > 0) {
+          params.type = formData.value.types.join(',');
+        }
+        if (formData.value.keyword && String(formData.value.keyword).trim().length > 0) {
+          params.q = String(formData.value.keyword).trim();
+        }
+        if (formData.value.users && formData.value.users.length > 0) {
+          params.user_ids = formData.value.users.join(',');
+        }
+        if (formData.value.date) {
+          const d = new Date(formData.value.date);
+          const ymd = formatYMD(d);
+          params.from_date = ymd;
+          params.to_date = ymd;
+        }
+
+        const base = getApiBase();
+        const url = new URL('/api/events', base);
+        for (const [key, value] of Object.entries(params)) {
+          if (value !== undefined && value !== null) url.searchParams.append(key, String(value));
+        }
+        
+        const res = await fetch(url.toString(), { method: 'DELETE' });
+        const data = await res.json();
+        
+        if (data.success) {
+          MessagePlugin.success(`清理成功，共删除 ${data.deleted} 条记录`);
+          currentPage.value = 1;
+          await loadHistoricalDanmu(selectedRoomId.value, 1);
+        } else {
+          MessagePlugin.error(`清理失败: ${data.error || '未知错误'}`);
+        }
+      } catch (e: any) {
+        MessagePlugin.error(`清理失败: ${e.message}`);
+      } finally {
+        cleaning.value = false;
+      }
+    }
+  });
+};
+
 const formatYMD = (d: Date) => {
   const y = d.getFullYear();
   const m = String(d.getMonth() + 1).padStart(2, '0');
@@ -366,7 +448,13 @@ const loadAvailableDates = async (roomId?: string) => {
   try {
     const params: any = {};
     if (roomId) params.room_id = roomId;
-    const data = await window.electronApi.http.get('/api/events/dates', params);
+    const base = getApiBase();
+    const url = new URL('/api/events/dates', base);
+    for (const [key, value] of Object.entries(params)) {
+      if (value !== undefined && value !== null) url.searchParams.append(key, String(value));
+    }
+    const res = await fetch(url.toString(), { method: 'GET' });
+    const data = await res.json();
     const set = new Set<string>(((data && data.dates) || []).map((s: any) => String(s)));
     disableDate.value = (date: Date) => !set.has(formatYMD(date));
   } catch {
@@ -391,42 +479,29 @@ const handlePageChange = (pageInfo: { current: number; pageSize: number }) => {
   }
 };
 
-const onUserSearch = async (val: string) => {
-  const q = (val || '').trim();
-  if (!q) {
-    userOptions.value = [];
-    userPopupVisible.value = false;
-    return;
-  }
+const remoteSearchUsers = async (search: string) => {
+  const q = (search || '').trim();
+  usersLoading.value = true;
   try {
-    const data = await window.electronApi.http.get('/api/users/search', { keyword: q, page: 1, pageSize: 10, room_id: selectedRoomId.value });
-    userOptions.value = (data.items || []).map((u: any) => ({ label: u.name || String(u.id), value: String(u.id) }));
-    userPopupVisible.value = (userOptions.value.length > 0);
-  } catch {}
-};
-
-const loadUsersList = async (roomId?: string) => {
-  try {
-    const params: any = { limit: 200 };
-    if (roomId) params.room_id = roomId;
-    const data = await window.electronApi.http.get('/api/users', params);
-    userOptions.value = (data.items || []).map((u: any) => ({ label: u.name || String(u.id), value: String(u.id) }));
-  } catch { userOptions.value = []; }
-};
-
-const onUserPopupVisible = async (visible: boolean) => {
-  if (visible) {
-    await loadUsersList(selectedRoomId.value);
-    userPopupVisible.value = (userOptions.value.length > 0);
+    const base = getApiBase();
+    const url = new URL('/api/users/search', base);
+    url.searchParams.set('keyword', q);
+    url.searchParams.set('page', '1');
+    url.searchParams.set('pageSize', '20');
+    if (selectedRoomId.value) url.searchParams.set('room_id', selectedRoomId.value);
+    const res = await fetch(url.toString(), { method: 'GET' });
+    const data = await res.json();
+    usersOptions.value = (data.items || []).map((u: any) => ({ label: u.name || String(u.id), value: String(u.id) }));
+  } catch {
+    usersOptions.value = [];
+  } finally {
+    usersLoading.value = false;
   }
 };
 
-const onUserSelect = async (val: any) => {
-  try {
-    userPopupVisible.value = false;
-    formData.value.users = Array.isArray(val) ? (val[0]?.value ?? val[0]) : (val?.value ?? val);
-    await onSubmit();
-  } catch {}
+const onUsersChange = (val: string[]) => {
+  usersValue.value = val || [];
+  formData.value.users = usersValue.value.slice();
 };
 
 const onSubmit = async () => {
@@ -436,9 +511,9 @@ const onSubmit = async () => {
 };
 
 const onReset = () => {
-  formData.value.types = ['danmaku', 'gift', 'like', 'enter', 'follow', 'system'];
-  formData.value.keyword1 = '';
-  formData.value.users = null;
+  formData.value.types = ['danmaku', 'gift', 'like', 'enter', 'follow'];
+  formData.value.keyword = '';
+  formData.value.users = [];
   formData.value.date = null;
 };
 
@@ -452,7 +527,7 @@ const getDanmuTypeText = (type: string) => {
     case 'danmaku': return '弹幕';
     case 'gift': return '礼物';
     case 'like': return '点赞';
-    case 'enter': return '进入房间';
+    case 'enter': return '进入直播间';
     case 'follow': return '关注';
     case 'system': return '系统消息';
     default: return '未知';
@@ -460,7 +535,11 @@ const getDanmuTypeText = (type: string) => {
 };
 
 const formatTime = (timestamp: number) => {
-  return new Date(timestamp).toLocaleTimeString();
+  const d = new Date(Number(timestamp) || Date.now());
+  const hh = String(d.getHours()).padStart(2, '0');
+  const mm = String(d.getMinutes()).padStart(2, '0');
+  const ss = String(d.getSeconds()).padStart(2, '0');
+  return `${hh}:${mm}:${ss}`;
 };
 
 const formatDetailTime = (timestamp: number) => {
@@ -473,9 +552,7 @@ const contentText = (d: any) => {
   if (t === 'enter') return '进入了直播间';
   if (t === 'follow') return '关注了主播';
   if (t === 'gift') {
-    const count = d.gift_count || d.count || 1;
-    const name = d.gift_name || d.name || '礼物';
-    return `送了${count}个${name}`;
+    return `${d.content}`;
   }
   if (t === 'system') return String(d.content || d.message || '系统通知');
   return String(d.content || '');
@@ -485,7 +562,7 @@ const tableColumns = [
   { colKey: 'timestamp', title: '时间', width: 140, cell: (_h: any, { row }: any) => formatTime(row.timestamp) },
   { colKey: 'type', title: '类型', width: 100, cell: (_h: any, { row }: any) => getDanmuTypeText(row.type) },
   { colKey: 'userName', title: '用户', width: 160, cell: (_h: any, { row }: any) => String(row.userName || row.userId || '') },
-  { colKey: 'content', title: '内容', cell: (_h: any, { row }: any) => h('span', { class: 'content-ellipsis', title: contentText(row) }, contentText(row)) },
+  { colKey: 'content', title: '内容', width: 220, ellipsis: true, cell: (_h: any, { row }: any) => contentText(row) },
   { colKey: 'ops', title: '操作', width: 80, cell: (_h: any, { row }: any) => h('span', { class: 'ops-icon', title: '查看详情', onClick: () => showDanmuDetails(row) }, '🔍') }
 ];
 
@@ -632,10 +709,7 @@ onMounted(async () => {
   overflow: hidden;
 }
 
-.table-fixed-container {
-  height: 410px;
-  overflow: auto;
-}
+
 
 .danmu-count {
   font-size: 12px;

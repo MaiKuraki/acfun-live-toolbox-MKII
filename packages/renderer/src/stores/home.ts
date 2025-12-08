@@ -1,6 +1,5 @@
 import { defineStore } from 'pinia';
 import { ref } from 'vue';
-import { useRoleStore } from './role';
 
 type CardKey = 'A' | 'B' | 'C' | 'D';
 
@@ -17,8 +16,6 @@ export const useHomeStore = defineStore('home', () => {
   const userInfo = ref<any>(null);
   const docs = ref<DocItem[]>([]);
   const anchorStats = ref<{ lastSessionAt?: string; followers?: number; giftIncome?: number } | null>(null);
-  const modRooms = ref<Array<{ roomId: string; title: string; cover?: string; status?: string }>>([]);
-  const devMetrics = ref<{ errorCount: number; messageCount: number; uniqueErrorTypes: number } | null>(null);
 
   async function fetchUserInfo() {
     loading.value.B = true; error.value.B = null;
@@ -52,58 +49,26 @@ export const useHomeStore = defineStore('home', () => {
     }
   }
 
-  async function fetchRoleSpecific() {
-    const roleStore = useRoleStore();
+  async function fetchAnchorStats() {
     loading.value.C = true; error.value.C = null;
     try {
-      if (roleStore.current === 'anchor') {
-        // Snapshot-like demo values; real implementation should read via transport selector
-        anchorStats.value = {
-          lastSessionAt: new Date(Date.now() - 86400000).toISOString(),
-          followers: 12840,
-          giftIncome: 3240,
-        };
-      } else if (roleStore.current === 'moderator') {
-        // Use room store if available; else provide empty list
-        try {
-          const { useRoomStore } = await import('./room');
-          const rs = useRoomStore();
-          const list = (rs.rooms as any[]) || [];
-          modRooms.value = (list || []).slice(0, 2).map((r: any) => ({
-            roomId: String(r.roomId || r.id || ''),
-            title: r.title || r.roomName || '直播间',
-            cover: r.cover || r.coverUrl,
-            status: r.status || r.liveStatus,
-          }));
-        } catch {
-          modRooms.value = [];
-        }
-      } else if (roleStore.current === 'developer') {
-        try {
-          const { useConsoleStore } = await import('./console');
-          const cs = useConsoleStore();
-          const errorCount = Array.isArray((cs as any).errors) ? (cs as any).errors.length : 0;
-          const messageCount = Array.isArray((cs as any).messages) ? (cs as any).messages.length : 0;
-          const uniqueErrorTypes = 1; // Placeholder unless console store exposes types
-          devMetrics.value = { errorCount, messageCount, uniqueErrorTypes };
-        } catch {
-          devMetrics.value = { errorCount: 0, messageCount: 0, uniqueErrorTypes: 0 };
-        }
-      }
+      anchorStats.value = {
+        lastSessionAt: new Date(Date.now() - 86400000).toISOString(),
+        followers: 12840,
+        giftIncome: 3240,
+      };
     } catch (e: any) {
-      error.value.C = e?.message || '获取角色相关数据失败';
+      error.value.C = e?.message || '获取主播数据失败';
     } finally {
       loading.value.C = false;
     }
   }
 
   async function initialize() {
-    // GET_ROLE -> GET_USER -> Parallel(C role data) -> GET_DOCS
     loading.value.A = true; error.value.A = null;
     try {
-      // GET_ROLE implicitly handled via role store init
       await fetchUserInfo();
-      await Promise.all([fetchRoleSpecific(), fetchDocs()]);
+      await Promise.all([fetchAnchorStats(), fetchDocs()]);
     } catch (e: any) {
       error.value.A = e?.message || '主页初始化失败';
     } finally {
@@ -113,7 +78,7 @@ export const useHomeStore = defineStore('home', () => {
 
   function retryCard(card: CardKey) {
     if (card === 'B') return fetchUserInfo();
-    if (card === 'C') return fetchRoleSpecific();
+    if (card === 'C') return fetchAnchorStats();
     if (card === 'D') return fetchDocs();
     return initialize();
   }
@@ -124,10 +89,8 @@ export const useHomeStore = defineStore('home', () => {
     userInfo,
     docs,
     anchorStats,
-    modRooms,
-    devMetrics,
     initialize,
     retryCard,
-    fetchRoleSpecific,
+    fetchAnchorStats,
   };
 });

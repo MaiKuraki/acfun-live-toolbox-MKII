@@ -7,7 +7,7 @@ import { getLogManager } from '../logging/LogManager';
 import { createServer, Server } from 'http';
 import * as fs from 'fs';
 import * as path from 'path';
-import { app } from 'electron';
+import { app, shell, dialog, globalShortcut, BrowserWindow } from 'electron';
 import { WsHub } from './WsHub';
 import { QueryService, EventQuery } from '../persistence/QueryService';
 import { CsvExporter, ExportOptions } from '../persistence/CsvExporter';
@@ -24,6 +24,7 @@ import { NormalizedEventType } from '../types';
 import { DataManager, IDataManager } from '../persistence/DataManager';
 import PluginPageStatusManager from '../persistence/PluginPageStatusManager';
 import { SSE_HEARTBEAT_MS } from '../config/config';
+import { pluginLogger } from '../plugins/PluginLogger';
 
 /**
  * API 服务器配置
@@ -43,6 +44,7 @@ export interface ApiServerConfig {
 export class ApiServer {
   private app: express.Application;
   private server: Server | null = null;
+  private lastStartError: string | undefined;
   private wsHub: WsHub;
   private config: ApiServerConfig;
   private queryService: QueryService;
@@ -51,12 +53,15 @@ export class ApiServer {
   private overlayManager: OverlayManager;
   private consoleManager: IConsoleManager;
   private acfunApiProxy: AcfunApiProxy;
+  private databaseManager: DatabaseManager;
   private pluginRoutes: Map<string, { method: 'GET' | 'POST'; path: string; handler: express.RequestHandler }[]> = new Map();
   private pluginManager?: IPluginManager;
   private dataManager: IDataManager;
   private templatesCache: Record<string, string> = {};
   private windowManager?: WindowManager;
   private pluginWindowManager?: PluginWindowManager;
+  private connections: Set<import('net').Socket> = new Set();
+  private pluginShortcuts: Map<string, Set<string>> = new Map();
 
   constructor(config: ApiServerConfig = { port: 1299 }, databaseManager: DatabaseManager, diagnosticsService: DiagnosticsService, overlayManager: OverlayManager, consoleManager: IConsoleManager) {
     this.config = {
@@ -75,6 +80,7 @@ export class ApiServer {
     this.diagnosticsService = diagnosticsService;
     this.overlayManager = overlayManager;
     this.consoleManager = consoleManager;
+    this.databaseManager = databaseManager;
     this.acfunApiProxy = new AcfunApiProxy({}, TokenManager.getInstance(), databaseManager);
     this.dataManager = DataManager.getInstance();
 
@@ -94,6 +100,10 @@ export class ApiServer {
   public setWindowManagers(windowManager: WindowManager, pluginWindowManager: PluginWindowManager): void {
     this.windowManager = windowManager;
     this.pluginWindowManager = pluginWindowManager;
+  }
+
+  public setPort(port: number): void {
+    this.config.port = port;
   }
 
   /**
@@ -201,7 +211,9 @@ export class ApiServer {
             // 弹幕相关
             { method: 'POST', path: '/api/acfun/danmu/start', description: 'Start danmu session' },
             { method: 'POST', path: '/api/acfun/danmu/stop', description: 'Stop danmu session' },
+            { method: 'GET', path: '/api/acfun/danmu/connection-state', description: 'Get current user danmu connection state' },
             { method: 'GET', path: '/api/acfun/danmu/room-info', description: 'Get live room information' },
+            { method: 'POST', path: '/api/acfun/danmu/send', description: 'Send danmu/comment' },
             // 直播相关
             { method: 'GET', path: '/api/acfun/live/permission', description: 'Check live permission' },
             { method: 'GET', path: '/api/acfun/live/stream-url', description: 'Get stream URL' },
@@ -298,13 +310,19 @@ export class ApiServer {
           typesArr = rawType.split(',').map(s => s.trim()).filter(Boolean) as NormalizedEventType[];
         }
 
+        const rawUserIds = (req.query.user_ids as string | undefined);
+        const idsArr = rawUserIds ? rawUserIds.split(',').map(s => s.trim()).filter(Boolean) : undefined;
         const query: EventQuery = {
           room_id: req.query.room_id as string,
+          live_id: req.query.live_id as string,
           room_kw: req.query.room_kw as string,
           from_ts: req.query.from_ts ? parseInt(req.query.from_ts as string) : undefined,
           to_ts: req.query.to_ts ? parseInt(req.query.to_ts as string) : undefined,
+          from_date: req.query.from_date ? String(req.query.from_date) : undefined,
+          to_date: req.query.to_date ? String(req.query.to_date) : undefined,
           types: typesArr,
           user_id: req.query.user_id as string,
+          user_ids: idsArr,
           user_kw: req.query.user_kw as string,
           q: req.query.q as string,
           page: req.query.page ? parseInt(req.query.page as string) : 1,
@@ -327,10 +345,46 @@ export class ApiServer {
         const result = await this.queryService.queryEvents(query);
         if (process.env.ACFRAME_DEBUG_LOGS === '1') {
           try {
-            console.log('[API] /api/events params room_id=' + String(query.room_id || '') + ' page=' + String(query.page) + ' pageSize=' + String(query.pageSize) + ' type=' + String((typesArr || []).join(',')) + ' total=' + String(result.total) + ' items=' + String(result.items.length));
+            console.log('[API] /api/events params room_id=' + String(query.room_id || '') + ' live_id=' + String(query.live_id || '') + ' page=' + String(query.page) + ' pageSize=' + String(query.pageSize) + ' type=' + String((typesArr || []).join(',')) + ' total=' + String(result.total) + ' items=' + String(result.items.length));
           } catch {}
         }
         res.json(result);
+      } catch (error) {
+        next(error);
+      }
+    });
+
+    // DELETE /api/events - 根据条件删除事件
+    this.app.delete('/api/events', async (req: express.Request, res: express.Response, next: express.NextFunction) => {
+      try {
+        const rawType = req.query.type as string | string | undefined;
+        let typesArr: NormalizedEventType[] | undefined;
+        if (Array.isArray(rawType)) {
+          typesArr = (rawType as string[]).map(s => String(s)).filter(Boolean) as NormalizedEventType[];
+        } else if (typeof rawType === 'string' && rawType.trim().length > 0) {
+          typesArr = rawType.split(',').map(s => s.trim()).filter(Boolean) as NormalizedEventType[];
+        }
+
+        const rawUserIds = (req.query.user_ids as string | undefined);
+        const idsArr = rawUserIds ? rawUserIds.split(',').map(s => s.trim()).filter(Boolean) : undefined;
+
+        const query: EventQuery = {
+          room_id: req.query.room_id as string,
+          live_id: req.query.live_id as string,
+          room_kw: req.query.room_kw as string,
+          from_ts: req.query.from_ts ? parseInt(req.query.from_ts as string) : undefined,
+          to_ts: req.query.to_ts ? parseInt(req.query.to_ts as string) : undefined,
+          from_date: req.query.from_date ? String(req.query.from_date) : undefined,
+          to_date: req.query.to_date ? String(req.query.to_date) : undefined,
+          types: typesArr,
+          user_id: req.query.user_id as string,
+          user_ids: idsArr,
+          user_kw: req.query.user_kw as string,
+          q: req.query.q as string
+        };
+
+        const deletedCount = await this.queryService.deleteEvents(query);
+        res.json({ success: true, deleted: deletedCount });
       } catch (error) {
         next(error);
       }
@@ -392,19 +446,36 @@ export class ApiServer {
     });
 
 
-    // GET /api/export - 导出数据为 CSV
     this.app.get('/api/export', async (req: express.Request, res: express.Response, next: express.NextFunction) => {
       try {
+        const rawType = req.query.type as string | string[] | undefined;
+        let typesArr: NormalizedEventType[] | undefined;
+        if (Array.isArray(rawType)) {
+          typesArr = (rawType as string[]).map(s => String(s).trim()).filter(Boolean) as NormalizedEventType[];
+        } else if (typeof rawType === 'string' && rawType.trim().length > 0) {
+          typesArr = rawType.split(',').map(s => s.trim()).filter(Boolean) as NormalizedEventType[];
+        }
+
         const options: ExportOptions = {
           room_id: req.query.room_id as string,
-          from_ts: req.query.from_ts ? parseInt(req.query.from_ts as string) : undefined,
-          to_ts: req.query.to_ts ? parseInt(req.query.to_ts as string) : undefined,
-          type: req.query.type as NormalizedEventType,
+          from_ts: req.query.from_ts ? parseInt(String(req.query.from_ts)) : undefined,
+          to_ts: req.query.to_ts ? parseInt(String(req.query.to_ts)) : undefined,
+          from_date: req.query.from_date ? String(req.query.from_date) : undefined,
+          to_date: req.query.to_date ? String(req.query.to_date) : undefined,
+          types: typesArr,
           filename: req.query.filename as string,
           includeRaw: req.query.includeRaw === 'true'
         };
+
         const result = await this.csvExporter.exportToCsv(options);
-        res.status(200).json(result);
+
+        res.setHeader('Content-Type', 'text/csv; charset=utf-8');
+        res.setHeader('Content-Disposition', `attachment; filename="${result.filename}"`);
+        res.setHeader('X-Record-Count', String(result.recordCount));
+
+        const stream = fs.createReadStream(result.filepath, { encoding: 'utf8' });
+        stream.on('error', (err) => next(err));
+        stream.pipe(res);
       } catch (error) {
         next(error);
       }
@@ -412,16 +483,28 @@ export class ApiServer {
 
     
 
-    // POST /api/export - 触发 CSV 导出
     this.app.post('/api/export', async (req: express.Request, res: express.Response, next: express.NextFunction) => {
       try {
+        const rawType = req.body?.type as string | string[] | undefined;
+        const rawTypes = req.body?.types as string[] | undefined;
+        let typesArr: NormalizedEventType[] | undefined;
+        if (Array.isArray(rawTypes)) {
+          typesArr = rawTypes.map(s => String(s).trim()).filter(Boolean) as NormalizedEventType[];
+        } else if (Array.isArray(rawType)) {
+          typesArr = (rawType as string[]).map(s => String(s).trim()).filter(Boolean) as NormalizedEventType[];
+        } else if (typeof rawType === 'string' && rawType.trim().length > 0) {
+          typesArr = rawType.split(',').map(s => s.trim()).filter(Boolean) as NormalizedEventType[];
+        }
+
         const options: ExportOptions = {
           room_id: req.body.room_id,
-          from_ts: req.body.from_ts,
-          to_ts: req.body.to_ts,
-          type: req.body.type,
+          from_ts: req.body.from_ts ? parseInt(String(req.body.from_ts)) : undefined,
+          to_ts: req.body.to_ts ? parseInt(String(req.body.to_ts)) : undefined,
+          from_date: req.body.from_date ? String(req.body.from_date) : undefined,
+          to_date: req.body.to_date ? String(req.body.to_date) : undefined,
+          types: typesArr,
           filename: req.body.filename,
-          includeRaw: req.body.includeRaw || false
+          includeRaw: !!req.body.includeRaw
         };
 
         const result = await this.csvExporter.exportToCsv(options);
@@ -534,7 +617,9 @@ export class ApiServer {
         let ok = false;
         if (targetPluginId) {
           ok = !!this.pluginWindowManager?.send(targetPluginId, 'renderer-global-popup', payload);
-        } else {
+        }
+        // Fallback to main window if plugin window not found (e.g. embedded UI mode)
+        if (!ok) {
           const win = this.windowManager?.getMainWindow();
           if (win && !win.isDestroyed()) { try { win.webContents.send('renderer-global-popup', payload); ok = true; } catch {} }
         }
@@ -554,6 +639,285 @@ export class ApiServer {
       if (target) return { pluginId: target };
       return { main: true };
     };
+
+    const getTargetBrowserWindow = (req: express.Request): BrowserWindow | null => {
+      const target = resolveWindow(req);
+      if (target.pluginId) {
+        return this.pluginWindowManager?.getWindow(target.pluginId) || null;
+      }
+      return this.windowManager?.getMainWindow() || null;
+    };
+
+    // Window extended control
+    this.app.post('/api/windows/minimize', (req, res) => {
+      const win = getTargetBrowserWindow(req);
+      if (win && !win.isDestroyed()) { win.minimize(); return res.json({ success: true }); }
+      res.status(404).json({ success: false, error: 'WINDOW_NOT_FOUND' });
+    });
+
+    this.app.post('/api/windows/maximize', (req, res) => {
+      const win = getTargetBrowserWindow(req);
+      if (win && !win.isDestroyed()) {
+        if (win.isMaximized()) win.unmaximize(); else win.maximize();
+        return res.json({ success: true });
+      }
+      res.status(404).json({ success: false, error: 'WINDOW_NOT_FOUND' });
+    });
+
+    this.app.post('/api/windows/restore', (req, res) => {
+      const win = getTargetBrowserWindow(req);
+      if (win && !win.isDestroyed()) { win.restore(); return res.json({ success: true }); }
+      res.status(404).json({ success: false, error: 'WINDOW_NOT_FOUND' });
+    });
+
+    this.app.get('/api/windows/size', (req, res) => {
+      const win = getTargetBrowserWindow(req);
+      if (win && !win.isDestroyed()) {
+        const [width, height] = win.getSize();
+        return res.json({ success: true, width, height });
+      }
+      res.status(404).json({ success: false, error: 'WINDOW_NOT_FOUND' });
+    });
+
+    this.app.post('/api/windows/size', (req, res) => {
+      const win = getTargetBrowserWindow(req);
+      if (win && !win.isDestroyed()) {
+        const { width, height } = req.body;
+        if (typeof width === 'number' && typeof height === 'number') {
+          win.setSize(width, height);
+          return res.json({ success: true });
+        }
+        return res.status(400).json({ success: false, error: 'INVALID_SIZE' });
+      }
+      res.status(404).json({ success: false, error: 'WINDOW_NOT_FOUND' });
+    });
+
+    this.app.get('/api/windows/position', (req, res) => {
+      const win = getTargetBrowserWindow(req);
+      if (win && !win.isDestroyed()) {
+        const [x, y] = win.getPosition();
+        return res.json({ success: true, x, y });
+      }
+      res.status(404).json({ success: false, error: 'WINDOW_NOT_FOUND' });
+    });
+
+    this.app.post('/api/windows/position', (req, res) => {
+      const win = getTargetBrowserWindow(req);
+      if (win && !win.isDestroyed()) {
+        const { x, y } = req.body;
+        if (typeof x === 'number' && typeof y === 'number') {
+          win.setPosition(x, y);
+          return res.json({ success: true });
+        }
+        return res.status(400).json({ success: false, error: 'INVALID_POSITION' });
+      }
+      res.status(404).json({ success: false, error: 'WINDOW_NOT_FOUND' });
+    });
+
+    this.app.post('/api/windows/opacity', (req, res) => {
+      const win = getTargetBrowserWindow(req);
+      if (win && !win.isDestroyed()) {
+        const { opacity } = req.body;
+        if (typeof opacity === 'number') {
+          win.setOpacity(opacity);
+          return res.json({ success: true });
+        }
+        return res.status(400).json({ success: false, error: 'INVALID_OPACITY' });
+      }
+      res.status(404).json({ success: false, error: 'WINDOW_NOT_FOUND' });
+    });
+
+    this.app.post('/api/windows/top', (req, res) => {
+      const win = getTargetBrowserWindow(req);
+      if (win && !win.isDestroyed()) {
+        const { flag } = req.body;
+        win.setAlwaysOnTop(!!flag);
+        return res.json({ success: true });
+      }
+      res.status(404).json({ success: false, error: 'WINDOW_NOT_FOUND' });
+    });
+
+    this.app.post('/api/windows/resizable', (req, res) => {
+      const win = getTargetBrowserWindow(req);
+      if (win && !win.isDestroyed()) {
+        const { flag } = req.body;
+        win.setResizable(!!flag);
+        return res.json({ success: true });
+      }
+      res.status(404).json({ success: false, error: 'WINDOW_NOT_FOUND' });
+    });
+
+    this.app.post('/api/windows/ignore-mouse', (req, res) => {
+      const win = getTargetBrowserWindow(req);
+      if (win && !win.isDestroyed()) {
+        const { ignore, options } = req.body;
+        win.setIgnoreMouseEvents(!!ignore, options);
+        return res.json({ success: true });
+      }
+      res.status(404).json({ success: false, error: 'WINDOW_NOT_FOUND' });
+    });
+
+
+
+    // FS (Scoped)
+    this.app.post('/api/fs/read', async (req, res) => {
+      try {
+        const { path: relPath } = req.body;
+        const { pluginId } = resolveWindow(req);
+        if (!pluginId) return res.status(403).json({ error: 'PLUGIN_CONTEXT_REQUIRED' });
+        const storageRoot = path.join(app.getPath('userData'), 'plugin-data', pluginId);
+        const safePath = path.resolve(storageRoot, relPath);
+        if (!safePath.startsWith(storageRoot)) return res.status(403).json({ error: 'PATH_TRAVERSAL' });
+        if (!fs.existsSync(safePath)) return res.status(404).json({ error: 'FILE_NOT_FOUND' });
+        const content = fs.readFileSync(safePath, 'utf-8');
+        res.json({ success: true, data: content });
+      } catch (error: any) {
+        res.status(500).json({ success: false, error: error?.message });
+      }
+    });
+
+    this.app.post('/api/fs/write', async (req, res) => {
+      try {
+        const { path: relPath, content } = req.body;
+        const { pluginId } = resolveWindow(req);
+        if (!pluginId) return res.status(403).json({ error: 'PLUGIN_CONTEXT_REQUIRED' });
+        const storageRoot = path.join(app.getPath('userData'), 'plugin-data', pluginId);
+        if (!fs.existsSync(storageRoot)) fs.mkdirSync(storageRoot, { recursive: true });
+        const safePath = path.resolve(storageRoot, relPath);
+        if (!safePath.startsWith(storageRoot)) return res.status(403).json({ error: 'PATH_TRAVERSAL' });
+        fs.writeFileSync(safePath, content, 'utf-8');
+        res.json({ success: true });
+      } catch (error: any) {
+        res.status(500).json({ success: false, error: error?.message });
+      }
+    });
+
+    // Shortcut
+    this.app.post('/api/shortcut/register', (req, res) => {
+      const { accelerator } = req.body;
+      const { pluginId } = resolveWindow(req);
+      if (!pluginId) return res.status(400).json({ error: 'PLUGIN_CONTEXT_REQUIRED' });
+      
+      // Note: Electron globalShortcut is global. Conflict management is needed but skipped for now.
+      try {
+        // 1. Validate modifier
+        const lowerAcc = accelerator.toLowerCase();
+        const hasModifier = ['commandorcontrol', 'cmdorctrl', 'command', 'control', 'ctrl', 'alt', 'option', 'shift', 'super', 'meta']
+          .some(m => lowerAcc.includes(m));
+        
+        if (!hasModifier) {
+           return res.status(400).json({ success: false, error: 'INVALID_SHORTCUT_NO_MODIFIER' });
+        }
+
+        // 2. Check conflict (Global)
+        if (globalShortcut.isRegistered(accelerator)) {
+           return res.status(409).json({ success: false, error: 'SHORTCUT_ALREADY_REGISTERED' });
+        }
+
+        const ret = globalShortcut.register(accelerator, () => {
+          // Send event to plugin
+          this.pluginWindowManager?.send(pluginId, 'shortcut-triggered', { accelerator });
+          
+          // Broadcast to SSE clients (UI/Overlay)
+          const channel = `plugin:${pluginId}:overlay`;
+          try {
+            this.dataManager.publish(channel, { 
+              event: 'shortcut-triggered', 
+              payload: { accelerator } 
+            }, { 
+              ttlMs: 5000, 
+              persist: false, 
+              meta: { kind: 'shortcut' } 
+            });
+          } catch (err) {
+            console.error('[ApiServer] Failed to broadcast shortcut event', err);
+          }
+        });
+        if (!ret) return res.json({ success: false, error: 'REGISTER_FAILED' });
+        
+        // Track shortcut
+        if (!this.pluginShortcuts.has(pluginId)) {
+          this.pluginShortcuts.set(pluginId, new Set());
+        }
+        this.pluginShortcuts.get(pluginId)?.add(accelerator);
+
+        res.json({ success: true });
+      } catch (e: any) {
+        res.status(500).json({ success: false, error: e.message });
+      }
+    });
+
+    this.app.post('/api/shortcut/unregister', (req, res) => {
+      const { accelerator } = req.body;
+      const { pluginId } = resolveWindow(req);
+      
+      try {
+        // Handle wildcard "*"
+        if (accelerator === '*') {
+          if (!pluginId) return res.status(400).json({ error: 'PLUGIN_CONTEXT_REQUIRED_FOR_WILDCARD' });
+          const shortcuts = this.pluginShortcuts.get(pluginId);
+          if (shortcuts) {
+            for (const acc of shortcuts) {
+              try { globalShortcut.unregister(acc); } catch {}
+            }
+            shortcuts.clear();
+          }
+          return res.json({ success: true });
+        }
+
+        // Handle array or single string
+        const targets = Array.isArray(accelerator) ? accelerator : [accelerator];
+        
+        for (const acc of targets) {
+          if (acc === '*') { // Allow mixed wildcard in array? Be safe and ignore or treat as wildcard logic above if standalone.
+             continue; // Ignore wildcard inside array for safety or strictness.
+          }
+          globalShortcut.unregister(acc);
+          if (pluginId && this.pluginShortcuts.has(pluginId)) {
+            this.pluginShortcuts.get(pluginId)?.delete(acc);
+          }
+        }
+        res.json({ success: true });
+      } catch (e: any) {
+        res.status(500).json({ success: false, error: e.message });
+      }
+    });
+
+    this.app.post('/api/shortcut/unregister-all', (req, res) => {
+      const { pluginId } = resolveWindow(req);
+      if (!pluginId) return res.status(400).json({ error: 'PLUGIN_CONTEXT_REQUIRED' });
+
+      try {
+        const shortcuts = this.pluginShortcuts.get(pluginId);
+        if (shortcuts) {
+          for (const acc of shortcuts) {
+            try { globalShortcut.unregister(acc); } catch {}
+          }
+          shortcuts.clear();
+        }
+        res.json({ success: true });
+      } catch (e: any) {
+        res.status(500).json({ success: false, error: e.message });
+      }
+    });
+
+    this.app.post('/api/shortcut/list', (req, res) => {
+      const { pluginId } = resolveWindow(req);
+      if (!pluginId) return res.status(400).json({ error: 'PLUGIN_CONTEXT_REQUIRED' });
+      
+      const shortcuts = this.pluginShortcuts.get(pluginId);
+      res.json({ success: true, shortcuts: shortcuts ? Array.from(shortcuts) : [] });
+    });
+
+    this.app.post('/api/shortcut/is-registered', (req, res) => {
+      const { accelerator } = req.body;
+      try {
+        const registered = globalShortcut.isRegistered(accelerator);
+        res.json({ success: true, registered });
+      } catch (e: any) {
+        res.status(500).json({ success: false, error: e.message });
+      }
+    });
 
     // Window control: show
     this.app.post('/api/windows/show', async (req: express.Request, res: express.Response) => {
@@ -586,6 +950,65 @@ export class ApiServer {
         return res.status(404).json({ success: false, error: 'MAIN_WINDOW_NOT_FOUND' });
       } catch (error: any) {
         return res.status(500).json({ success: false, error: error?.message || 'FOCUS_FAILED' });
+      }
+    });
+
+    // Window control: blur
+    this.app.post('/api/windows/blur', async (req: express.Request, res: express.Response) => {
+      try {
+        const target = resolveWindow(req);
+        if (target.pluginId) {
+          const win = this.pluginWindowManager?.getWindow(target.pluginId);
+          if (win && !win.isDestroyed()) { win.blur(); return res.json({ success: true }); }
+          return res.status(404).json({ success: false, error: 'WINDOW_NOT_FOUND' });
+        }
+        const win = this.windowManager?.getMainWindow();
+        if (win && !win.isDestroyed()) { try { win.blur(); } catch {} return res.json({ success: true }); }
+        return res.status(404).json({ success: false, error: 'MAIN_WINDOW_NOT_FOUND' });
+      } catch (error: any) {
+        return res.status(500).json({ success: false, error: error?.message || 'BLUR_FAILED' });
+      }
+    });
+
+    // Window control: hide
+    this.app.post('/api/windows/hide', async (req: express.Request, res: express.Response) => {
+      try {
+        const target = resolveWindow(req);
+        if (target.pluginId) {
+          const win = this.pluginWindowManager?.getWindow(target.pluginId);
+          if (win && !win.isDestroyed()) { win.hide(); return res.json({ success: true }); }
+          return res.status(404).json({ success: false, error: 'WINDOW_NOT_FOUND' });
+        }
+        const win = this.windowManager?.getMainWindow();
+        if (win && !win.isDestroyed()) { try { win.hide(); } catch {} return res.json({ success: true }); }
+        return res.status(404).json({ success: false, error: 'MAIN_WINDOW_NOT_FOUND' });
+      } catch (error: any) {
+        return res.status(500).json({ success: false, error: error?.message || 'HIDE_FAILED' });
+      }
+    });
+
+    // Logger API
+    this.app.post('/api/logger', (req: express.Request, res: express.Response) => {
+      try {
+        const { level, message } = req.body;
+        const { pluginId } = resolveWindow(req);
+        const msg = String(message || '');
+        
+        if (pluginId) {
+          if (level === 'error') pluginLogger.error(msg, pluginId);
+          else if (level === 'warn') pluginLogger.warn(msg, pluginId);
+          else pluginLogger.info(msg, pluginId);
+        } else {
+          const logManager = getLogManager();
+          const src = 'Plugin:Unknown';
+          if (level === 'error') logManager.addLog(src, msg, 'error');
+          else if (level === 'warn') logManager.addLog(src, msg, 'warn');
+          else logManager.addLog(src, msg, 'info');
+        }
+        
+        res.json({ success: true });
+      } catch (error: any) {
+        res.status(500).json({ success: false, error: error?.message });
       }
     });
 
@@ -627,6 +1050,43 @@ export class ApiServer {
         return res.json({ success: true, windowId });
       } catch (error: any) {
         return res.status(500).json({ success: false, error: error?.message || 'SELF_FAILED' });
+      }
+    });
+
+    // System control
+    this.app.post('/api/system/open-external', async (req: express.Request, res: express.Response) => {
+      try {
+        const { url } = req.body;
+        if (!url) return res.status(400).json({ success: false, error: 'URL_REQUIRED' });
+        await shell.openExternal(url);
+        res.json({ success: true });
+      } catch (error: any) {
+        res.status(500).json({ success: false, error: error?.message || 'OPEN_EXTERNAL_FAILED' });
+      }
+    });
+
+    this.app.post('/api/system/show-item', async (req: express.Request, res: express.Response) => {
+      try {
+        const { path: itemPath } = req.body;
+        if (!itemPath) return res.status(400).json({ success: false, error: 'PATH_REQUIRED' });
+        const fullPath = path.resolve(itemPath);
+        shell.showItemInFolder(fullPath);
+        res.json({ success: true });
+      } catch (error: any) {
+        res.status(500).json({ success: false, error: error?.message || 'SHOW_ITEM_FAILED' });
+      }
+    });
+
+    this.app.post('/api/system/open-path', async (req: express.Request, res: express.Response) => {
+      try {
+        const { path: itemPath } = req.body;
+        if (!itemPath) return res.status(400).json({ success: false, error: 'PATH_REQUIRED' });
+        const fullPath = path.resolve(itemPath);
+        const error = await shell.openPath(fullPath);
+        if (error) throw new Error(error);
+        res.json({ success: true });
+      } catch (error: any) {
+        res.status(500).json({ success: false, error: error?.message || 'OPEN_PATH_FAILED' });
       }
     });
 
@@ -756,6 +1216,144 @@ export class ApiServer {
       }
     });
 
+    // Plugin Storage API
+    
+    // POST /api/plugins/:pluginId/storage - Write
+    this.app.post('/api/plugins/:pluginId/storage', async (req: express.Request, res: express.Response) => {
+      try {
+        const pluginId = String(req.params.pluginId || '').trim();
+        if (!pluginId) return res.status(400).json({ success: false, error: 'INVALID_PLUGIN_ID' });
+        
+        // Ensure table exists
+        await this.ensurePluginStorageTable();
+
+        const row = req.body;
+        const db = this.databaseManager.getDb();
+        const createTime = Date.now();
+        
+        await new Promise<void>((resolve, reject) => {
+          db.run(
+            `INSERT INTO plugin_storage (plugin_id, createTime, data) VALUES (?, ?, ?)`,
+            [pluginId, createTime, JSON.stringify(row || {})],
+            function(err) {
+              if (err) reject(err);
+              else resolve();
+            }
+          );
+        });
+
+        res.json({ success: true });
+      } catch (error: any) {
+        res.status(500).json({ success: false, error: error?.message });
+      }
+    });
+
+    // GET /api/plugins/:pluginId/storage - Read
+    this.app.get('/api/plugins/:pluginId/storage', async (req: express.Request, res: express.Response) => {
+      try {
+        const pluginId = String(req.params.pluginId || '').trim();
+        if (!pluginId) return res.status(400).json({ success: false, error: 'INVALID_PLUGIN_ID' });
+
+        await this.ensurePluginStorageTable();
+        const db = this.databaseManager.getDb();
+        
+        const queryText = req.query.q ? String(req.query.q) : undefined;
+        const size = req.query.size ? Math.max(1, parseInt(String(req.query.size))) : 1; // Default 1, unless size passed
+
+        let sql = `SELECT id, plugin_id, createTime, data FROM plugin_storage WHERE plugin_id = ?`;
+        const params: any[] = [pluginId];
+
+        if (queryText) {
+          sql += ` AND data LIKE ?`;
+          params.push(`%${queryText}%`);
+        }
+
+        sql += ` ORDER BY createTime DESC LIMIT ?`;
+        params.push(size);
+
+        const rows = await new Promise<any[]>((resolve, reject) => {
+          db.all(sql, params, (err, rows) => {
+            if (err) reject(err);
+            else resolve(rows || []);
+          });
+        });
+
+        // Parse JSON data
+        const results = rows.map(r => {
+          try {
+            return { ...r, data: JSON.parse(r.data) };
+          } catch {
+            return r;
+          }
+        });
+
+        // If size not passed (default 1), user might expect single object or array?
+        // Requirement says: "如果不传入size参数则返回最新一条数据，否则按createTime倒序排列返回size行数数据"
+        // Usually list API returns list. "返回最新一条数据" could mean return object directly or list of 1.
+        // Given "返回数据行数组" for the other case, and typically consistency, I'll return array.
+        // BUT, if the user explicitly wants "Latest ONE data" (singular), maybe they expect the object.
+        // However, "storage Read... 返回数据行数组" (Return data row array).
+        // So I will return array.
+        res.json({ success: true, data: results });
+      } catch (error: any) {
+        res.status(500).json({ success: false, error: error?.message });
+      }
+    });
+
+    // GET /api/plugins/:pluginId/storage/size - Count
+    this.app.get('/api/plugins/:pluginId/storage/size', async (req: express.Request, res: express.Response) => {
+      try {
+        const pluginId = String(req.params.pluginId || '').trim();
+        if (!pluginId) return res.status(400).json({ success: false, error: 'INVALID_PLUGIN_ID' });
+
+        await this.ensurePluginStorageTable();
+        const db = this.databaseManager.getDb();
+
+        const count = await new Promise<number>((resolve, reject) => {
+          db.get(`SELECT COUNT(*) as count FROM plugin_storage WHERE plugin_id = ?`, [pluginId], (err, row: any) => {
+            if (err) reject(err);
+            else resolve(row ? row.count : 0);
+          });
+        });
+
+        res.json({ success: true, count });
+      } catch (error: any) {
+        res.status(500).json({ success: false, error: error?.message });
+      }
+    });
+
+    // POST /api/plugins/:pluginId/storage/remove - Remove
+    this.app.post('/api/plugins/:pluginId/storage/remove', async (req: express.Request, res: express.Response) => {
+      try {
+        const pluginId = String(req.params.pluginId || '').trim();
+        if (!pluginId) return res.status(400).json({ success: false, error: 'INVALID_PLUGIN_ID' });
+        
+        const { ids } = req.body;
+        if (!Array.isArray(ids) || ids.length === 0) {
+           return res.status(400).json({ success: false, error: 'INVALID_IDS' });
+        }
+
+        await this.ensurePluginStorageTable();
+        const db = this.databaseManager.getDb();
+        
+        // Safe parameter substitution for IN clause
+        const placeholders = ids.map(() => '?').join(',');
+        const sql = `DELETE FROM plugin_storage WHERE plugin_id = ? AND id IN (${placeholders})`;
+        const params = [pluginId, ...ids];
+
+        await new Promise<void>((resolve, reject) => {
+          db.run(sql, params, function(err) {
+            if (err) reject(err);
+            else resolve();
+          });
+        });
+
+        res.json({ success: true });
+      } catch (error: any) {
+        res.status(500).json({ success: false, error: error?.message });
+      }
+    });
+
     // GET /api/plugins/:pluginId/config - 读取插件已保存配置（只读）
     this.app.get('/api/plugins/:pluginId/config', (req: express.Request, res: express.Response) => {
       try {
@@ -792,6 +1390,108 @@ export class ApiServer {
       }
     });
 
+    // POST /api/plugins/:pluginId/config - 更新插件配置
+    this.app.post('/api/plugins/:pluginId/config', (req: express.Request, res: express.Response) => {
+      try {
+        const pluginId = String(req.params.pluginId || '').trim();
+        if (!pluginId) return res.status(400).json({ success: false, error: 'INVALID_PLUGIN_ID' });
+        const updates = req.body;
+        
+        const cfg = new ConfigManager();
+        const current = (cfg.get(`plugins.${pluginId}.config`, {}) || {}) as Record<string, any>;
+        const next = { ...current, ...updates };
+        cfg.set(`plugins.${pluginId}.config`, next);
+        
+        // Broadcast config change
+        const channel = `plugin:${pluginId}:overlay`;
+        try {
+          this.dataManager.publish(channel, { event: 'config-changed', payload: next }, { ttlMs: 10000, persist: false, meta: { kind: 'config' } });
+        } catch {}
+        
+        res.json({ success: true, data: next });
+      } catch (error) {
+        res.status(500).json({ success: false, error: (error as Error).message });
+      }
+    });
+
+    // DELETE /api/plugins/:pluginId/config - 删除配置项
+    this.app.delete('/api/plugins/:pluginId/config', (req: express.Request, res: express.Response) => {
+      try {
+        const pluginId = String(req.params.pluginId || '').trim();
+        if (!pluginId) return res.status(400).json({ success: false, error: 'INVALID_PLUGIN_ID' });
+        
+        const key = req.body.key;
+        if (!key) return res.status(400).json({ success: false, error: 'KEY_REQUIRED' });
+
+        const cfg = new ConfigManager();
+        const current = (cfg.get(`plugins.${pluginId}.config`, {}) || {}) as Record<string, any>;
+        
+        if (key in current) {
+          delete current[key];
+          cfg.set(`plugins.${pluginId}.config`, current);
+          
+          // Broadcast config change
+          const channel = `plugin:${pluginId}:overlay`;
+          try {
+            this.dataManager.publish(channel, { event: 'config-changed', payload: current }, { ttlMs: 10000, persist: false, meta: { kind: 'config' } });
+          } catch {}
+        }
+
+        res.json({ success: true, data: current });
+      } catch (error) {
+        res.status(500).json({ success: false, error: (error as Error).message });
+      }
+    });
+
+    // POST /api/proxy/request - 通用 HTTP 请求代理 (避免 renderer CORS)
+    this.app.post('/api/proxy/request', async (req: express.Request, res: express.Response) => {
+      try {
+        const { method, url, headers, body } = req.body;
+        if (!url) return res.status(400).json({ success: false, error: 'URL_REQUIRED' });
+
+        if (!/^https?:\/\//.test(url)) {
+             return res.status(400).json({ success: false, error: 'INVALID_URL_PROTOCOL' });
+        }
+
+        const fetchOptions: any = {
+          method: method || 'GET',
+          headers: headers || {},
+        };
+        
+        if (body !== undefined && body !== null) {
+           if (typeof body === 'object') {
+              fetchOptions.body = JSON.stringify(body);
+              const hasCt = Object.keys(fetchOptions.headers).some(k => k.toLowerCase() === 'content-type');
+              if (!hasCt) {
+                 fetchOptions.headers['Content-Type'] = 'application/json';
+              }
+           } else {
+              fetchOptions.body = String(body);
+           }
+        }
+
+        const response = await fetch(url, fetchOptions);
+        const status = response.status;
+        const respHeaders: Record<string, string> = {};
+        response.headers.forEach((val, key) => { respHeaders[key] = val; });
+
+        const text = await response.text();
+        let data = text;
+        try {
+           data = JSON.parse(text);
+        } catch {}
+
+        res.json({
+          success: true,
+          data,
+          status,
+          headers: respHeaders
+        });
+      } catch (error: any) {
+        res.status(500).json({ success: false, error: error?.message || 'PROXY_REQUEST_FAILED' });
+      }
+    });
+
     // AcFun API 代理路由 - 将所有 /api/acfun/* 请求代理到 AcfunApiProxy
     this.app.use('/api/acfun', this.acfunApiProxy.createRoutes());
 
@@ -818,12 +1518,12 @@ export class ApiServer {
           }
 
           const segments = reqPath.split('/').filter(Boolean);
-          // 禁用态拦截：仅允许访问图标资源，其余页面/静态资源拒绝
+          // 禁用态拦截：仅允许访问根目录图标文件，其余页面/静态资源拒绝
           try {
             const isEnabled = plugin.status === 'enabled' && plugin.enabled === true;
             if (!isEnabled) {
               const manifestIcon = (plugin.manifest && (plugin.manifest as any).icon) ? String((plugin.manifest as any).icon) : 'icon.svg';
-              const isIconRequest = segments.length === 2 && segments[0] === 'ui' && segments[1] === manifestIcon;
+              const isIconRequest = segments.length === 1 && segments[0] === manifestIcon;
               if (!isIconRequest) {
                 return res.status(403).json({ error: 'PLUGIN_DISABLED', pluginId, path: reqPath });
               }
@@ -831,6 +1531,7 @@ export class ApiServer {
           } catch {}
           // 支持直接 *.html 入口，例如 /plugins/:id/ui.html
           const directHtmlMatch = segments.length === 1 && /^(ui|window|overlay)\.html$/i.test(segments[0]);
+
 
           const getPageConf = (type: 'ui' | 'window' | 'overlay') => {
             const m: any = plugin.manifest || {};
@@ -843,43 +1544,16 @@ export class ApiServer {
           };
 
           const sendFile = (absPath: string) => {
-            // 允许的根目录：插件安装目录；内置示例（base-example）优先使用打包资源（dev: buildResources；prod: process.resourcesPath）
+            // 仅允许安装目录下的文件
             const installRoot = path.resolve(plugin.installPath);
-            const bundledRootCandidates = [
-              path.resolve(path.join(process.cwd(), 'buildResources', 'plugins', plugin.id)),
-              path.resolve(path.join((process as any).resourcesPath || process.cwd(), 'plugins', plugin.id))
-            ];
-            const bundledRoot = bundledRootCandidates.find(p => fs.existsSync(p));
             const resolved = path.resolve(absPath);
 
-            // 计算最终发送路径：
-            // - 开发环境且清单声明 test: true 时，若打包资源存在对应文件，则优先使用打包资源（避免旧版已安装副本覆盖）。
-            // - 其他情况按原规则，仅允许安装目录下的文件。
-            let finalPath = resolved;
-            const isDev = process.env.NODE_ENV === 'development' || !(process as any).isPackaged;
-            const preferBundled = !!bundledRoot && !!(plugin as any).manifest && (plugin as any).manifest.test === true && isDev;
-            if (preferBundled) {
-              // 仅当 resolved 位于安装目录内时，尝试构造打包资源中的等价路径
-              const rel = path.relative(installRoot, resolved);
-              if (!rel.startsWith('..')) {
-                const candidate = path.join(bundledRoot!, rel);
-                if (fs.existsSync(candidate)) {
-                  finalPath = path.resolve(candidate);
-                }
-              }
-            }
-
-            // 防止目录穿越：finalPath 必须位于允许的根目录之一
-            const allowedRoots = [installRoot];
-            if (preferBundled && bundledRoot) {
-              allowedRoots.push(path.resolve(bundledRoot));
-            }
-            const finalResolved = path.resolve(finalPath);
-            const withinAllowed = allowedRoots.some(root => finalResolved.startsWith(path.resolve(root)));
-            if (!withinAllowed) {
+            // 防止目录穿越
+            if (!resolved.startsWith(installRoot)) {
               return res.status(403).json({ error: 'FORBIDDEN_PATH' });
             }
-            if (!fs.existsSync(finalResolved)) {
+            
+            if (!fs.existsSync(resolved)) {
               return res.status(404).json({ error: 'FILE_NOT_FOUND', path: reqPath });
             }
 
@@ -891,8 +1565,16 @@ export class ApiServer {
               res.setHeader('Surrogate-Control', 'no-store');
               res.setHeader('Cross-Origin-Resource-Policy', 'cross-origin');
             } catch {}
-            return res.sendFile(finalResolved);
+            return res.sendFile(resolved);
           };
+
+          // 根目录图标直达：/plugins/:id/<manifest.icon>
+          try {
+            const manifestIcon = (plugin.manifest && (plugin.manifest as any).icon) ? String((plugin.manifest as any).icon) : 'icon.svg';
+            if (segments.length === 1 && segments[0] === manifestIcon) {
+              return sendFile(path.join(plugin.installPath, manifestIcon));
+            }
+          } catch {}
 
           const servePage = (type: 'ui' | 'window' | 'overlay', subPath: string[]) => {
             const conf = getPageConf(type);
@@ -1102,6 +1784,50 @@ export class ApiServer {
     this.app.get('/sse/plugins/:pluginId/overlay', (req: express.Request, res: express.Response) => {
       const pluginId = req.params.pluginId;
       const lastEventId = (req.headers['last-event-id'] as string) || (req.query.lastEventId as string) || undefined;
+      const rawTypes = ((req.query.types as any) || (req.query.type as any) || (req.query.kinds as any) || (req.query.kind as any));
+      const normalize = (v: any): string[] => {
+        if (!v) return [];
+        if (Array.isArray(v)) return v.map(x => String(x || '').trim()).filter(Boolean);
+        return String(v || '').split(',').map(x => x.trim()).filter(Boolean);
+      };
+      const typesArr = normalize(rawTypes);
+      const defaultKinds = ['message', 'update', 'closed', 'action', 'ui', 'lifecycle'];
+      
+      // 解析订阅规则：Map<kind, Set<roomId> | 'all'>
+      const subscriptions = new Map<string, Set<string> | 'all'>();
+      const inputs = typesArr.length > 0 ? typesArr : defaultKinds;
+      const ROOM_REQUIRED_KINDS = new Set(['danmaku']); // 强制要求房间ID的类型
+
+      for (const input of inputs) {
+        // 支持 format: "kind:roomId" (e.g. "danmaku:123456")
+        const parts = input.split(':');
+        const kind = parts[0].toLowerCase();
+        // 如果后面有参数，且不为空，则视为 roomId (暂取第一个参数作为 roomId)
+        const roomId = parts.length > 1 && parts[1].trim() ? parts[1].trim() : undefined;
+
+        // 检查是否强制要求 roomId
+        if (ROOM_REQUIRED_KINDS.has(kind) && !roomId) {
+           res.status(400);
+           res.setHeader('Content-Type', 'application/json; charset=utf-8');
+           return res.end(JSON.stringify({
+             success: false,
+             error: `Subscription kind '${kind}' requires a roomId (e.g. '${kind}:123456').`
+           }));
+        }
+
+        if (!subscriptions.has(kind)) {
+          subscriptions.set(kind, new Set());
+        }
+        const current = subscriptions.get(kind)!;
+
+        // 如果已经是 'all' (全量订阅)，或者本次输入没有指定 roomId (表示该类型全量)，则设为 'all'
+        if (current === 'all' || !roomId) {
+          subscriptions.set(kind, 'all');
+        } else {
+          // 否则加入 roomId 白名单
+          (current as Set<string>).add(roomId);
+        }
+      }
 
       // 禁用态：拒绝订阅 overlay SSE（避免禁用插件仍可接收事件）
       try {
@@ -1120,24 +1846,58 @@ export class ApiServer {
       res.setHeader('X-Accel-Buffering', 'no');
       try { (res as any).flushHeaders?.(); } catch {}
       try { res.write(`:\n\n`); } catch {}
-      console.log('[ApiServer#SSE /sse/plugins/:pluginId/overlay] connect', { pluginId, lastEventId });
+      console.log('[ApiServer#SSE /sse/plugins/:pluginId/overlay] connect', { pluginId, lastEventId, subscriptions: Array.from(subscriptions.entries()) });
 
       const channel = `plugin:${pluginId}:overlay`;
       try { (require('./SseQueueService') as any).SseQueueService.getInstance().markReady(channel); } catch {}
       const statusManager = PluginPageStatusManager.getInstance();
       const clientId = `${Math.random().toString(36).slice(2)}${Date.now().toString(36)}`;
 
+      const checkFilter = (kind: string, rec: any): boolean => {
+        const filter = subscriptions.get(kind);
+        if (!filter) return false; // 未订阅该类型
+
+        if (filter === 'all') return true; // 全量订阅该类型
+
+        // 按房间ID过滤
+        // 尝试从常见 payload 结构中提取 roomId
+        let eventRoomId: string | undefined;
+        const payload = rec.payload; // 这是 DataManager 包装的 { event, payload: inner }
+
+        // 1. normalized-event (danmaku) -> payload.payload.room_id
+        if (payload?.payload?.room_id) {
+          eventRoomId = String(payload.payload.room_id);
+        }
+        // 2. room events (room-status-change, etc) -> payload.payload.roomId
+        else if (payload?.payload?.roomId) {
+          eventRoomId = String(payload.payload.roomId);
+        }
+        
+        // 如果无法提取房间ID，但在白名单模式下，默认视为不匹配（安全策略）
+        // 或者也可以放行（宽松策略）。考虑到这是为了减少负载，严格匹配更好。
+        if (eventRoomId && filter.has(eventRoomId)) {
+          return true;
+        }
+        
+        return false;
+      };
+
       const sendRecord = (rec: any) => {
         try {
           if (rec && typeof rec.id === 'string') {
             res.write(`id: ${rec.id}\n`);
           }
-          const kind = (rec?.meta && rec.meta.kind) || 'message';
+          const kind = String((rec?.meta && rec.meta.kind) || 'message').toLowerCase();
+          
+          if (!checkFilter(kind, rec)) {
+            return;
+          }
+
           res.write(`event: ${kind}\n`);
           res.write(`data: ${JSON.stringify(rec)}\n\n`);
           try {
             var msg = (rec && rec.payload) || rec;
-            console.log('[ApiServer#SSE /sse/plugins/:pluginId/overlay] sendRecord', { pluginId, kind, overlayId: msg && msg.overlayId, event: msg && msg.event });
+            // console.log('[ApiServer#SSE /sse/plugins/:pluginId/overlay] sendRecord', { pluginId, kind, overlayId: msg && msg.overlayId, event: msg && msg.event });
           } catch {}
         } catch (e) {
           console.warn('[ApiServer] SSE(plugin overlay) send failed:', e);
@@ -1167,13 +1927,17 @@ export class ApiServer {
 
       // 回放自 lastEventId 之后的记录
       try {
-        let recent = this.dataManager.getRecent(channel, lastEventId);
+        let recent = this.dataManager.getRecent(channel, lastEventId).filter(r => {
+          const kind = String(r?.meta?.kind ?? 'message').toLowerCase();
+          return checkFilter(kind, r);
+        });
         if (!lastEventId) {
           const picked: any[] = [];
           const seen = new Set<string>();
           for (let i = recent.length - 1; i >= 0; i--) {
             const kind = recent[i]?.meta?.kind ?? 'message';
-            if (!seen.has(kind)) { seen.add(kind); picked.push(recent[i]); }
+            const k = String(kind).toLowerCase();
+            if (!seen.has(k)) { seen.add(k); picked.push(recent[i]); }
           }
           recent = picked.reverse();
         }
@@ -1365,6 +2129,7 @@ export class ApiServer {
         if (!Array.isArray(keys) || keys.length === 0) {
           return res.status(400).json({ success: false, error: 'INVALID_KEYS' });
         }
+        const isWildcard = keys.includes('*');
         const allow = new Set<string>(keys.map(k => String(k)));
         const channel = 'renderer:readonly-store';
         const recent = this.dataManager.getRecent(channel) || [];
@@ -1374,7 +2139,10 @@ export class ApiServer {
           const data = outer && (outer.payload ?? outer);
           if (!data || typeof data !== 'object' || Array.isArray(data)) continue;
           for (const key of Object.keys(data)) {
-            if (!allow.has(key)) continue;
+            if (!isWildcard && !allow.has(key)) continue;
+            // Wildcard blacklist: token, plugin
+            if (isWildcard && (key === 'token' || key === 'plugin')) continue;
+            
             const val = (data as any)[key];
             if (val === undefined) continue;
             snapshot[key] = val;
@@ -1403,6 +2171,7 @@ export class ApiServer {
         return;
       }
       const keys = rawKeys.split(',').map(s => s.trim()).filter(Boolean);
+      const isWildcard = keys.includes('*');
       const allow = new Set<string>(keys);
       const channel = 'renderer:readonly-store';
           const sendRecord = (rec: any) => {
@@ -1418,7 +2187,11 @@ export class ApiServer {
               const dataObj = (payload && payload.payload) ? { ...(payload.payload || {}) } : {};
               try { if (dataObj && typeof dataObj === 'object' && 'plugin' in dataObj) delete (dataObj as any).plugin; } catch {}
           const filtered: Record<string, any> = {};
-          for (const k of Object.keys(dataObj)) { if (allow.has(k)) filtered[k] = (dataObj as any)[k]; }
+          for (const k of Object.keys(dataObj)) { 
+            if (!isWildcard && !allow.has(k)) continue;
+            if (isWildcard && (k === 'token' || k === 'plugin')) continue;
+            filtered[k] = (dataObj as any)[k]; 
+          }
           if (Object.keys(filtered).length === 0) { return; }
           res.write(`event: ${evt}\n`);
           res.write(`data: ${JSON.stringify(filtered)}\n\n`);
@@ -1438,7 +2211,11 @@ export class ApiServer {
           for (const key of Object.keys(data)) {
             const val = (data as any)[key];
             if (val === undefined) continue;
-            if (allow.has(key)) snapshot[key] = val;
+            
+            if (!isWildcard && !allow.has(key)) continue;
+            if (isWildcard && (key === 'token' || key === 'plugin')) continue;
+
+            snapshot[key] = val;
           }
         }
         if ('plugin' in snapshot) delete (snapshot as any).plugin;
@@ -1609,6 +2386,10 @@ export class ApiServer {
     });
   }
 
+  public setRoomManager(roomManager: import('../rooms/RoomManager').RoomManager): void {
+    try { this.acfunApiProxy.setRoomManager(roomManager); } catch {}
+  }
+
   /**
    * 配置错误处理
    */
@@ -1636,6 +2417,9 @@ export class ApiServer {
    */
   public getApp(): express.Application {
     return this.app;
+  }
+  public getLastError(): string | undefined {
+    return this.lastStartError;
   }
 
   /**
@@ -1668,6 +2452,15 @@ export class ApiServer {
         this.server = createServer(this.app);
         console.log(`[ApiServer] HTTP server created, starting listen on ${this.config.host}:${this.config.port}`);
 
+        try {
+          this.server.on('connection', (socket) => {
+            try {
+              this.connections.add(socket);
+              socket.on('close', () => { try { this.connections.delete(socket); } catch {} });
+            } catch {}
+          });
+        } catch {}
+
         this.server.listen(this.config.port, this.config.host, () => {
           console.log(`[ApiServer] HTTP server running at http://${this.config.host}:${this.config.port}`);
           try {
@@ -1677,16 +2470,19 @@ export class ApiServer {
           } catch (err) {
             console.error('[ApiServer] WebSocket initialization failed:', err);
           }
+          this.lastStartError = undefined;
           resolve();
         });
 
         this.server.on('error', (error) => {
           console.error('[ApiServer] Server error:', error);
+          try { this.lastStartError = String((error as any)?.message || error); } catch {}
           reject(error);
         });
 
       } catch (error) {
         console.error('[ApiServer] Start failed:', error);
+        try { this.lastStartError = String((error as any)?.message || error); } catch {}
         reject(error);
       }
     });
@@ -1703,7 +2499,26 @@ export class ApiServer {
       this.wsHub.close();
 
       if (this.server) {
+        try {
+          for (const s of Array.from(this.connections)) {
+            try { s.destroy(); } catch {}
+          }
+          this.connections.clear();
+        } catch {}
+
+        let settled = false;
+        const timer = setTimeout(() => {
+          if (settled) return;
+          settled = true;
+          try { console.warn('[ApiServer] Server close timed out; proceeding'); } catch {}
+          try { this.server = null; } catch {}
+          resolve();
+        }, 3000);
+
         this.server.close(() => {
+          if (settled) return;
+          settled = true;
+          try { clearTimeout(timer); } catch {}
           console.log('[ApiServer] Server closed');
           this.server = null;
           resolve();
@@ -1714,6 +2529,30 @@ export class ApiServer {
     });
   }
 
+
+  /**
+   * Ensure plugin_storage table exists
+   */
+  private async ensurePluginStorageTable(): Promise<void> {
+    const db = this.databaseManager.getDb();
+    return new Promise((resolve, reject) => {
+      db.run(`
+        CREATE TABLE IF NOT EXISTS plugin_storage (
+          id INTEGER PRIMARY KEY AUTOINCREMENT,
+          plugin_id TEXT NOT NULL,
+          createTime INTEGER NOT NULL,
+          data TEXT NOT NULL
+        )
+      `, (err) => {
+        if (err) return reject(err);
+        // Add index on plugin_id and createTime for faster queries
+        db.run(`CREATE INDEX IF NOT EXISTS idx_plugin_storage_pid_time ON plugin_storage (plugin_id, createTime DESC)`, (err2) => {
+           if (err2) console.warn('[ApiServer] Failed to create index for plugin_storage:', err2);
+           resolve();
+        });
+      });
+    });
+  }
 
   /**
    * HTML转义

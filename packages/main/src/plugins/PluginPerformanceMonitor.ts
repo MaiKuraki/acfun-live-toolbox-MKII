@@ -19,6 +19,10 @@ export interface PerformanceConfig {
   enableDetailedMonitoring: boolean;
   /** 启用性能分析 */
   enableProfiling: boolean;
+  /** 清理日志节流间隔 (毫秒) */
+  cleanupLogThrottleMs?: number;
+  /** 清理日志最小移除数阈值 */
+  cleanupLogMinRemoved?: number;
 }
 
 export interface PerformanceMetrics {
@@ -106,6 +110,7 @@ export class PluginPerformanceMonitor extends TypedEventEmitter<PerformanceEvent
   private monitorTimer?: NodeJS.Timeout;
   private lastCpuUsage: Map<string, NodeJS.CpuUsage> = new Map();
   private pluginStartTimes: Map<string, number> = new Map();
+  private lastCleanupLogTime: Map<string, number> = new Map();
 
   constructor(config: Partial<PerformanceConfig> = {}) {
     super();
@@ -117,6 +122,8 @@ export class PluginPerformanceMonitor extends TypedEventEmitter<PerformanceEvent
       cpuWarningThreshold: config.cpuWarningThreshold || 80, // 80%
       enableDetailedMonitoring: config.enableDetailedMonitoring !== false,
       enableProfiling: config.enableProfiling || false,
+      cleanupLogThrottleMs: typeof config.cleanupLogThrottleMs === 'number' ? config.cleanupLogThrottleMs : 15 * 60 * 1000,
+      cleanupLogMinRemoved: typeof config.cleanupLogMinRemoved === 'number' ? config.cleanupLogMinRemoved : 100,
     };
 
     this.startMonitoring();
@@ -462,11 +469,19 @@ export class PluginPerformanceMonitor extends TypedEventEmitter<PerformanceEvent
       
       if (validMetrics.length !== history.length) {
         this.metricsHistory.set(pluginId, validMetrics);
-        
-        pluginLogger.debug('Cleaned up old metrics', pluginId, {
-          removed: history.length - validMetrics.length,
-          remaining: validMetrics.length,
-        });
+        const removed = history.length - validMetrics.length;
+        const now = Date.now();
+        const throttleMs = this.config.cleanupLogThrottleMs || 0;
+        const minRemoved = this.config.cleanupLogMinRemoved || 0;
+        const lastTs = this.lastCleanupLogTime.get(pluginId) || 0;
+
+        if (removed >= minRemoved || now - lastTs >= throttleMs) {
+          this.lastCleanupLogTime.set(pluginId, now);
+          pluginLogger.debug('Cleaned up old metrics', pluginId, {
+            removed,
+            remaining: validMetrics.length,
+          });
+        }
       }
     }
   }

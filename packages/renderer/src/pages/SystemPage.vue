@@ -502,13 +502,15 @@ const exportData = async () => {
     const toTs = new Date(end).getTime()
 
     const filename = `export-${roomId}-${new Date().toISOString().replace(/[:.]/g, '-')}.csv`
-    const result = await window.electronApi.http.get('/api/export', {
-      room_id: roomId,
-      from_ts: fromTs,
-      to_ts: toTs,
-      filename,
-      includeRaw: false
-    })
+    const base = (await import('../utils/hosting')).getApiBase()
+    const url = new URL('/api/export', base)
+    url.searchParams.set('room_id', String(roomId))
+    url.searchParams.set('from_ts', String(fromTs))
+    url.searchParams.set('to_ts', String(toTs))
+    url.searchParams.set('filename', String(filename))
+    url.searchParams.set('includeRaw', 'false')
+    const resp = await fetch(url.toString(), { method: 'GET' })
+    const result = await resp.json()
 
     if (result && result.filepath) {
       MessagePlugin.success(`数据导出成功：${result.filepath}`)

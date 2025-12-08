@@ -29,6 +29,9 @@ importers:
       express:
         specifier: ^5.1.0
         version: 5.1.0
+      flv.js:
+        specifier: ^1.6.2
+        version: 1.6.2
       root:
         specifier: ^3.2.0
         version: 3.2.0
@@ -78,6 +81,9 @@ importers:
       electron-builder:
         specifier: 26.0.12
         version: 26.0.12(electron-builder-squirrel-windows@26.0.12)
+      electron-devtools-installer:
+        specifier: 4.0.0
+        version: 4.0.0
       electron-rebuild:
         specifier: ^3.2.9
         version: 3.2.9
@@ -130,7 +136,7 @@ importers:
         version: link:../preload
       acfunlive-http-api:
         specifier: github:ACFUN-FOSS/acfundanmu.js#main
-        version: https://codeload.github.com/ACFUN-FOSS/acfundanmu.js/tar.gz/e9d8234b696bb089fb6ee5909760942c1b545b18
+        version: https://codeload.github.com/ACFUN-FOSS/acfundanmu.js/tar.gz/17999a125ff3126ecf516c989928048b639a6fa1
       adm-zip:
         specifier: ^0.5.10
         version: 0.5.16
@@ -258,6 +264,9 @@ importers:
       vue:
         specifier: ^3.5.13
         version: 3.5.22(typescript@5.9.3)
+      vue-cropper:
+        specifier: ^1.1.4
+        version: 1.1.4
       vue-router:
         specifier: '4'
         version: 4.6.3(vue@3.5.22(typescript@5.9.3))
@@ -276,7 +285,7 @@ importers:
         version: 0.7.0(typescript@5.9.3)(vue@3.5.22(typescript@5.9.3))
       acfunlive-http-api:
         specifier: github:ACFUN-FOSS/acfundanmu.js#main
-        version: https://codeload.github.com/ACFUN-FOSS/acfundanmu.js/tar.gz/e9d8234b696bb089fb6ee5909760942c1b545b18
+        version: https://codeload.github.com/ACFUN-FOSS/acfundanmu.js/tar.gz/17999a125ff3126ecf516c989928048b639a6fa1
       typescript:
         specifier: 5.9.3
         version: 5.9.3
@@ -901,56 +910,67 @@ packages:
     resolution: {integrity: sha512-PsNAbcyv9CcecAUagQefwX8fQn9LQ4nZkpDboBOttmyffnInRy8R8dSg6hxxl2Re5QhHBf6FYIDhIj5v982ATQ==}
     cpu: [arm]
     os: [linux]
+    libc: [glibc]
 
   '@rollup/rollup-linux-arm-musleabihf@4.52.5':
     resolution: {integrity: sha512-Fw4tysRutyQc/wwkmcyoqFtJhh0u31K+Q6jYjeicsGJJ7bbEq8LwPWV/w0cnzOqR2m694/Af6hpFayLJZkG2VQ==}
     cpu: [arm]
     os: [linux]
+    libc: [musl]
 
   '@rollup/rollup-linux-arm64-gnu@4.52.5':
     resolution: {integrity: sha512-a+3wVnAYdQClOTlyapKmyI6BLPAFYs0JM8HRpgYZQO02rMR09ZcV9LbQB+NL6sljzG38869YqThrRnfPMCDtZg==}
     cpu: [arm64]
     os: [linux]
+    libc: [glibc]
 
   '@rollup/rollup-linux-arm64-musl@4.52.5':
     resolution: {integrity: sha512-AvttBOMwO9Pcuuf7m9PkC1PUIKsfaAJ4AYhy944qeTJgQOqJYJ9oVl2nYgY7Rk0mkbsuOpCAYSs6wLYB2Xiw0Q==}
     cpu: [arm64]
     os: [linux]
+    libc: [musl]
 
   '@rollup/rollup-linux-loong64-gnu@4.52.5':
     resolution: {integrity: sha512-DkDk8pmXQV2wVrF6oq5tONK6UHLz/XcEVow4JTTerdeV1uqPeHxwcg7aFsfnSm9L+OO8WJsWotKM2JJPMWrQtA==}
     cpu: [loong64]
     os: [linux]
+    libc: [glibc]
 
   '@rollup/rollup-linux-ppc64-gnu@4.52.5':
     resolution: {integrity: sha512-W/b9ZN/U9+hPQVvlGwjzi+Wy4xdoH2I8EjaCkMvzpI7wJUs8sWJ03Rq96jRnHkSrcHTpQe8h5Tg3ZzUPGauvAw==}
     cpu: [ppc64]
     os: [linux]
+    libc: [glibc]
 
   '@rollup/rollup-linux-riscv64-gnu@4.52.5':
     resolution: {integrity: sha512-sjQLr9BW7R/ZiXnQiWPkErNfLMkkWIoCz7YMn27HldKsADEKa5WYdobaa1hmN6slu9oWQbB6/jFpJ+P2IkVrmw==}
     cpu: [riscv64]
     os: [linux]
+    libc: [glibc]
 
   '@rollup/rollup-linux-riscv64-musl@4.52.5':
     resolution: {integrity: sha512-hq3jU/kGyjXWTvAh2awn8oHroCbrPm8JqM7RUpKjalIRWWXE01CQOf/tUNWNHjmbMHg/hmNCwc/Pz3k1T/j/Lg==}
     cpu: [riscv64]
     os: [linux]
+    libc: [musl]
 
   '@rollup/rollup-linux-s390x-gnu@4.52.5':
     resolution: {integrity: sha512-gn8kHOrku8D4NGHMK1Y7NA7INQTRdVOntt1OCYypZPRt6skGbddska44K8iocdpxHTMMNui5oH4elPH4QOLrFQ==}
     cpu: [s390x]
     os: [linux]
+    libc: [glibc]
 
   '@rollup/rollup-linux-x64-gnu@4.52.5':
     resolution: {integrity: sha512-hXGLYpdhiNElzN770+H2nlx+jRog8TyynpTVzdlc6bndktjKWyZyiCsuDAlpd+j+W+WNqfcyAWz9HxxIGfZm1Q==}
     cpu: [x64]
     os: [linux]
+    libc: [glibc]
 
   '@rollup/rollup-linux-x64-musl@4.52.5':
     resolution: {integrity: sha512-arCGIcuNKjBoKAXD+y7XomR9gY6Mw7HnFBv5Rw7wQRvwYLR7gBAgV7Mb2QTyjXfTveBNFAtPt46/36vV9STLNg==}
     cpu: [x64]
     os: [linux]
+    libc: [musl]
 
   '@rollup/rollup-openharmony-arm64@4.52.5':
     resolution: {integrity: sha512-QoFqB6+/9Rly/RiPjaomPLmR/13cgkIGfA40LHly9zcH1S0bN2HVFYk3a1eAyHQyjs3ZJYlXvIGtcCs5tko9Cw==}
@@ -1419,8 +1439,8 @@ packages:
     resolution: {integrity: sha512-5cvg6CtKwfgdmVqY1WIiXKc3Q1bkRqGLi+2W/6ao+6Y7gu/RCwRuAhGEzh5B4KlszSuTLgZYuqFqo5bImjNKng==}
     engines: {node: '>= 0.6'}
 
-  acfunlive-http-api@https://codeload.github.com/ACFUN-FOSS/acfundanmu.js/tar.gz/e9d8234b696bb089fb6ee5909760942c1b545b18:
-    resolution: {tarball: https://codeload.github.com/ACFUN-FOSS/acfundanmu.js/tar.gz/e9d8234b696bb089fb6ee5909760942c1b545b18}
+  acfunlive-http-api@https://codeload.github.com/ACFUN-FOSS/acfundanmu.js/tar.gz/17999a125ff3126ecf516c989928048b639a6fa1:
+    resolution: {tarball: https://codeload.github.com/ACFUN-FOSS/acfundanmu.js/tar.gz/17999a125ff3126ecf516c989928048b639a6fa1}
     version: 1.0.0
     engines: {node: '>=16.0.0'}
 
@@ -2212,6 +2232,9 @@ packages:
   es6-error@4.1.1:
     resolution: {integrity: sha512-Um/+FxMr9CISWh0bi5Zv0iOD+4cFh5qLeks1qhAopKVAJw3drgKbKySikp7wGhDL0HPeaja0P5ULZrxLkniUVg==}
 
+  es6-promise@4.2.8:
+    resolution: {integrity: sha512-HJDGx5daxeIvxdBxvG2cb9g4tEvwIk3i8+nhX0yGrYmZUzbkdg8QbDevheDB8gd0//uPj4c1EQua8Q+MViT0/w==}
+
   esbuild-loader@2.21.0:
     resolution: {integrity: sha512-k7ijTkCT43YBSZ6+fBCW1Gin7s46RrJ0VQaM8qA7lq7W+OLsGgtLyFV8470FzYi/4TeDexniTBTPTwZUnXXR5g==}
     peerDependencies:
@@ -2465,6 +2488,9 @@ packages:
 
   flatted@3.3.3:
     resolution: {integrity: sha512-GX+ysw4PBCz0PzosHDepZGANEuFCMLrnRTiEy9McGjmkCQYwRq4A/X786G/fjM/+OjsWSU1ZrY5qyARZmO/uwg==}
+
+  flv.js@1.6.2:
+    resolution: {integrity: sha512-xre4gUbX1MPtgQRKj2pxJENp/RnaHaxYvy3YToVVCrSmAWUu85b9mug6pTXF6zakUjNP2lFWZ1rkSX7gxhB/2A==}
 
   fn.name@1.1.0:
     resolution: {integrity: sha512-GRnmB5gPyJpAhTQdSZTSp9uaPSvl09KoYcMQtsB9rQoOmzs9dH6ffeccH+Z+cv6P68Hu5bC6JjRh4Ah/mHSNRw==}
@@ -4424,6 +4450,9 @@ packages:
   vscode-uri@3.1.0:
     resolution: {integrity: sha512-/BpdSx+yCQGnCvecbyXdxHDkuk55/G3xwnC0GqY4gmQ3j+A+g8kzzgB4Nk/SINjqn6+waqw3EgbVF2QKExkRxQ==}
 
+  vue-cropper@1.1.4:
+    resolution: {integrity: sha512-5m98vBsCEI9rbS4JxELxXidtAui3qNyTHLHg67Qbn7g8cg+E6LcnC+hh3SM/p94x6mFh6KRxT1ttnta+wCYqWA==}
+
   vue-eslint-parser@10.2.0:
     resolution: {integrity: sha512-CydUvFOQKD928UzZhTp4pr2vWz1L+H99t7Pkln2QSPdvmURT0MoC4wUccfCnuEaihNsu9aYYyk+bep8rlfkUXw==}
     engines: {node: ^18.18.0 || ^20.9.0 || >=21.1.0}
@@ -4496,6 +4525,9 @@ packages:
     peerDependenciesMeta:
       webpack-cli:
         optional: true
+
+  webworkify-webpack@2.1.5:
+    resolution: {integrity: sha512-2akF8FIyUvbiBBdD+RoHpoTbHMQF2HwjcxfDvgztAX5YwbZNyrtfUMgvfgFVsgDhDPVTlkbb5vyasqDHfIDPQw==}
 
   whatwg-mimetype@3.0.0:
     resolution: {integrity: sha512-nt+N2dzIutVRxARx1nghPKGv1xHikU7HKdfafKkLNLindmPU/ch3U31NOCGGA/dmPcmb1VlofO0vnKAcsm0o/Q==}
@@ -5785,7 +5817,7 @@ snapshots:
       mime-types: 3.0.1
       negotiator: 1.0.0
 
-  acfunlive-http-api@https://codeload.github.com/ACFUN-FOSS/acfundanmu.js/tar.gz/e9d8234b696bb089fb6ee5909760942c1b545b18:
+  acfunlive-http-api@https://codeload.github.com/ACFUN-FOSS/acfundanmu.js/tar.gz/17999a125ff3126ecf516c989928048b639a6fa1:
     dependencies:
       '@types/crypto-js': 4.2.2
       '@types/protobufjs': 6.0.0
@@ -6751,6 +6783,8 @@ snapshots:
   es6-error@4.1.1:
     optional: true
 
+  es6-promise@4.2.8: {}
+
   esbuild-loader@2.21.0(webpack@5.103.0):
     dependencies:
       esbuild: 0.16.17
@@ -7133,6 +7167,11 @@ snapshots:
   flat@5.0.2: {}
 
   flatted@3.3.3: {}
+
+  flv.js@1.6.2:
+    dependencies:
+      es6-promise: 4.2.8
+      webworkify-webpack: 2.1.5
 
   fn.name@1.1.0: {}
 
@@ -9209,6 +9248,8 @@ snapshots:
 
   vscode-uri@3.1.0: {}
 
+  vue-cropper@1.1.4: {}
+
   vue-eslint-parser@10.2.0(eslint@9.39.0):
     dependencies:
       debug: 4.4.3
@@ -9313,6 +9354,8 @@ snapshots:
       - '@swc/core'
       - esbuild
       - uglify-js
+
+  webworkify-webpack@2.1.5: {}
 
   whatwg-mimetype@3.0.0: {}
 

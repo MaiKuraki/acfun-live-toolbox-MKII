@@ -12,10 +12,14 @@ interface HostingConfig {
   overlay: HostingConfigItem | null;
 }
 
+export function getApiPort(): number {
+  const s = useNetworkStore()
+  return Number(s.apiPort)
+}
+
 export function getApiBase(): string {
-  // Prefer Electron-preload configured env, fallback to default
-  const port = (process?.env?.ACFRAME_API_PORT as string) || '18299';
-  return `http://127.0.0.1:${port}`;
+  const s = useNetworkStore()
+  return s.apiBase
 }
 
 export async function getPluginHostingConfig(pluginId: string): Promise<HostingConfig> {
@@ -111,3 +115,4 @@ export function buildOverlayWrapperUrl(pluginId: string, overlayId: string): str
   url.searchParams.set('overlayId', overlayId);
   return url.toString();
 }
+import { useNetworkStore } from '../stores/network'

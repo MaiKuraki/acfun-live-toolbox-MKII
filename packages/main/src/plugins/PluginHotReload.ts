@@ -1,25 +1,9 @@
 import { EventEmitter } from 'events';
-// import { watch, FSWatcher } from 'chokidar';
+import { watch, FSWatcher } from 'chokidar';
 import { join, dirname } from 'path';
-import { existsSync, statSync } from 'fs';
+import { existsSync, statSync, readFileSync } from 'fs';
+import * as crypto from 'crypto';
 import { pluginLogger } from './PluginLogger';
-
-// 临时类型定义，直到chokidar依赖安装完成
-interface FSWatcher {
-  close(): void;
-  on(event: string, listener: (...args: any[]) => void): this;
-}
-
-function watch(path: string, options?: any): FSWatcher {
-  // 临时实现，返回一个空的watcher
-  return {
-    close: () => {},
-    on: (event: string, listener: (...args: any[]) => void) => {
-      // 临时空实现
-      return {} as FSWatcher;
-    }
-  };
-}
 
 export interface HotReloadConfig {
   enabled: boolean;
@@ -51,6 +35,10 @@ export class PluginHotReloadManager extends EventEmitter {
   private watchers = new Map<string, FSWatcher>();
   private reloadTimers = new Map<string, NodeJS.Timeout>();
   private reloadCounts = new Map<string, number>();
+  // Polling related properties
+  private pollingIntervals = new Map<string, NodeJS.Timeout>();
+  private fileHashes = new Map<string, Map<string, string>>(); // pluginId -> filePath -> hash
+  
   private config: HotReloadConfig;
 
   constructor(config: Partial<HotReloadConfig> = {}) {
@@ -58,7 +46,7 @@ export class PluginHotReloadManager extends EventEmitter {
     
     this.config = {
       enabled: true,
-      watchPatterns: ['**/*.js', '**/*.ts', '**/*.json', '**/*.html', '**/*.css'],
+      watchPatterns: ['**/*.js', '**/*.ts', '**/*.json'],
       ignorePatterns: ['**/node_modules/**', '**/dist/**', '**/.git/**', '**/logs/**'],
       debounceMs: 1000,
       maxRetries: 3,
@@ -66,6 +54,97 @@ export class PluginHotReloadManager extends EventEmitter {
     };
 
     pluginLogger.info('Plugin hot reload manager initialized');
+  }
+
+  /**
+   * 开始对指定文件进行轮询监控（替代文件系统事件监听）
+   * @param pluginId 插件ID
+   * @param filePaths 需要监控的文件列表（绝对路径）
+   */
+  startPolling(pluginId: string, filePaths: string[]): boolean {
+    if (!this.config.enabled) {
+      pluginLogger.debug('Hot reload disabled, skipping polling setup', pluginId);
+      return false;
+    }
+
+    if (this.pollingIntervals.has(pluginId)) {
+      this.stopPolling(pluginId);
+    }
+
+    // 初始化文件哈希
+    const hashes = new Map<string, string>();
+    for (const filePath of filePaths) {
+      if (existsSync(filePath)) {
+        hashes.set(filePath, this.calculateFileHash(filePath));
+      }
+    }
+    this.fileHashes.set(pluginId, hashes);
+
+    pluginLogger.info('Starting polling for plugin files', pluginId, { files: filePaths });
+
+    const interval = setInterval(() => {
+      this.checkFilesForChanges(pluginId, filePaths);
+    }, 1000); // 1秒轮询一次
+
+    this.pollingIntervals.set(pluginId, interval);
+    return true;
+  }
+
+  /**
+   * 停止轮询
+   */
+  stopPolling(pluginId: string): void {
+    const interval = this.pollingIntervals.get(pluginId);
+    if (interval) {
+      clearInterval(interval);
+      this.pollingIntervals.delete(pluginId);
+      this.fileHashes.delete(pluginId);
+      pluginLogger.info('Stopped polling for plugin', pluginId);
+    }
+  }
+
+  private calculateFileHash(filePath: string): string {
+    try {
+      const buffer = readFileSync(filePath);
+      return crypto.createHash('md5').update(buffer).digest('hex');
+    } catch (e) {
+      return '';
+    }
+  }
+
+  private checkFilesForChanges(pluginId: string, filePaths: string[]): void {
+    const storedHashes = this.fileHashes.get(pluginId);
+    if (!storedHashes) return;
+
+    let changed = false;
+    let changedFile = '';
+
+    for (const filePath of filePaths) {
+      if (!existsSync(filePath)) continue;
+
+      const currentHash = this.calculateFileHash(filePath);
+      const storedHash = storedHashes.get(filePath) || '';
+
+      // 如果是第一次检测到文件（之前不存在）或者哈希不一致
+      if (currentHash !== storedHash) {
+        pluginLogger.info(`Polling detected file change: ${pluginId} -> ${filePath}`, pluginId);
+        storedHashes.set(filePath, currentHash);
+        changed = true;
+        changedFile = filePath;
+        break; // 一次只触发一个重载
+      }
+    }
+
+    if (changed) {
+      const reloadEvent: ReloadEvent = {
+        pluginId,
+        filePath: changedFile,
+        changeType: 'change',
+        timestamp: Date.now()
+      };
+
+      this.triggerReload(pluginId, reloadEvent);
+    }
   }
 
   /**
@@ -156,6 +235,8 @@ export class PluginHotReloadManager extends EventEmitter {
    * 处理文件变化事件
    */
   private handleFileChange(pluginId: string, filePath: string, changeType: 'add' | 'change' | 'unlink'): void {
+    pluginLogger.debug('Raw file change detected', pluginId, { filePath, changeType });
+
     // 检查文件是否匹配监控模式
     if (!this.shouldWatchFile(filePath)) {
       return;
@@ -246,25 +327,32 @@ export class PluginHotReloadManager extends EventEmitter {
    * 检查文件是否应该被监控
    */
   private shouldWatchFile(filePath: string): boolean {
-    const fileName = filePath.toLowerCase();
+    // 统一将路径分隔符转换为正斜杠
+    const fileName = filePath.replace(/\\/g, '/').toLowerCase();
     
-    // 检查是否匹配监控模式
-    const matchesPattern = this.config.watchPatterns.some(pattern => {
-      const regex = new RegExp(pattern.replace(/\*\*/g, '.*').replace(/\*/g, '[^/]*'));
-      return regex.test(fileName);
+    // 简单检查扩展名，避免复杂的正则问题
+    // 默认监控的扩展名
+    const validExtensions = ['.js', '.ts', '.json', '.html', '.css', '.vue', '.jsx', '.tsx'];
+    
+    // 1. 检查是否在忽略列表中
+    const isIgnored = this.config.ignorePatterns.some(pattern => {
+      // 简单的包含检查
+      const cleanPattern = pattern.replace(/\*\*/g, '').replace(/\*/g, '').replace(/\/+/g, '/').toLowerCase();
+      if (cleanPattern && fileName.includes(cleanPattern)) {
+        return true;
+      }
+      return false;
     });
 
-    if (!matchesPattern) {
+    if (isIgnored) {
       return false;
     }
 
-    // 检查是否被忽略
-    const isIgnored = this.config.ignorePatterns.some(pattern => {
-      const regex = new RegExp(pattern.replace(/\*\*/g, '.*').replace(/\*/g, '[^/]*'));
-      return regex.test(fileName);
-    });
-
-    return !isIgnored;
+    // 2. 检查是否匹配监控模式（主要是扩展名）
+    // 如果模式是通配符，则检查扩展名
+    const hasValidExtension = validExtensions.some(ext => fileName.endsWith(ext));
+    
+    return hasValidExtension;
   }
 
   /**
@@ -359,6 +447,11 @@ export class PluginHotReloadManager extends EventEmitter {
     // 停止所有监控器
     for (const pluginId of Array.from(this.watchers.keys())) {
       this.stopWatching(pluginId);
+    }
+    
+    // 停止所有轮询
+    for (const pluginId of Array.from(this.pollingIntervals.keys())) {
+      this.stopPolling(pluginId);
     }
 
     // 清理所有定时器

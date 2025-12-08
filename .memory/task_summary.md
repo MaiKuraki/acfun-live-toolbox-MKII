@@ -1,0 +1,7 @@
+- Refactored `LiveManagePage.vue` to a split-screen layout (Left 35% / Right 65%) with a clean, minimalist, light-mode design.
+- Implemented Left Panel: Live metadata (thumbnail, title input), control area (Red End Stream button, stats grid with white cards), and Plugin Center with mock colorful icons.
+- Implemented Right Panel: Gift Leaderboard (horizontal, top 3 highlighted), Chat Stream (grey bubbles for audience, blue for host), and Input Area.
+- Used TDesign components (`t-input`, `t-button`, `t-tag`) and icons.
+- Connected to `useLiveStore` for live data (status, stats, messages, leaderboard) and `useAccountStore` for user info.
+- Removed unused dependencies (`echarts`, `CoverCropper`).
+- Ensured styles match the "Light Mode" requirements: `#F7F8FA` sidebar, white content, specific shadow and border styles.

@@ -1,52 +1,31 @@
 import { defineStore } from 'pinia';
-import { ref, computed, watch } from 'vue';
+import { ref, watch } from 'vue';
 import { reportReadonlyUpdate, reportReadonlyInit } from '../utils/readonlyReporter';
 
-export type AppRole = 'anchor' | 'moderator' | 'developer';
+export type AppRole = 'anchor';
 export type StatsScope = '7d' | '30d';
 
 export const useRoleStore = defineStore('role', () => {
-  const options = ref<AppRole[]>(['anchor', 'moderator', 'developer']);
   const current = ref<AppRole>('anchor');
   const statsScope = ref<StatsScope>('7d');
-  const firstLoginRoleDialogVisible = ref(false);
 
-  // Initialize from persisted storage
-  function initRole() {
-    const saved = localStorage.getItem('role.current');
-    if (saved && (options.value as string[]).includes(saved)) {
-      current.value = saved as AppRole;
-    } else {
-      // No persisted role -> show first login role dialog
-      firstLoginRoleDialogVisible.value = true;
-    }
+  function initStatsScope() {
     const savedScope = localStorage.getItem('role.statsScope');
     if (savedScope === '7d' || savedScope === '30d') {
       statsScope.value = savedScope as StatsScope;
     }
   }
 
-  function setRole(role: AppRole) {
-    if (!(options.value as string[]).includes(role)) return;
-    current.value = role;
-    localStorage.setItem('role.current', role);
-  }
-
-  function confirmFirstLoginRole() {
-    // Persist and close dialog
-    localStorage.setItem('role.current', current.value);
-    firstLoginRoleDialogVisible.value = false;
-  }
+  // 固定主播角色，不再支持角色切换
 
   function setStatsScope(scope: StatsScope) {
     statsScope.value = scope;
     localStorage.setItem('role.statsScope', scope);
   }
 
-  const isRoleDialogVisible = computed(() => firstLoginRoleDialogVisible.value);
-
   // Boot
-  initRole();
+  initStatsScope();
+  try { localStorage.removeItem('role.current'); } catch {}
   try {
     reportReadonlyInit({
       role: {
@@ -56,9 +35,9 @@ export const useRoleStore = defineStore('role', () => {
     });
   } catch {}
 
-  // 变更订阅：角色与统计范围变化时，调用统一只读上报
+  // 变更订阅：统计范围变化时，调用只读上报
   watch(
-    () => [current.value, statsScope.value],
+    () => statsScope.value,
     () => {
       try {
         reportReadonlyUpdate({
@@ -72,13 +51,8 @@ export const useRoleStore = defineStore('role', () => {
   );
 
   return {
-    options,
     current,
     statsScope,
-    firstLoginRoleDialogVisible,
-    isRoleDialogVisible,
-    setRole,
-    confirmFirstLoginRole,
     setStatsScope,
   };
 });

@@ -48,6 +48,7 @@
             弹幕管理
           </t-menu-item>
           <t-menu-item
+            v-if="!isMyLiveActive"
             value="live-create"
             @click="navigateToLiveCreate()"
           >
@@ -55,6 +56,16 @@
               <t-icon name="edit-1" />
             </template>
             创建直播
+          </t-menu-item>
+          <t-menu-item
+            v-if="isMyLiveActive"
+            value="live-manage"
+            @click="navigateToMyLiveRoom()"
+          >
+            <template #icon>
+              <t-icon name="video" />
+            </template>
+            我的直播间
           </t-menu-item>
         </t-submenu>
         
@@ -152,6 +163,9 @@ import { resolvePrimaryHostingType } from '../utils/hosting';
 import { usePluginStore } from '../stores/plugin';
 import { useSidebarStore } from '../stores/sidebar';
 import { reportReadonlyUpdate } from '../utils/readonlyReporter'
+import { getApiBase } from '../utils/hosting'
+import { useAccountStore } from '../stores/account'
+import { useRoomStore } from '../stores/room'
 
 interface DynamicPlugin {
   id: string;
@@ -172,6 +186,8 @@ const router = useRouter();
 const route = useRoute();
 const pluginStore = usePluginStore();
 const sidebarStore = useSidebarStore();
+const account = useAccountStore();
+const roomStore = useRoomStore();
 
 const activeMenu = ref('home');
 const activePlugin = ref<string | null>(null);
@@ -182,6 +198,18 @@ const dynamicPlugins = computed<DynamicPlugin[]>(() => {
   return pluginStore.plugins
     .filter(plugin => plugin.sidebarDisplay?.show)
     .sort((a, b) => (a.sidebarDisplay?.order || 999) - (b.sidebarDisplay?.order || 999));
+});
+
+const isMyLiveActive = computed(() => {
+  const uid = account.userInfo?.userID;
+  if (!uid) return false;
+  return roomStore.rooms.some(r => Boolean(r.isLive) && Number(r.streamer?.userId) === Number(uid));
+});
+
+const myLiveId = computed(() => {
+  const uid = account.userInfo?.userID;
+  const room = roomStore.rooms.find(r => Boolean(r.isLive) && Number(r.streamer?.userId) === Number(uid));
+  return room?.liveId;
 });
 
 // 监听路由变化，更新活跃菜单项
@@ -244,7 +272,9 @@ async function navigateTo(path: string) {
 
 async function navigateToLiveCreate() {
   try {
-    const res = await window.electronApi.http.get('/api/acfun/auth/status');
+    const base = getApiBase();
+    const r = await fetch(new URL('/api/acfun/auth/status', base).toString(), { method: 'GET' });
+    const res = await r.json();
     const ok = !!(res && res.success);
     const authed = ok && !!(res.data && res.data.authenticated);
     if (!authed) {
@@ -262,6 +292,19 @@ async function navigateToLiveCreate() {
   try {
     const rt = router.currentRoute.value as any;
     const routePath = String(rt?.fullPath || '/live/create');
+    const pageName = String(rt?.name || '');
+    const pageTitle = String((rt?.meta as any)?.title || '');
+    reportReadonlyUpdate({ ui: { routePath, pageName, pageTitle } });
+  } catch {}
+}
+
+async function navigateToMyLiveRoom() {
+  const uid = String(account.userInfo?.userID || '');
+  if (!uid) return;
+  try { await router.push({ name: 'LiveManage', params: { roomId: uid } }); } catch {}
+  try {
+    const rt = router.currentRoute.value as any;
+    const routePath = String(rt?.fullPath || (`/live/manage/${uid}`));
     const pageName = String(rt?.name || '');
     const pageTitle = String((rt?.meta as any)?.title || '');
     reportReadonlyUpdate({ ui: { routePath, pageName, pageTitle } });
@@ -360,8 +403,6 @@ onMounted(() => {
   // 注册键盘快捷键
   document.addEventListener('keydown', handleKeyboardShortcut);
   
-  // 加载插件列表
-  pluginStore.loadPlugins();
 });
 </script>
 

@@ -71,6 +71,14 @@ export interface PluginManifest {
     spa?: boolean;
     route?: string;
     html?: string;
+    width?: number;
+    height?: number;
+    minWidth?: number;
+    minHeight?: number;
+    resizable?: boolean;
+    frame?: boolean;
+    transparent?: boolean;
+    alwaysOnTop?: boolean;
   };
   runtime?: never;
 }
@@ -122,7 +130,7 @@ export class PluginManager extends TypedEventEmitter<PluginManagerEvents> {
   private coordinator: PluginCoordinator;
   private tokenManager: TokenManager;
   private plugins: Map<string, PluginInfo> = new Map();
-  private pluginsDir: string;
+  public pluginsDir: string;
   private hotReloadWatchers: Map<string, FSWatcher> = new Map();
   private dataManager = DataManager.getInstance();
   private pendingInitAfterLoaded: Set<string> = new Set();
@@ -162,12 +170,6 @@ export class PluginManager extends TypedEventEmitter<PluginManagerEvents> {
     });
     
     this.ensurePluginsDirectory();
-    // 安装内置示例插件（如缺失）
-    try {
-      this.installBundledExamplesIfMissing();
-    } catch (e) {
-      pluginLogger.warn('Failed to install bundled example plugins', 'system', e as Error);
-    }
     this.setupErrorHandling();
     this.setupProcessManagerEvents();
     this.setupLifecycleEvents();
@@ -323,21 +325,7 @@ export class PluginManager extends TypedEventEmitter<PluginManagerEvents> {
       pluginLogger.info('Hot reload requested', pluginId);
 
       try {
-        // 如果插件当前已启用，先禁用再重新启用
-        const plugin = this.plugins.get(pluginId);
-        if (plugin && plugin.enabled) {
-          pluginLogger.debug('Disabling plugin for hot reload', pluginId);
-          await this.disablePlugin(pluginId);
-          
-          // 等待一小段时间确保资源释放
-          await new Promise(resolve => setTimeout(resolve, 100));
-          
-          pluginLogger.debug('Re-enabling plugin after hot reload', pluginId);
-          await this.enablePlugin(pluginId);
-        } else if (plugin) {
-          // 如果插件未启用，重新加载插件信息
-          await this.reloadPluginInfo(pluginId);
-        }
+        await this.reloadPlugin(pluginId);
       } catch (error: any) {
         pluginLogger.error('Hot reload failed', pluginId, error as Error);
         await pluginErrorHandler.handleError(pluginId, ErrorType.RUNTIME_ERROR, (error as Error).message, error as Error, {
@@ -413,72 +401,12 @@ export class PluginManager extends TypedEventEmitter<PluginManagerEvents> {
     }
   }
 
-  /**
-   * 将内置插件复制到用户数据目录（仅当缺失时）。
-   * 插件位于打包资源或工作目录下的 buildResources/plugins 或 resources/plugins。
-   */
-  private installBundledExamplesIfMissing(): void {
-    const sources = [
-      path.join(process.cwd(), 'buildResources', 'plugins'),
-      path.join(process.resourcesPath || process.cwd(), 'plugins')
-    ];
-
-    const pluginIds = new Set<string>();
-    for (const root of sources) {
-      try {
-        if (!fs.existsSync(root)) continue;
-        const dirs = fs.readdirSync(root, { withFileTypes: true }).filter(d => d.isDirectory());
-        for (const d of dirs) { pluginIds.add(d.name); }
-      } catch {/* noop */}
-    }
-
-    for (const id of pluginIds) {
-      const dest = path.join(this.pluginsDir, id);
-      const manifestPath = path.join(dest, 'manifest.json');
-      const exists = fs.existsSync(dest) && fs.existsSync(manifestPath);
-
-      const candidates = [
-        path.join(process.cwd(), 'buildResources', 'plugins', id),
-        path.join(process.resourcesPath || process.cwd(), 'plugins', id)
-      ];
-      const src = candidates.find(p => fs.existsSync(p));
-      if (!src) { continue; }
-
-      // 安装缺失的插件目录
-      if (!exists) {
-        fs.mkdirSync(dest, { recursive: true });
-        fs.cpSync(src, dest, { recursive: true });
-      } else {
-        // 轻量就地修复：确保主入口文件存在（manifest.main）
-        try {
-          const manifestText = fs.readFileSync(manifestPath, 'utf-8');
-          const manifestJson = JSON.parse(manifestText) as any;
-          const mainFile = typeof manifestJson.main === 'string' ? manifestJson.main : null;
-          if (mainFile) {
-            const destMain = path.join(dest, mainFile);
-            const srcMain = path.join(src, mainFile);
-            if (!fs.existsSync(destMain) && fs.existsSync(srcMain)) {
-              fs.cpSync(srcMain, destMain, { recursive: false });
-              pluginLogger.info('Recovered missing plugin main file', id, { file: mainFile });
-            }
-          }
-        } catch (repairErr) {
-          pluginLogger.warn('Failed to repair plugin main file', id, repairErr as Error);
-        }
-      }
-
-      // 默认不启用，后续由启动流程显式启用以触发进程创建
-      const configKey = `plugins.${id}`;
-      const existing = this.configManager.get(configKey, undefined as any);
-      this.configManager.set(configKey, Object.assign({ enabled: false, installedAt: Date.now() }, existing || {}));
-
-      pluginLogger.info('Bundled plugin installed', id, { from: src, to: dest });
-    }
-  }
-
   public loadInstalledPlugins(): void {
     pluginLogger.info('Loading installed plugins');
     
+    // 彻底清空当前插件列表，确保与文件系统状态一致
+    this.plugins.clear();
+
     try {
       const pluginDirs = fs.readdirSync(this.pluginsDir, { withFileTypes: true })
         .filter(dirent => dirent.isDirectory())
@@ -493,78 +421,30 @@ export class PluginManager extends TypedEventEmitter<PluginManagerEvents> {
           
           if (fs.existsSync(manifestPath)) {
              let manifest: PluginManifest;
-             const defaultCandidates = [
-               path.join(process.cwd(), 'buildResources', 'plugins', pluginId, 'manifest.json'),
-               path.join(process.resourcesPath || process.cwd(), 'plugins', pluginId, 'manifest.json')
-             ];
-             const defaultManifestPath = defaultCandidates.find(p => fs.existsSync(p));
              try {
                manifest = JSON.parse(fs.readFileSync(manifestPath, 'utf-8')) as PluginManifest;
              } catch (parseErr) {
-               try {
-                 if (defaultManifestPath) {
-                   const repaired = fs.readFileSync(defaultManifestPath, 'utf-8');
-                   const base = JSON.parse(repaired) as PluginManifest;
-                   fs.writeFileSync(manifestPath, repaired, 'utf-8');
-                   manifest = base;
-                   pluginLogger.info('Repaired invalid manifest from bundled copy', pluginId, { manifestPath });
-                 } else {
-                   throw parseErr;
-                 }
-               } catch (repairErr) {
-                 throw repairErr instanceof Error ? repairErr : new Error(String(repairErr));
-               }
+               throw parseErr instanceof Error ? parseErr : new Error(String(parseErr));
              }
-             let mergedManifest: PluginManifest = manifest;
-             try {
-               if (defaultManifestPath) {
-                 const base = JSON.parse(fs.readFileSync(defaultManifestPath, 'utf-8')) as PluginManifest;
-                 mergedManifest = Object.assign({}, base, manifest);
-                 // 合并常用嵌套对象（浅合并）
-                 if (base.config || manifest.config) {
-                   mergedManifest.config = Object.assign({}, base.config || {}, manifest.config || {});
-                 }
-                 if (base.ui || manifest.ui) {
-                   mergedManifest.ui = Object.assign({}, base.ui || {}, manifest.ui || {});
-                   const bW = (base.ui as any)?.wujie; const mW = (manifest.ui as any)?.wujie;
-                   if (bW || mW) {
-                     (mergedManifest.ui as any).wujie = Object.assign({}, bW || {}, mW || {});
-                   }
-                 }
-                 if (base.overlay || manifest.overlay) {
-                   mergedManifest.overlay = Object.assign({}, base.overlay || {}, manifest.overlay || {});
-                   const bOW = (base.overlay as any)?.wujie; const mOW = (manifest.overlay as any)?.wujie;
-                   if (bOW || mOW) {
-                     (mergedManifest.overlay as any).wujie = Object.assign({}, bOW || {}, mOW || {});
-                   }
-                 }
-                 if (base.window || manifest.window) {
-                   mergedManifest.window = Object.assign({}, base.window || {}, manifest.window || {});
-                 }
-               }
-             } catch (mergeErr) {
-               pluginLogger.warn('Failed to merge default manifest for plugin', pluginId, mergeErr as Error);
-               mergedManifest = manifest;
-             }
+
              const configKey = `plugins.${pluginId}`;
              const pluginConfig = this.configManager.get(configKey, { enabled: false, installedAt: Date.now() });
-            // 删除 beforeLoaded 钩子与对应 SSE 发布
              
              const pluginInfo: PluginInfo = {
                id: pluginId,
-               name: mergedManifest.name,
-               version: mergedManifest.version,
-               description: mergedManifest.description,
-               author: mergedManifest.author,
+               name: manifest.name,
+               version: manifest.version,
+               description: manifest.description,
+               author: manifest.author,
                enabled: pluginConfig.enabled,
                status: pluginConfig.enabled ? 'enabled' : 'disabled',
                installPath: pluginPath,
-               manifest: mergedManifest,
+               manifest: manifest,
                installedAt: pluginConfig.installedAt || Date.now()
              };
             
             this.plugins.set(pluginId, pluginInfo);
-            pluginLogger.info(`Loaded plugin: ${mergedManifest.name} v${mergedManifest.version}`, pluginId);
+            pluginLogger.info(`Loaded plugin: ${manifest.name} v${manifest.version}`, pluginId);
             // 加载阶段不再触发 afterLoaded 或执行同名函数；仅记录插件加载日志
           } else {
             pluginLogger.warn(`Plugin directory missing manifest.json`, pluginId, { pluginPath });
@@ -604,6 +484,47 @@ export class PluginManager extends TypedEventEmitter<PluginManagerEvents> {
         }
       }
       
+      // 合并调试插件虚拟条目（从 .devtools/config.json 读取）
+      try {
+        const devConfigPath = path.join(this.pluginsDir, '.devtools', 'config.json');
+        const devMap = fs.existsSync(devConfigPath) ? JSON.parse(fs.readFileSync(devConfigPath, 'utf-8')) : {};
+        if (devMap && typeof devMap === 'object') {
+          for (const [pid, cfg] of Object.entries(devMap as Record<string, any>)) {
+            if (this.plugins.has(pid)) continue;
+            try {
+              const mPath = String((cfg as any)?.manifestPath || '').trim();
+              const nPath = String((cfg as any)?.nodePath || '').trim();
+              if (!mPath || !nPath) continue;
+              const text = fs.readFileSync(mPath, 'utf-8');
+              const manifest = JSON.parse(text) as PluginManifest;
+              
+              const configKey = `plugins.${manifest.id}`;
+              const pluginConfig = this.configManager.get(configKey, { enabled: false });
+
+              // 组装虚拟插件信息
+              const pluginInfo: PluginInfo = {
+                id: manifest.id,
+                name: manifest.name,
+                version: manifest.version,
+                description: manifest.description,
+                author: manifest.author,
+                enabled: pluginConfig.enabled,
+                status: pluginConfig.enabled ? 'enabled' : 'disabled',
+                installPath: nPath,
+                manifest,
+                installedAt: Date.now()
+              };
+              this.plugins.set(pid, pluginInfo);
+              pluginLogger.info(`Loaded dev plugin entry: ${manifest.name} v${manifest.version}`, pid);
+            } catch (e) {
+              pluginLogger.warn('Failed to load dev plugin entry', pid, e as Error);
+            }
+          }
+        }
+      } catch (e) {
+        pluginLogger.warn('Failed to merge dev plugin entries', undefined, e as Error);
+      }
+
       pluginLogger.info(`Successfully loaded ${this.plugins.size} plugins`);
     } catch (error: any) {
       const errorMessage = `Failed to load installed plugins: ${error instanceof Error ? error.message : 'Unknown error'}`;
@@ -793,12 +714,52 @@ export class PluginManager extends TypedEventEmitter<PluginManagerEvents> {
   }
 
   /**
+   * 重新加载插件（更新清单并重启）
+   */
+  public async reloadPlugin(pluginId: string): Promise<void> {
+    const plugin = this.plugins.get(pluginId);
+    if (!plugin) {
+      throw new Error(`插件 ${pluginId} 不存在`);
+    }
+
+    pluginLogger.info('Reloading plugin...', pluginId);
+
+    try {
+      // 1. 重新加载清单信息
+      await this.reloadPluginInfo(pluginId);
+
+      // 2. 如果插件已启用，重启它
+      if (plugin.enabled) {
+        await this.disablePlugin(pluginId);
+        // 等待资源释放
+        await new Promise(resolve => setTimeout(resolve, 100));
+        await this.enablePlugin(pluginId);
+      }
+      
+      pluginLogger.info('Plugin reloaded successfully', pluginId);
+    } catch (error: any) {
+      pluginLogger.error('Failed to reload plugin', pluginId, error);
+      throw error;
+    }
+  }
+
+  /**
    * 卸载插件
    */
   public async uninstallPlugin(pluginId: string): Promise<void> {
     const plugin = this.plugins.get(pluginId);
+    
+    // 尝试移除测试/开发插件配置 (Test Plugin Logic)
+    // 如果是测试插件，removeDevConfig 会移除 JSON 条目并返回 true
+    const isTestPlugin = await this.removeDevConfig(pluginId);
+
     // 当插件未在内存中（例如用户手动删除了目录），执行幂等卸载清理
     if (!plugin) {
+      if (isTestPlugin) {
+        this.emit('plugin.uninstalled', { id: pluginId });
+        return;
+      }
+
       const installPath = path.join(this.pluginsDir, pluginId);
       try {
         if (fs.existsSync(installPath)) {
@@ -806,6 +767,13 @@ export class PluginManager extends TypedEventEmitter<PluginManagerEvents> {
         }
       } catch (fsErr) {
         pluginLogger.warn('卸载缺失插件时删除目录失败', pluginId, fsErr as Error);
+        // 这里是否抛出？用户可能只是想清理残留。
+        // 既然目录缺失或已经在清理，我们可以宽容一点，或者抛出让用户知道文件锁住了。
+        // 但如果是“缺失插件”，意味着目录可能本就不完整。
+        // 遵循严格模式：如果文件存在但删除失败，抛出。
+        if (fs.existsSync(installPath)) {
+             throw fsErr;
+        }
       }
 
       // 删除插件配置
@@ -818,30 +786,37 @@ export class PluginManager extends TypedEventEmitter<PluginManagerEvents> {
     }
 
     try {
-
-      // 插件是自包含的，无需检查依赖关系
-
       // 如果插件已启用，先禁用
       if (plugin.enabled) {
         await this.disablePlugin(pluginId);
       }
 
-      // 删除插件文件
-      try {
+      // 区分处理：
+      // 1. 测试插件 (isTestPlugin=true): 仅修改 JSON (已在上面完成)，不删文件。
+      // 2. 普通插件: 删除目录。
+      
+      const isManagedPlugin = plugin.installPath.toLowerCase().startsWith(this.pluginsDir.toLowerCase());
+      
+      if (!isTestPlugin && isManagedPlugin) {
+        // 普通插件：严格删除文件
         if (fs.existsSync(plugin.installPath)) {
-          fs.rmSync(plugin.installPath, { recursive: true, force: true });
+            try {
+              fs.rmSync(plugin.installPath, { recursive: true, force: true });
+            } catch (fsErr) {
+              pluginLogger.warn('删除插件目录失败', pluginId, fsErr as Error);
+              throw fsErr; // 抛出错误，阻止后续状态清除
+            }
         }
-      } catch (fsErr) {
-        pluginLogger.warn('删除插件目录失败', pluginId, fsErr as Error);
+      } else {
+        pluginLogger.info('跳过删除插件文件（测试/外部插件）', pluginId, { path: plugin.installPath });
       }
 
       // 删除插件配置
-       const configKey = `plugins.${pluginId}`;
-       this.configManager.delete(configKey);
+      const configKey = `plugins.${pluginId}`;
+      this.configManager.delete(configKey);
 
       // 从内存中移除
       this.plugins.delete(pluginId);
-
 
       this.emit('plugin.uninstalled', { id: pluginId });
     } catch (error: any) {
@@ -926,6 +901,21 @@ export class PluginManager extends TypedEventEmitter<PluginManagerEvents> {
           this.configManager.set(configKey, { ...current, enabled: true, installedAt: plugin.installedAt });
         }
 
+        // 自动启用热重载（开发模式下 或 测试插件）- 针对静态插件
+        const isTestPlugin = (await this.getDevConfig(pluginId)) !== null;
+        
+        if (process.env.NODE_ENV === 'development' || isTestPlugin) {
+          try {
+            await this.enableHotReload(pluginId);
+            pluginLogger.info('Hot reload enabled for static plugin', pluginId, { pluginId });
+          } catch (hotReloadError) {
+            pluginLogger.warn('Failed to enable hot reload for static plugin', pluginId, { 
+              pluginId, 
+              error: hotReloadError 
+            });
+          }
+        }
+
 
         this.emit('plugin.enabled', { id: pluginId });
         pluginLogger.info('Enabled static-hosted plugin without process', pluginId, { pluginId });
@@ -934,65 +924,15 @@ export class PluginManager extends TypedEventEmitter<PluginManagerEvents> {
       
       // 启动插件进程
       let pluginMainPath = path.join(plugin.installPath, plugin.manifest.main);
-      {
-        const isDev = process.env.NODE_ENV === 'development' || !(process as any).isPackaged;
-        const isTest = !!((plugin.manifest as any)?.test);
-        if (isDev && isTest) {
-          try {
-            const bundledCandidates = [
-              path.join(process.cwd(), 'buildResources', 'plugins', pluginId, plugin.manifest.main),
-              path.join(process.resourcesPath || process.cwd(), 'plugins', pluginId, plugin.manifest.main)
-            ];
-            const bundledMain = bundledCandidates.find(p => fs.existsSync(p));
-            if (bundledMain) {
-              pluginMainPath = bundledMain;
-              pluginLogger.info('开发模式下测试插件使用捆绑主入口', pluginId, { file: plugin.manifest.main });
-            }
-          } catch {}
-        }
-      }
+      
       if (!fs.existsSync(pluginMainPath)) {
-        try {
-          const candidates = [
-            path.join(process.cwd(), 'buildResources', 'plugins', pluginId, plugin.manifest.main),
-            path.join(process.resourcesPath || process.cwd(), 'plugins', pluginId, plugin.manifest.main)
-          ];
-          const srcMain = candidates.find(p => fs.existsSync(p));
-          if (srcMain) {
-            fs.mkdirSync(path.dirname(pluginMainPath), { recursive: true });
-            fs.cpSync(srcMain, pluginMainPath, { recursive: false });
-            pluginLogger.info('启用前修复缺失的主入口文件', pluginId, { file: plugin.manifest.main });
-          } else {
-            throw new Error(`插件主入口缺失且无法修复: ${pluginMainPath}`);
-          }
-        } catch (repairErr) {
-          throw repairErr instanceof Error ? repairErr : new Error(String(repairErr));
-        }
+        throw new Error(`插件主入口文件不存在: ${pluginMainPath}`);
       }
+      
       {
-        const candidates = [
-          path.join(process.cwd(), 'buildResources', 'plugins', pluginId),
-          path.join(process.resourcesPath || process.cwd(), 'plugins', pluginId)
-        ];
-        const bundledRoot = candidates.find(p => fs.existsSync(p));
-        if (bundledRoot && (plugin.manifest as any)?.test === true) {
-          try {
-            const installedMain = pluginMainPath;
-            const content = fs.readFileSync(installedMain, 'utf-8');
-            const ok = content.includes('getStatus') && content.includes('init') && content.includes('cleanup');
-            if (!ok) {
-              fs.cpSync(bundledRoot, plugin.installPath, { recursive: true });
-              pluginLogger.info('启用前修复安装目录为捆绑版', pluginId);
-            }
-          } catch {
-            try {
-              fs.cpSync(bundledRoot, plugin.installPath, { recursive: true });
-              pluginLogger.info('启用前修复安装目录为捆绑版', pluginId);
-            } catch {}
-          }
-        }
+        const apiPort = this.configManager.get<number>('server.port', parseInt(process.env.ACFRAME_API_PORT || '18299'));
+        await this.processManager.startPluginProcess(pluginId, pluginMainPath, { apiPort }, plugin.manifest as any);
       }
-      await this.processManager.startPluginProcess(pluginId, pluginMainPath, {}, plugin.manifest as any);
 
       // 更新状态
       plugin.enabled = true;
@@ -1007,10 +947,12 @@ export class PluginManager extends TypedEventEmitter<PluginManagerEvents> {
       }
 
 
-      // 自动启用热重载（开发模式下）
-      if (process.env.NODE_ENV === 'development') {
+      // 自动启用热重载（开发模式下 或 测试插件）
+      const isTestPlugin = plugin.manifest.test === true || (await this.getDevConfig(pluginId)) !== null;
+      
+      if (process.env.NODE_ENV === 'development' || isTestPlugin) {
         try {
-          this.enableHotReload(pluginId);
+          await this.enableHotReload(pluginId);
           pluginLogger.info('Hot reload enabled for plugin', pluginId, { pluginId });
         } catch (hotReloadError) {
           pluginLogger.warn('Failed to enable hot reload for plugin', pluginId, { 
@@ -1214,12 +1156,16 @@ export class PluginManager extends TypedEventEmitter<PluginManagerEvents> {
         if (!icon) {
           throw new Error('icon 字段不能为空字符串');
         }
+        // 禁止子目录路径，要求图标位于插件根目录
+        if (icon.includes('/') || icon.includes('\\')) {
+          throw new Error('icon 必须位于插件根目录，禁止使用子目录路径');
+        }
         const ext = path.extname(icon).toLowerCase();
         const allowed = ['.png', '.jpg', '.jpeg', '.ico', '.svg'];
         if (!allowed.includes(ext)) {
           throw new Error('icon 文件扩展名不被支持');
         }
-        const iconPath = path.join(pluginDir, 'ui', icon);
+        const iconPath = path.join(pluginDir, icon);
         if (!fs.existsSync(iconPath)) {
           throw new Error(`icon 文件不存在: ${icon}`);
         }
@@ -1578,13 +1524,95 @@ export class PluginManager extends TypedEventEmitter<PluginManagerEvents> {
   /**
    * 启用插件热重载
    */
-  public enableHotReload(pluginId: string): boolean {
+  public async enableHotReload(pluginId: string): Promise<boolean> {
     const plugin = this.plugins.get(pluginId);
     if (!plugin) {
       throw new Error(`插件 ${pluginId} 不存在`);
     }
 
-    return pluginHotReloadManager.startWatching(pluginId, plugin.installPath);
+    try {
+      // 1. 尝试获取开发配置（针对测试插件）
+      const devCfg = await this.getDevConfig(pluginId);
+      
+      // 判断是否为测试插件（有开发配置或者manifest标记为测试）
+      const isTestPlugin = plugin.manifest.test === true || !!devCfg;
+
+      if (isTestPlugin) {
+        // --- 针对测试插件使用轮询模式 ---
+        let manifestPath = '';
+        let mainPath = '';
+        
+        // 优先使用开发配置中的路径
+        if (devCfg) {
+          if (devCfg.manifestPath && typeof devCfg.manifestPath === 'string') {
+            manifestPath = devCfg.manifestPath;
+          }
+          if (devCfg.nodePath && typeof devCfg.nodePath === 'string') {
+            // 如果提供了 nodePath (目录)，尝试拼接 main
+            // 这里我们需要读取 manifest 来确定 main 文件名，或者假设 index.js
+            // 为了简单起见，如果 devCfg 提供了 manifestPath，我们从那里读取 main
+          }
+        }
+        
+        // 如果开发配置没有提供完整路径，使用安装路径推导
+        if (!manifestPath) {
+          manifestPath = path.join(plugin.installPath, 'manifest.json');
+        }
+
+        // 读取 manifest 获取入口文件
+        try {
+          if (fs.existsSync(manifestPath)) {
+            const manifestContent = fs.readFileSync(manifestPath, 'utf-8');
+            const manifest = JSON.parse(manifestContent);
+            if (manifest.main) {
+              const baseDir = path.dirname(manifestPath);
+              mainPath = path.join(baseDir, manifest.main);
+            }
+          }
+        } catch (e) {
+          pluginLogger.warn(`Failed to read manifest for hot reload path resolution: ${pluginId}`, pluginId);
+        }
+
+        const filesToWatch = [];
+        if (manifestPath && fs.existsSync(manifestPath)) filesToWatch.push(manifestPath);
+        if (mainPath && fs.existsSync(mainPath)) filesToWatch.push(mainPath);
+
+        if (filesToWatch.length > 0) {
+          pluginLogger.info(`Enabling polling hot reload for test plugin ${pluginId}`, pluginId, { files: filesToWatch });
+          const success = pluginHotReloadManager.startPolling(pluginId, filesToWatch);
+          if (success) {
+            plugin.hotReloadEnabled = true;
+          }
+          return success;
+        } else {
+          pluginLogger.warn(`No valid files found to poll for test plugin ${pluginId}`, pluginId);
+          // Fallback to normal watching if files not found (though unlikely if plugin is loaded)
+        }
+      }
+
+      // --- 普通插件或回退逻辑使用标准文件监听 ---
+      let watchPath = plugin.installPath;
+
+      // 3. 验证路径有效性
+      if (!fs.existsSync(watchPath)) {
+        pluginLogger.warn(`Hot reload path does not exist for plugin ${pluginId}`, pluginId, { path: watchPath });
+        return false;
+      }
+
+      pluginLogger.info(`Enabling standard hot reload for plugin ${pluginId}`, pluginId, { watchPath });
+
+      // 4. 启动监听
+      const success = pluginHotReloadManager.startWatching(pluginId, watchPath);
+      
+      if (success) {
+        plugin.hotReloadEnabled = true;
+      }
+
+      return success;
+    } catch (error: any) {
+      pluginLogger.error(`Failed to enable hot reload for plugin ${pluginId}`, pluginId, error);
+      return false;
+    }
   }
 
   /**
@@ -1817,6 +1845,10 @@ export class PluginManager extends TypedEventEmitter<PluginManagerEvents> {
       fs.writeFileSync(configPath, JSON.stringify(updatedConfig, null, 2));
       
       pluginLogger.info(`Development config saved for plugin: ${config.pluginId}`, config.pluginId);
+
+      // 保存配置后立即重新加载插件列表，确保 UI 能看到新添加的调试插件
+      await this.loadInstalledPlugins();
+
       return true;
     } catch (error) {
       pluginLogger.error(`Failed to save dev config: ${error}`, config.pluginId);
@@ -1840,6 +1872,31 @@ export class PluginManager extends TypedEventEmitter<PluginManagerEvents> {
     } catch (error) {
       pluginLogger.error(`Failed to get dev config: ${error}`, pluginId);
       return pluginId ? null : {};
+    }
+  }
+
+  /**
+   * 移除开发工具配置
+   */
+  public async removeDevConfig(pluginId: string): Promise<boolean> {
+    try {
+      const configPath = path.join(this.pluginsDir, '.devtools', 'config.json');
+      
+      if (!fs.existsSync(configPath)) {
+        return false;
+      }
+      
+      const config = JSON.parse(fs.readFileSync(configPath, 'utf-8'));
+      if (pluginId in config) {
+        delete config[pluginId];
+        fs.writeFileSync(configPath, JSON.stringify(config, null, 2));
+        pluginLogger.info(`Removed dev config for plugin: ${pluginId}`);
+        return true;
+      }
+      return false;
+    } catch (error) {
+      pluginLogger.error(`Failed to remove dev config: ${error}`, pluginId);
+      return false;
     }
   }
 
@@ -1915,7 +1972,7 @@ export class PluginManager extends TypedEventEmitter<PluginManagerEvents> {
    */
   public async testExternalConnection(config: any): Promise<any> {
     try {
-      const { projectUrl, nodePath } = config;
+      const { projectUrl, nodePath, manifestPath } = config;
       
       // 测试项目URL连接
       if (projectUrl) {
@@ -1936,30 +1993,89 @@ export class PluginManager extends TypedEventEmitter<PluginManagerEvents> {
       }
       
       // 测试Node.js路径
+      let isNodePathFile = false;
       if (nodePath) {
         if (!fs.existsSync(nodePath)) {
           return {
             success: false,
-            error: `Node.js代码路径不存在: ${nodePath}`
+            error: `代码路径不存在: ${nodePath}`
           };
         }
         
-        // 检查是否有package.json或主要文件
-        const packageJsonPath = path.join(nodePath, 'package.json');
-        const indexJsPath = path.join(nodePath, 'index.js');
-        const indexTsPath = path.join(nodePath, 'index.ts');
+        const stat = fs.statSync(nodePath);
+        if (stat.isFile()) {
+          isNodePathFile = true;
+        } else {
+          // 检查是否有package.json或主要文件
+          const packageJsonPath = path.join(nodePath, 'package.json');
+          const indexJsPath = path.join(nodePath, 'index.js');
+          const indexTsPath = path.join(nodePath, 'index.ts');
+          
+          if (!fs.existsSync(packageJsonPath) && !fs.existsSync(indexJsPath) && !fs.existsSync(indexTsPath)) {
+            return {
+              success: false,
+              error: `Node.js路径中未找到有效的项目文件 (package.json, index.js, index.ts)`
+            };
+          }
+        }
+      }
+
+      if (manifestPath) {
+        if (!fs.existsSync(manifestPath)) {
+          return { success: false, error: `manifest文件不存在: ${manifestPath}` };
+        }
+        let text = '';
+        try { text = fs.readFileSync(manifestPath, 'utf-8'); } catch (e: any) { return { success: false, error: `读取manifest失败: ${e?.message || String(e)}` }; }
+        let json: any;
+        try { json = JSON.parse(text); } catch (e: any) { return { success: false, error: `manifest格式非法: ${e?.message || String(e)}` }; }
+        const idOk = typeof json?.id === 'string' && json.id.trim().length > 0;
+        const nameOk = typeof json?.name === 'string' && json.name.trim().length > 0;
+        const verOk = typeof json?.version === 'string' && json.version.trim().length > 0;
+        const mainOk = typeof json?.main === 'string' && json.main.trim().length > 0;
         
-        if (!fs.existsSync(packageJsonPath) && !fs.existsSync(indexJsPath) && !fs.existsSync(indexTsPath)) {
-          return {
-            success: false,
-            error: `Node.js路径中未找到有效的项目文件 (package.json, index.js, index.ts)`
-          };
+        if (!idOk || !nameOk || !verOk) {
+          return { success: false, error: 'manifest缺少必填字段(id/name/version)' };
+        }
+        
+        // 仅当存在 main 字段时才进行后端进程测试
+        if (mainOk) {
+          // 使用插件进程沙箱进行加载验证，忽略外部 package.json 的模块类型
+          try {
+            const pluginId = String(json.id);
+            let mainFile = '';
+            if (nodePath && isNodePathFile) {
+              mainFile = nodePath;
+            } else {
+              mainFile = path.join(String(nodePath || path.dirname(manifestPath)), String(json.main));
+            }
+
+            if (!fs.existsSync(mainFile)) {
+              return { success: false, error: `主入口文件不存在: ${mainFile}` };
+            }
+            const apiPort = this.configManager.get<number>('server.port', parseInt(process.env.ACFRAME_API_PORT || '18299'));
+            try {
+              await this.processManager.startPluginProcess(pluginId, mainFile, { apiPort }, json);
+              try {
+                await this.processManager.executeInPlugin(pluginId, 'init', [], 3000, { optional: true });
+              } catch (execErr: any) {
+                // 即使方法不存在也已触发加载；保留错误信息用于提示
+                const msg = execErr && execErr.message ? execErr.message : String(execErr);
+                if (msg && msg.toLowerCase().includes('not running')) throw execErr;
+              }
+            } catch (loadErr: any) {
+              return { success: false, error: `主入口加载失败: ${loadErr?.message || String(loadErr)}` };
+            } finally {
+              try { await this.processManager.stopPluginProcess(pluginId, 'manual'); } catch {}
+            }
+          } catch (e: any) {
+            return { success: false, error: `主入口校验失败: ${e?.message || String(e)}` };
+          }
         }
       }
       
       return {
         success: true,
-        message: '连接测试成功',
+        message: '测试加载成功',
         projectUrl: projectUrl || null,
         nodePath: nodePath || null
       };

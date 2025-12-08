@@ -71,7 +71,7 @@ const routes: RouteRecordRaw[] = [
             }
           },
           {
-            path: 'manage/:id',
+            path: 'manage/:roomId',
             name: 'LiveManage',
             component: LiveManagePage,
             meta: {

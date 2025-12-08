@@ -3,6 +3,7 @@ import { ref, computed, watch } from 'vue';
 import { reportReadonlyUpdate } from '../utils/readonlyReporter';
 import { registerPluginRoute, unregisterPluginRoute } from '../router/index';
 import { getPluginHostingConfig, buildPluginPageUrl, getApiBase, resolvePrimaryHostingType } from '../utils/hosting';
+import { useNetworkStore } from './network';
 
 export interface PluginInfo {
   id: string;
@@ -33,6 +34,13 @@ export interface PluginInfo {
     icon?: string;
     title?: string;
   };
+  liveRoomDisplay?: {
+    show: boolean;
+    order?: number;
+    group?: string;
+    icon?: string;
+    title?: string;
+  };
   
   // 路由配置
   routes?: PluginRoute[];
@@ -48,6 +56,9 @@ export interface PluginInfo {
     sync?: boolean;
     alive?: boolean;
   };
+
+  // 是否包含 overlay
+  hasOverlay?: boolean;
   
   // 错误信息
   error?: string;
@@ -115,10 +126,16 @@ export const usePluginStore = defineStore('plugin', () => {
   // 动作
   async function loadPlugins() {
     try {
+      const ns = useNetworkStore();
+      const curPort = Number(ns.apiPort);
+      if (!Number.isFinite(curPort) || curPort <= 0 || curPort > 65535) {
+        try { await ns.refreshPort(); } catch {}
+        try { await ns.refreshStatus(); } catch {}
+      }
       isLoading.value = true;
       error.value = null;
-      // 读取已保存的侧边栏显示状态用于合并
       const savedSidebarMap = new Map<string, PluginInfo['sidebarDisplay'] | undefined>();
+      const savedLiveRoomMap = new Map<string, PluginInfo['liveRoomDisplay'] | undefined>();
       try {
         const saved = localStorage.getItem('installedPlugins');
         if (saved) {
@@ -127,6 +144,7 @@ export const usePluginStore = defineStore('plugin', () => {
             for (const item of parsed) {
               if (item && item.id) {
                 savedSidebarMap.set(item.id, item.sidebarDisplay || undefined);
+                savedLiveRoomMap.set(item.id, item.liveRoomDisplay || undefined);
               }
             }
           }
@@ -164,7 +182,7 @@ export const usePluginStore = defineStore('plugin', () => {
               // 为图标使用受支持的静态托管作用域：/plugins/:id/ui/*
               // 服务器路由将子路径映射到插件根目录，避免直接访问根路径造成 404
               const iconUrl = p?.manifest?.icon
-                ? new URL(`/plugins/${p.id}/ui/${p.manifest.icon}`, base).toString()
+                ? new URL(`/plugins/${p.id}/${p.manifest.icon}`, base).toString()
                 : (p.icon || undefined);
               return {
                 id: p.id,
@@ -180,8 +198,10 @@ export const usePluginStore = defineStore('plugin', () => {
                 lastUpdate: new Date(),
                 entryUrl: undefined,
                 config: p.manifest?.config || undefined,
+                hasOverlay: !!p.manifest?.overlay,
                 // 合并持久化的侧边栏显示状态
                 sidebarDisplay: savedSidebarMap.get(p.id) || undefined,
+                liveRoomDisplay: savedLiveRoomMap.get(p.id) || undefined,
               };
             });
 
@@ -224,7 +244,7 @@ export const usePluginStore = defineStore('plugin', () => {
           const base = getApiBase();
           // 图标使用 /plugins/:id/ui/* 子路径以避免根路径 404
           const iconUrl = p?.manifest?.icon
-            ? new URL(`/plugins/${p.id}/ui/${p.manifest.icon}`, base).toString()
+            ? new URL(`/plugins/${p.id}/${p.manifest.icon}`, base).toString()
             : (p.icon || undefined);
           return {
             id: p.id,
@@ -240,8 +260,10 @@ export const usePluginStore = defineStore('plugin', () => {
             lastUpdate: new Date(),
             entryUrl: undefined,
             config: p.manifest?.config || undefined,
+            hasOverlay: !!p.manifest?.overlay,
             // 合并持久化的侧边栏显示状态
             sidebarDisplay: savedSidebarMap.get(p.id) || undefined,
+            liveRoomDisplay: savedLiveRoomMap.get(p.id) || undefined,
           };
         });
         savePluginsToStorage();
@@ -277,8 +299,8 @@ export const usePluginStore = defineStore('plugin', () => {
         console.warn('[plugin] electronApi.plugin 未初始化，跳过插件状态刷新（开发预览环境）');
         return;
       }
-      // 读取已保存的侧边栏显示状态用于合并
       const savedSidebarMap = new Map<string, PluginInfo['sidebarDisplay'] | undefined>();
+      const savedLiveRoomMap = new Map<string, PluginInfo['liveRoomDisplay'] | undefined>();
       try {
         const saved = localStorage.getItem('installedPlugins');
         if (saved) {
@@ -287,6 +309,7 @@ export const usePluginStore = defineStore('plugin', () => {
             for (const item of parsed) {
               if (item && item.id) {
                 savedSidebarMap.set(item.id, item.sidebarDisplay || undefined);
+                savedLiveRoomMap.set(item.id, item.liveRoomDisplay || undefined);
               }
             }
           }
@@ -318,7 +341,7 @@ export const usePluginStore = defineStore('plugin', () => {
           console.log('[plugin] 映射插件', p.id, 'schemaKeys=', schemaKeys);
           const base = getApiBase();
           const iconUrl = p?.manifest?.icon
-            ? new URL(`/plugins/${p.id}/ui/${p.manifest.icon}`, base).toString()
+            ? new URL(`/plugins/${p.id}/${p.manifest.icon}`, base).toString()
             : (p.icon || undefined);
           return {
             id: p.id,
@@ -334,8 +357,10 @@ export const usePluginStore = defineStore('plugin', () => {
             lastUpdate: new Date(),
             entryUrl: undefined,
             config: p.manifest?.config || undefined,
+            hasOverlay: !!p.manifest?.overlay,
             // 合并持久化的侧边栏显示状态
             sidebarDisplay: savedSidebarMap.get(p.id) || undefined,
+            liveRoomDisplay: savedLiveRoomMap.get(p.id) || undefined,
           };
         });
         savePluginsToStorage();
@@ -479,18 +504,15 @@ export const usePluginStore = defineStore('plugin', () => {
         throw new Error('插件不存在');
       }
 
-      // 先停用插件
-      if (plugin.enabled) {
-        await togglePlugin(pluginId, false);
+      // 使用新的 reload API，它会在后端重新加载清单并重启
+      const result = await window.electronApi.plugin.reload(pluginId);
+      
+      if (!result.success) {
+        throw new Error(result.error || '重新加载插件失败');
       }
 
-      // 重新加载插件信息
+      // 重新加载插件列表以获取最新状态（包括新的配置项）
       await refreshPluginStatus();
-
-      // 如果之前是启用状态，重新启用
-      if (plugin.enabled) {
-        await togglePlugin(pluginId, true);
-      }
     } catch (err) {
       console.error('Failed to reload plugin:', err);
       throw err;
@@ -596,6 +618,15 @@ export const usePluginStore = defineStore('plugin', () => {
     const plugin = getPluginById(pluginId);
     if (plugin) {
       plugin.sidebarDisplay = sidebarDisplay;
+      plugin.lastUpdate = new Date();
+      savePluginsToStorage();
+    }
+  }
+
+  function updatePluginLiveRoomDisplay(pluginId: string, liveRoomDisplay: PluginInfo['liveRoomDisplay']) {
+    const plugin = getPluginById(pluginId);
+    if (plugin) {
+      plugin.liveRoomDisplay = liveRoomDisplay;
       plugin.lastUpdate = new Date();
       savePluginsToStorage();
     }
@@ -988,6 +1019,16 @@ export const usePluginStore = defineStore('plugin', () => {
   // 初始化
   loadPlugins();
 
+  // 监听插件状态变更事件（热重载、远程控制等触发）
+  if (window.electronApi?.on) {
+    window.electronApi.on('plugin-status-changed', (payload: any) => {
+      // Add a small delay to ensure main process state is fully consistent
+      setTimeout(() => {
+        refreshPluginStatus();
+      }, 100);
+    });
+  }
+
   return {
     // 状态
     plugins,
@@ -1016,6 +1057,7 @@ export const usePluginStore = defineStore('plugin', () => {
     togglePlugin,
     updatePluginConfig,
     updatePluginSidebarDisplay,
+    updatePluginLiveRoomDisplay,
     getPluginById,
     getPluginLogs,
     toggleDebugMode,

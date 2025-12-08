@@ -133,6 +133,7 @@
                 <t-form
                   :data="pluginConfig"
                   layout="vertical"
+                  label-align="top"
                 >
                   <t-form-item
                     v-for="(configItem, key) in plugin.config"
@@ -144,6 +145,11 @@
                       v-model="pluginConfig[key]"
                       v-bind="getConfigProps(configItem)"
                     />
+                    <div v-if="configItem.type === 'file' || configItem.type === 'directory'" style="margin-top: 6px;">
+                      <t-button size="small" variant="outline" @click="pickPath(String(key), String(configItem.type))">
+                        {{ configItem.type === 'directory' ? '选择目录' : '选择文件' }}
+                      </t-button>
+                    </div>
                     <template v-if="configItem.description" #help>
                       <span>{{ configItem.description }}</span>
                     </template>
@@ -170,13 +176,16 @@
             value="devtools"
             label="开发工具"
           >
-            <div class="devtools-section">
+            <div class="settings-section">
               <PluginDevTools 
+                ref="devToolsRef"
                 :plugin-id="plugin.id"
-                @config-saved="handleDevConfigSaved"
-                @debug-started="handleDebugStarted"
-                @debug-stopped="handleDebugStopped"
+                @config-changed="onDevConfigChanged"
               />
+              <div class="settings-actions" style="margin-top: 12px;">
+                <t-button variant="outline" :loading="testingDev" @click="onTestLoadDev">测试加载</t-button>
+                <t-button theme="primary" :disabled="!devTestReady" :loading="savingDev" @click="onSaveDev">保存配置</t-button>
+              </div>
             </div>
           </t-tab-panel>
           
@@ -383,6 +392,10 @@ const logsLoading = ref(false);
 const logLevel = ref('all');
 const showLogDetailDialog = ref(false);
 const logDetail = ref<LogEntry | null>(null);
+const devToolsRef = ref<any>(null);
+const testingDev = ref(false);
+const savingDev = ref(false);
+const devTestReady = ref(false);
 
 
 async function loadPlugin() {
@@ -436,6 +449,7 @@ async function uninstallPlugin() {
     }, 0);
   } catch (error) {
     console.error('Error uninstalling plugin:', error);
+    try { (await import('../services/globalPopup')).GlobalPopup.alert('卸载失败', String((error as Error)?.message || error)); } catch {}
   } finally {
     uninstalling.value = false;
   }
@@ -551,6 +565,11 @@ watch(activeTab, (newTab) => {
   if (newTab === 'logs' && logs.value.length === 0) {
     loadLogs();
   }
+  if (newTab === 'settings') {
+    if (plugin.value) {
+      initPluginConfigFromSchemaWithSaved(plugin.value);
+    }
+  }
 });
 
 watch(() => props.pluginId, () => {
@@ -603,6 +622,33 @@ function handleDebugStarted() {
     if (activeTab.value === 'logs') {
       loadLogs();
     }
+  }
+
+  async function onTestLoadDev() {
+    try {
+      testingDev.value = true;
+      const res = await devToolsRef.value?.testLoad?.();
+      const ok = !!(res?.pass ?? devToolsRef.value?.getTestPassed?.());
+      devTestReady.value = ok;
+      const msg = ok ? '测试加载通过' : `测试加载失败：${String(res?.error || '未知原因')}`;
+      try { (await import('../services/globalPopup')).GlobalPopup.toast(msg); } catch {}
+    } finally {
+      testingDev.value = false;
+    }
+  }
+
+  async function onSaveDev() {
+    try {
+      savingDev.value = true;
+      await devToolsRef.value?.saveConfig?.();
+      try { (await import('../services/globalPopup')).GlobalPopup.toast('配置已保存'); } catch {}
+    } finally {
+      savingDev.value = false;
+    }
+  }
+
+  function onDevConfigChanged() {
+    devTestReady.value = false;
   }
 
   // 设置表单：根据 schema 提取初始值
@@ -664,6 +710,8 @@ function handleDebugStarted() {
       case 'select': return 't-select';
       case 'textarea': return 't-textarea';
       case 'text': return 't-input';
+      case 'file': return 't-input';
+      case 'directory': return 't-input';
       default: return 't-input';
     }
   }
@@ -688,8 +736,22 @@ function handleDebugStarted() {
     if (!plugin.value) return;
     try {
       await pluginStore.updatePluginConfig(plugin.value.id, pluginConfig.value);
+      try { (await import('../services/globalPopup')).GlobalPopup.toast('保存配置成功'); } catch {}
     } catch (error) {
       console.error('保存插件配置失败:', error);
+      try { (await import('../services/globalPopup')).GlobalPopup.alert('保存配置失败', String((error as Error)?.message || error)); } catch {}
+    }
+  }
+
+  async function pickPath(fieldKey: string, type: string) {
+    try {
+      const props: string[] = type === 'directory' ? ['openDirectory'] : ['openFile'];
+      const res = await window.electronApi.dialog.showOpenDialog({ properties: props });
+      const p = (res && Array.isArray(res.filePaths) && res.filePaths[0]) || '';
+      if (!p) return;
+      pluginConfig.value[fieldKey] = p;
+    } catch (e) {
+      console.warn('[plugin-config] 选择路径失败:', e);
     }
   }
 
@@ -699,10 +761,20 @@ function handleDebugStarted() {
 </script>
 
 <style scoped>
+.settings-actions{
+  display: flex;
+  gap: 8px;
+}
 .plugin-detail {
   height: 100%;
   overflow-y: auto;
   padding: 24px;
+}
+
+.devtools-actions {
+  display: flex;
+  gap: 8px;
+  margin-top: 12px;
 }
 
 .loading-state,
@@ -928,7 +1000,4 @@ function handleDebugStarted() {
   margin: 8px 0 0 0;
 }
 
-.devtools-section {
-  padding: 0;
-}
 </style>

@@ -369,7 +369,7 @@ export class AcfunDanmuModule implements AppModule {
   async sendDanmu(liveId: number, content: string): Promise<DanmuSendResponse> {
     try {
       const result = await this.callApiMethod(async (api) => {
-        return api.danmu.sendComment(liveId.toString(), content);
+        return api.danmu.sendDanmu(liveId.toString(), content);
       }, 'sendDanmu');
       
       return {

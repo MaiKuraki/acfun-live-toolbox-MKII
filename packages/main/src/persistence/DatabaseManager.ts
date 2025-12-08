@@ -57,6 +57,7 @@ export class DatabaseManager {
       const createRoomsMetaTableSql = `
         CREATE TABLE IF NOT EXISTS rooms_meta (
           id INTEGER PRIMARY KEY AUTOINCREMENT,
+          live_id TEXT,
           room_id TEXT,
           streamer_name TEXT,
           streamer_user_id TEXT,
@@ -72,17 +73,17 @@ export class DatabaseManager {
           category_name TEXT,
           sub_category_id TEXT,
           sub_category_name TEXT,
-          updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
+          created_at DATETIME DEFAULT CURRENT_TIMESTAMP
         );
       `;
 
       const createIndexesSql = [
+        'CREATE UNIQUE INDEX IF NOT EXISTS idx_rooms_meta_live_id ON rooms_meta (live_id)',
         'CREATE INDEX IF NOT EXISTS idx_rooms_meta_streamer_name ON rooms_meta (streamer_name)',
-        'CREATE INDEX IF NOT EXISTS idx_rooms_meta_updated_at ON rooms_meta (updated_at)',
-        'CREATE INDEX IF NOT EXISTS idx_rooms_meta_room_updated ON rooms_meta (room_id, updated_at)'
+        'CREATE INDEX IF NOT EXISTS idx_rooms_meta_created_at ON rooms_meta (created_at)',
+        'CREATE INDEX IF NOT EXISTS idx_rooms_meta_live_created ON rooms_meta (live_id, created_at)'
       ];
 
-      // 检查并添加新列的迁移逻辑
       const migrationSql: string[] = [];
 
       this.db.serialize(() => {
@@ -95,13 +96,8 @@ export class DatabaseManager {
             }
 
           migrationSql.forEach(sql => {
-            this.db!.run(sql, (migErr: Error | null) => {
-              if (migErr && !migErr.message.includes('duplicate column name')) {
-                console.warn('Migration warning:', migErr.message);
-              }
-            });
+            this.db!.run(sql, () => {});
           });
-          createIndexesSql.forEach(sql => this.db!.run(sql));
 
           let indexCreationError: Error | null = null;
           for (const stmt of createIndexesSql) {

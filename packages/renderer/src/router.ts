@@ -18,11 +18,13 @@ const routes = [
   },
   {
     path: '/live/room',
+    name: 'LiveRoom',
     component: () => import('./pages/LiveRoomPage.vue'),
     meta: { title: '房间管理' }
   },
   {
-    path: '/live/manage/:id',
+    path: '/live/manage/:roomId',
+    name: 'LiveManage',
     component: () => import('./pages/LiveManagePage.vue'),
     meta: { title: '直播管理' }
   },
@@ -33,6 +35,7 @@ const routes = [
   },
   {
     path: '/live/danmu/:roomId?',
+    name: 'LiveDanmu',
     component: () => import('./pages/LiveDanmuPage.vue'),
     meta: { title: '弹幕管理' }
   },
@@ -49,7 +52,7 @@ const routes = [
   {
     path: '/plugins/management',
     component: () => import('./pages/PluginManagementPage.vue'),
-    meta: { title: '插件管理' }
+    meta: { title: '插件管理', keepAlive: false }
   },
   {
     path: '/plugins/:plugname',

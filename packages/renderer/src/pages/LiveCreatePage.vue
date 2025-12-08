@@ -65,16 +65,7 @@
                 <h4 class="section-title">封面图片</h4>
                 <t-form-item name="cover">
                   <div class="cover-upload-section">
-<t-upload
-  v-model:files="files"
-  accept="image/*"
-  :max="1"
-  :auto-upload="false"
-  placeholder="点击上传图片文件"
-  theme="image"
-  draggable
-  @change="onUploadChange"
-/>
+<CoverCropper v-model="basicForm.cover" />
                 </div>
               </t-form-item>
             </div>
@@ -170,6 +161,8 @@
       </div>
     </div>
 
+    
+
   </div>
 </template>
 
@@ -181,8 +174,10 @@ import { useRouter } from 'vue-router';
 import { MessagePlugin } from 'tdesign-vue-next';
 import { useAccountStore } from '../stores/account';
 import { useStreamStore } from '../stores/stream';
+import { useLiveStore } from '../stores/live';
+import { useRoomStore } from '../stores/room';
 import { getApiBase } from '../utils/hosting';
-import type { UploadFile } from 'tdesign-vue-next';
+import CoverCropper from '../components/CoverCropper.vue';
 
 // 接口类型定义
 interface Category {
@@ -377,37 +372,9 @@ const categoriesLoading = ref(false);
 const categories = ref<Category[]>([]);
 const cascaderOptions = ref<CascaderOption[]>([]);
 
-// 封面上传（简化版）
-const files = ref<UploadFile[]>([]);
-const coverPreviewUrl = ref('');
+// 封面上传由 CoverCropper 组件实现
 
-async function fileToBase64(file: File): Promise<string> {
-  return await new Promise((resolve, reject) => {
-    const reader = new FileReader();
-    reader.onload = () => resolve(String(reader.result));
-    reader.onerror = (e) => reject(e);
-    reader.readAsDataURL(file);
-  });
-}
-
-function onUploadChange(changed: UploadFile[]) {
-  const f = Array.isArray(changed) && changed.length > 0 ? changed[0] : undefined;
-  if (f && (f as any).raw instanceof File) {
-    const reader = new FileReader();
-    reader.onload = () => {
-      const base64 = String(reader.result);
-      basicForm.cover = base64;
-      files.value = [{ url: base64, name: (f as any).name || 'cover.jpg', status: 'success' } as any];
-    };
-    reader.readAsDataURL((f as any).raw as File);
-  } else if (f && typeof (f as any).url === 'string' && (f as any).url) {
-    basicForm.cover = (f as any).url;
-    files.value = [{ url: (f as any).url, name: (f as any).name || 'cover.jpg', status: 'success' } as any];
-  } else {
-    basicForm.cover = '';
-    files.value = [];
-  }
-}
+ 
 
 // 推流信息
 const streamLoading = ref(false);
@@ -430,23 +397,24 @@ const canStartLive = computed(() => {
   return streamStatus.value === 'streaming';
 });
 
-// 图片裁剪
-// 裁剪已移除
+// 图片裁剪（已按 16:9 弹窗裁剪实现）
 
 // 生命周期
 onMounted(async () => {
   console.log('[LiveCreateDraft] onMounted starting...');
   loadDraft();
-  if (basicForm.cover) {
-    files.value = [{ url: basicForm.cover, name: 'cover.jpg', status: 'success' } as any];
-  }
   const streamStore = useStreamStore()
   await checkLivePermission();
   try {
-    const statusRes = await window.electronApi.http.get('/api/acfun/live/stream-status');
-    if (statusRes && statusRes.success && statusRes.data && statusRes.data.liveID) {
-      router.replace(`/live/manage/${statusRes.data.liveID}`);
-      return;
+    const liveStore = useLiveStore();
+    const base1 = getApiBase();
+    if (!liveStore.isLive) {
+      const res1 = await fetch(new URL('/api/acfun/live/stream-status', base1).toString(), { method: 'GET' });
+      const statusRes = await res1.json();
+      if (statusRes && statusRes.success && statusRes.data && statusRes.data.liveID) {
+        router.replace(`/live/manage/${statusRes.data.liveID}`);
+        return;
+      }
     }
   } catch {}
   if (hasPermission.value) {
@@ -486,7 +454,9 @@ async function checkLivePermission() {
   try {
     permissionLoading.value = true;
     
-    const result = await window.electronApi.http.get('/api/acfun/live/permission');
+    const base = getApiBase();
+    const res = await fetch(new URL('/api/acfun/live/permission', base).toString(), { method: 'GET' });
+    const result = await res.json();
     hasPermission.value = result.success && result.data?.liveAuth;
     
     if (!hasPermission.value && result.data?.message) {
@@ -506,7 +476,9 @@ async function loadCategories() {
   try {
     categoriesLoading.value = true;
     
-    const result = await window.electronApi.http.get('/api/acfun/live/categories');
+    const base = getApiBase();
+    const res = await fetch(new URL('/api/acfun/live/categories', base).toString(), { method: 'GET' });
+    const result = await res.json();
     if (result.success && result.data) {
       categories.value = result.data;
       
@@ -567,77 +539,11 @@ function getCategoryNames() {
   return { categoryName, subCategoryName };
 }
 
-// 封面上传处理
-const beforeCoverUpload = (file: any) => {
-  const isImage = file.type === 'image/jpeg' || file.type === 'image/jpg' || file.type === 'image/png';
-  const isLt5M = file.size / 1024 / 1024 < 5;
-  
-  if (!isImage) {
-    MessagePlugin.error('只能上传 JPG/PNG 格式的图片!');
-    return false;
-  }
-  if (!isLt5M) {
-    MessagePlugin.error('图片大小不能超过 5MB!');
-    return false;
-  }
-  return true;
-};
+// 类型与大小校验由 t-upload 的 accept 与前端提示承担
 
-async function handleCoverSuccess(response: any, file: UploadFile) {
-  try {
-    if (file.raw) {
-      // 读取文件为base64并直接存储到表单
-      const reader = new FileReader();
-      reader.onload = async (e) => {
-        const base64 = e.target?.result as string;
-        // 直接存储base64到表单
-        basicForm.cover = base64;
-        MessagePlugin.success('封面图片已加载');
-      };
-      if (file?.raw instanceof File) reader.readAsDataURL(file.raw);
-    } else if (response && response.url) {
-      // 如果已经有URL，直接使用
-      basicForm.cover = response.url;
-      MessagePlugin.success('封面上传成功');
-    }
-  } catch (error) {
-    console.error('封面加载失败:', error);
-    MessagePlugin.error(error instanceof Error ? error.message : '封面加载失败，请重试');
-  }
-}
+// 已清理旧的封面上传处理函数（成功/失败/移除/变化），改为裁剪确认后写入
 
-function handleCoverError() {
-  MessagePlugin.error('封面上传失败，请重试');
-}
-
-function handleCoverRemove() {
-  basicForm.cover = '';
-}
-
-function removeCover() {
-  handleCoverRemove();
-}
-
-// 处理封面文件变化
-async function handleCoverChange(files: UploadFile[]) {
-  if (files.length > 0 && files[0].raw) {
-    const file = files[0];
-    const reader = new FileReader();
-    reader.onload = async (e) => {
-      const base64 = e.target?.result as string;
-      (file as any).url = base64;
-      // 直接存储base64到表单
-      basicForm.cover = base64;
-    };
-    if (file?.raw instanceof File) reader.readAsDataURL(file.raw);
-  } else {
-    basicForm.cover = '';
-  }
-}
-
-function openCropFromFile(file: UploadFile) {
-  // 已移除裁剪对话框
-}
+// openCropFromFile 已实现于裁剪流程
 
 // 获取推流信息（仅获取服务器地址与当前状态，不创建直播）
 async function getStreamInfo() {
@@ -651,7 +557,8 @@ async function getStreamInfo() {
       const url = new URL('/api/acfun/live/stream-settings', base);
       console.log('[LiveCreate][REQ]', 'GET', url.toString());
     }
-    const settingsResult = await window.electronApi.http.get('/api/acfun/live/stream-settings');
+    const resSettings = await fetch(new URL('/api/acfun/live/stream-settings', getApiBase()).toString(), { method: 'GET' });
+    const settingsResult = await resSettings.json();
     if (!settingsResult.success || !settingsResult.data) {
       throw new Error(settingsResult.error || '获取推流设置失败');
     }
@@ -680,7 +587,10 @@ async function getStreamInfo() {
           url.searchParams.set('userID', String(userId));
           console.log('[LiveCreate][REQ]', 'GET', url.toString());
         }
-        const info = await window.electronApi.http.get('/api/acfun/live/user-info', { userID: userId });
+        const urlInfo = new URL('/api/acfun/live/user-info', getApiBase());
+        urlInfo.searchParams.set('userID', String(userId));
+        const resInfo = await fetch(urlInfo.toString(), { method: 'GET' });
+        const info = await resInfo.json();
         console.log('[LiveCreate][RESP] user-info:', info);
         if (info.success && info.data?.liveID) {
           {
@@ -689,7 +599,10 @@ async function getStreamInfo() {
             url.searchParams.set('liveId', info.data.liveID);
             console.log('[LiveCreate][REQ]', 'GET', url.toString());
           }
-          const urlRes = await window.electronApi.http.get('/api/acfun/live/stream-url', { liveId: info.data.liveID });
+          const urlStream = new URL('/api/acfun/live/stream-url', getApiBase());
+          urlStream.searchParams.set('liveId', String(info.data.liveID));
+          const resStream = await fetch(urlStream.toString(), { method: 'GET' });
+          const urlRes = await resStream.json();
           console.log('[LiveCreate][RESP] stream-url by liveId:', JSON.stringify(urlRes, null, 2));
           if (urlRes.success && urlRes.data?.rtmpUrl) {
             const split = splitRtmpUrlAndKey(urlRes.data.rtmpUrl);
@@ -731,7 +644,9 @@ async function startStreamStatusCheck() {
   
   // 检查登录态
   try {
-    const auth = await window.electronApi.http.get('/api/acfun/auth/status');
+    const base = getApiBase();
+    const res = await fetch(new URL('/api/acfun/auth/status', base).toString(), { method: 'GET' });
+    const auth = await res.json();
     if (!auth.success || !auth.data?.authenticated) {
       console.log('[LiveCreate][STATUS] Not authenticated, skip status polling');
       streamStatus.value = 'waiting';
@@ -748,7 +663,11 @@ async function startStreamStatusCheck() {
   // 开始轮询检测
   streamCheckTimer.value = setInterval(async () => {
     try {
-      const result = await window.electronApi.http.get('/api/acfun/live/transcode-info', { streamName: transcodeStreamName.value });
+      const base = getApiBase();
+      const url = new URL('/api/acfun/live/transcode-info', base);
+      url.searchParams.set('streamName', String(transcodeStreamName.value));
+      const res = await fetch(url.toString(), { method: 'GET' });
+      const result = await res.json();
       if (result.success && Array.isArray(result.data)) {
         const list = result.data as TranscodeInfo[];
         if (list.length > 0) {
@@ -801,10 +720,14 @@ watch(() => route.fullPath, async (fp) => {
     if (fp && fp.startsWith('/live/create')) {
       if (streamCheckTimer.value) { clearInterval(streamCheckTimer.value); streamCheckTimer.value = null; }
       try {
-        const statusRes = await window.electronApi.http.get('/api/acfun/live/stream-status');
-        if (statusRes && statusRes.success && statusRes.data && statusRes.data.liveID) {
-          router.replace(`/live/manage/${statusRes.data.liveID}`);
-          return;
+        const liveStore = useLiveStore();
+        if (!liveStore.isLive) {
+          const resStatus = await fetch(new URL('/api/acfun/live/stream-status', getApiBase()).toString(), { method: 'GET' });
+          const statusRes = await resStatus.json();
+          if (statusRes && statusRes.success && statusRes.data && statusRes.data.liveID) {
+            router.replace(`/live/manage/${statusRes.data.liveID}`);
+            return;
+          }
         }
       } catch {}
       streamStatus.value = 'connecting';
@@ -815,7 +738,7 @@ watch(() => route.fullPath, async (fp) => {
   } catch (e) {
     console.warn('[LiveCreate] route watch restart error:', e);
   }
-}, { immediate: false });
+});
 
 function goBack() {
   router.back();
@@ -953,6 +876,11 @@ async function startLive() {
     });
 
     const coverToSend = basicForm.cover || '';
+    if (coverToSend && !/^data:image\/jpeg/i.test(coverToSend)) {
+      MessagePlugin.error('封面仅支持 JPG 格式')
+      startLiveLoading.value = false
+      return
+    }
     console.log('[LiveCreate][START] coverToSend length:', coverToSend.length);
     const streamName = transcodeStreamName.value || ((streamInfo.value?.streamKey || '').split('?')[0]) || `live-${Date.now()}`;
     console.log('[LiveCreate][START] Request params:', JSON.stringify({
@@ -981,6 +909,13 @@ async function startLive() {
     console.log('[LiveCreate][START] Start result:', JSON.stringify(result, null, 2));
     
     if (result.success && result.data) {
+      try {
+        const liveStore = useLiveStore();
+        const startedId = result.data.liveID || result.data.liveId;
+        if (startedId) {
+          liveStore.setLiveStarted(String(startedId), { title: basicForm.title, cover: basicForm.cover });
+        }
+      } catch {}
       liveId.value = result.data.liveID || result.data.liveId;
       startLiveStatus.value = { type: 'success', message: '直播创建成功！' };
       try {
@@ -990,7 +925,10 @@ async function startLive() {
           url.searchParams.set('liveId', liveId.value);
           console.log('[LiveCreate][REQ]', 'GET', url.toString());
         }
-        const streamResult = await window.electronApi.http.get('/api/acfun/live/stream-url', { liveId: liveId.value });
+        const urlAfter = new URL('/api/acfun/live/stream-url', getApiBase());
+        urlAfter.searchParams.set('liveId', String(liveId.value));
+        const resAfter = await fetch(urlAfter.toString(), { method: 'GET' });
+        const streamResult = await resAfter.json();
         console.log('[LiveCreate][RESP] stream-url after start:', JSON.stringify(streamResult, null, 2));
         if (streamResult.success && streamResult.data?.rtmpUrl) {
           const split = splitRtmpUrlAndKey(streamResult.data.rtmpUrl);
@@ -1012,7 +950,20 @@ async function startLive() {
         clearInterval(streamCheckTimer.value);
         streamCheckTimer.value = null;
       }
-      if (liveId.value) {
+  if (liveId.value) {
+        try {
+          const roomStore = useRoomStore();
+          const uid = accountStore?.userInfo?.userID;
+          if (uid) {
+            const roomUrl = `https://live.acfun.cn/live/${uid}`;
+            const existed = roomStore.getRoomById(String(uid));
+            if (!existed) {
+              await roomStore.addRoom(roomUrl);
+            }
+            await roomStore.updateRoomSettings(String(uid), { autoConnect: true, priority: 0 } as any);
+            try { await roomStore.setPriority(String(uid), 0); } catch {}
+          }
+        } catch {}
         router.replace(`/live/manage/${liveId.value}`);
       }
     } else {
@@ -1030,7 +981,7 @@ async function startLive() {
   }
 }
 
-// 已移除旧的裁剪逻辑
+// 已清理旧的裁剪逻辑
 
 // 进入直播间管理
 function goToLiveRoom() {
@@ -1442,27 +1393,7 @@ async function refreshStreamInfo() {
   margin-top: 8px;
 }
 
-.crop-container {
-  text-align: center;
-  padding: 16px;
-}
-.crop-container img {
-  max-width: 100%;
-  max-height: 400px;
-  border-radius: 8px;
-}
-
-.crop-hint {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  margin-top: 16px;
-  padding: 12px;
-  background-color: var(--td-bg-color-secondarycontainer);
-  border-radius: 6px;
-  color: var(--td-text-color-secondary);
-  font-size: 14px;
-}
+ 
 
 /* 新增样式 */
 .form-section {
@@ -1477,4 +1408,6 @@ async function refreshStreamInfo() {
 }
 
 /* 固定布局，无响应式 */
+
+ 
 </style>

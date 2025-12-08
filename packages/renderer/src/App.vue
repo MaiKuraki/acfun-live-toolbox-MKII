@@ -10,61 +10,9 @@
 <script setup lang="ts">
 import LayoutShell from './layouts/LayoutShell.vue';
 import { useUiStore } from './stores/ui';
-import { onMounted, onUnmounted } from 'vue';
-import { useRouter } from 'vue-router';
 
 const uiStore = useUiStore();
-const router = useRouter();
-let livePollTimer: number | null = null;
-
-async function pollLiveStatusOnce() {
-  try {
-    const res = await window.electronApi.http.get('/api/acfun/live/stream-status');
-    if (res.success && res.data?.liveID) {
-      router.replace(`/live/manage/${res.data.liveID}`);
-    }
-  } catch {}
-}
-
-onMounted(() => {
-  const startPolling = () => {
-    if (livePollTimer) return;
-    livePollTimer = window.setInterval(() => {
-      pollLiveStatusOnce();
-    }, 5000);
-  };
-
-  const stopPolling = () => {
-    if (livePollTimer) {
-      clearInterval(livePollTimer);
-      livePollTimer = null;
-    }
-  };
-
-  const route = router.currentRoute;
-  if (route.value.path.startsWith('/live/manage')) {
-    pollLiveStatusOnce();
-    startPolling();
-  } else {
-    stopPolling();
-  }
-
-  router.afterEach((to) => {
-    if (to.path.startsWith('/live/manage')) {
-      pollLiveStatusOnce();
-      startPolling();
-    } else {
-      stopPolling();
-    }
-  });
-});
-
-onUnmounted(() => {
-  if (livePollTimer) {
-    clearInterval(livePollTimer);
-    livePollTimer = null;
-  }
-});
+// 保持空脚本，仅负责布局与主题
 </script>
 
 <style>

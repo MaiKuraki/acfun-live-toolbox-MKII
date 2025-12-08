@@ -5,7 +5,7 @@ import { DanmuSQLiteWriter } from '../persistence/DanmuSQLiteWriter';
 import { RoomStatus, NormalizedEvent } from '../types';
 import { ensureNormalized } from '../events/normalize';
 
-const MAX_ROOMS = 3;
+const MAX_ROOMS = 10;
 
 export interface RoomInfo {
   roomId: string;
@@ -17,6 +17,10 @@ export interface RoomInfo {
   reconnectAttempts: number;
   priority?: number;
   label?: string;
+  liveId?: string;
+  streamInfo?: any;
+  isManager?: number;
+  lastError?: Error;
 }
 
 export class RoomManager extends EventEmitter {
@@ -48,9 +52,9 @@ export class RoomManager extends EventEmitter {
     try {
       const adapter = new AcfunAdapter({
         roomId,
-        autoReconnect: true,
+        autoReconnect: false, // 由RoomManager统一管理重连
         reconnectInterval: 5000,
-        maxReconnectAttempts: 10,
+        maxReconnectAttempts: 0, // 禁止适配器内部自动重连
         connectionTimeout: 30000,
         heartbeatInterval: 30000,
         debug: false
@@ -69,6 +73,8 @@ export class RoomManager extends EventEmitter {
       this.setupAdapterListeners(roomInfo);
 
       await adapter.connect();
+      try { roomInfo.liveId = adapter.getCurrentLiveId() || undefined; } catch {}
+      try { roomInfo.streamInfo = adapter.getCurrentStreamInfo() || undefined; } catch {}
       
       console.log(`[RoomManager] Successfully added room ${roomId}`);
       this.emit('roomAdded', roomId);
@@ -202,13 +208,23 @@ export class RoomManager extends EventEmitter {
         this.handleRoomDisconnection(roomInfo);
       }
 
+      try { roomInfo.liveId = roomInfo.adapter.getCurrentLiveId() || roomInfo.liveId; } catch {}
+      try { roomInfo.streamInfo = roomInfo.adapter.getCurrentStreamInfo() || roomInfo.streamInfo; } catch {}
       this.emit('roomStatusChange', roomId, status);
       if (process.env.ACFRAME_DEBUG_LOGS === '1') {
         try { console.log('[Room] status roomId=' + String(roomId) + ' status=' + String(status)); } catch {}
       }
     });
 
-    adapter.on('event', (event: NormalizedEvent) => {
+    try {
+      adapter.on('streamInfoReady', () => {
+        try { roomInfo.streamInfo = roomInfo.adapter.getCurrentStreamInfo() || roomInfo.streamInfo; } catch {}
+        try { roomInfo.liveId = roomInfo.adapter.getCurrentLiveId() || roomInfo.liveId; } catch {}
+        this.emit('roomStatusChange', roomId, roomInfo.status);
+      });
+    } catch {}
+
+    adapter.on('event', async (event: NormalizedEvent) => {
       roomInfo.eventCount++;
       roomInfo.lastEventAt = Date.now();
 
@@ -223,17 +239,44 @@ export class RoomManager extends EventEmitter {
         console.info('[Room] unified type=' + String(enriched.event_type) + ' room=' + String(roomId) + ' user=' + String(enriched.user_name || '') + '(' + String(enriched.user_id || '') + ')' + ' content="' + String(enriched.content || '') + '" ts=' + String(enriched.ts));
       } catch {}
 
+      if (enriched.event_type === 'end') {
+        roomInfo.liveId = undefined;
+        try { await roomInfo.adapter.disconnect(); } catch {}
+      }
+
+      if (enriched.event_type === 'managerState') {
+        try {
+          const stRaw = (enriched as any)?.raw;
+          const st = Number((stRaw as any)?.state ?? (stRaw as any)?.data?.state ?? NaN);
+          if (Number.isFinite(st)) {
+            roomInfo.isManager = st;
+            this.emit('roomStatusChange', roomId, roomInfo.status);
+          }
+        } catch {}
+      }
+
       
 
       if (process.env.ACFRAME_DEBUG_LOGS === '1') {
         try { console.log('[Room] enqueue roomId=' + String(roomId) + ' type=' + String(enriched.event_type) + ' ts=' + String(enriched.ts)); } catch {}
       }
-      try { this.danmuWriter.handleNormalized(roomId, enriched); } catch {}
+      const liveId = roomInfo.liveId || roomInfo.adapter.getCurrentLiveId();
+      if (!liveId) {
+        const et = String(enriched.event_type || '');
+        if (et === 'enter' || et === 'follow') {
+          try { this.danmuWriter.handleNormalized(String(roomId), enriched, roomId); } catch {}
+        } else {
+          try { console.warn('[RoomManager] liveId not available, skip persist room=' + String(roomId)); } catch {}
+        }
+      } else {
+        try { this.danmuWriter.handleNormalized(String(liveId), enriched, roomId); } catch {}
+      }
       this.emit('event', enriched);
     });
 
     adapter.on('error', (error: Error) => {
       console.error(`[RoomManager] Error in room ${roomId}:`, error);
+      roomInfo.lastError = error;
       this.emit('roomError', roomId, error);
     });
   }
@@ -262,10 +305,16 @@ export class RoomManager extends EventEmitter {
       return;
     }
 
-    const delay = Math.min(
+    let delay = Math.min(
       baseDelay * Math.pow(2, roomInfo.reconnectAttempts),
       maxDelay
     );
+
+    // 如果是熔断器错误，等待熔断器复位（至少65秒）
+    if (roomInfo.lastError && roomInfo.lastError.message && roomInfo.lastError.message.includes('Circuit breaker is open')) {
+      console.log(`[RoomManager] Circuit breaker detected for room ${roomId}, waiting for reset...`);
+      delay = Math.max(delay, 65000);
+    }
 
     console.log(`[RoomManager] Scheduling reconnection for room ${roomId} in ${delay}ms (attempt ${roomInfo.reconnectAttempts + 1})`);
 

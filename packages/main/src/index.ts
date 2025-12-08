@@ -17,6 +17,7 @@ import { DiagnosticsService } from './logging/DiagnosticsService';
 import { getLogManager, LogManager } from './logging/LogManager';
 import { ConsoleManager } from './console/ConsoleManager';
 import { acfunDanmuModule } from './adapter/AcfunDanmuModule';
+import { installVueDevtools } from './bootstrap/ChromeDevToolsExtension';
 import path from 'path';
 import { DataManager } from './persistence/DataManager';
 import * as fs from 'fs';
@@ -202,6 +203,7 @@ async function main() {
 
   // 初始化API服务器，传入所有必要的管理器
   const apiServer = new ApiServer({ port: apiPort }, databaseManager, diagnosticsService, overlayManager, consoleManager);
+  apiServer.setRoomManager(roomManager);
   
   // 更新管理器中的apiServer引用
   (pluginManager as any).apiServer = apiServer;
@@ -210,12 +212,20 @@ async function main() {
 
   // 预先实例化窗口管理器以供 IPC 处理程序使用（窗口创建仍在 app ready 后）
   const windowManager = new WindowManager(); // This will need refactoring
-  const pluginWindowManager = new PluginWindowManager();
+  const pluginWindowManager = new PluginWindowManager(configManager);
+  
+  // 注入 PluginManager 到 PluginWindowManager 以支持窗口配置
+  pluginWindowManager.setPluginManager(pluginManager);
 
   // 注入窗口管理器以支持HTTP窗口控制与弹窗
   apiServer.setWindowManagers(windowManager, pluginWindowManager);
 
-  await apiServer.start();
+  try {
+    await apiServer.start();
+  } catch (error: any) {
+    try { console.error('[Main] API server start failed:', error?.message || String(error)); } catch {}
+    // Continue startup without blocking renderer/main process
+  }
 
   try {
     const ud = app.getPath('userData');
@@ -276,6 +286,10 @@ async function main() {
       console.error('[Main] Failed to broadcast event via WsHub:', err);
     }
     try {
+      const win = windowManager.getMainWindow();
+      win?.webContents.send('room.event', { event_type: event.event_type, room_id: event.room_id, ts: event.ts, raw: event.raw });
+    } catch {}
+    try {
       const dm = DataManager.getInstance();
       const plugins = pluginManager.getInstalledPlugins().filter(p => p.enabled);
       for (const p of plugins) {
@@ -292,9 +306,22 @@ async function main() {
       console.error('[Main] Failed to broadcast room status via WsHub:', err);
     }
     try {
+      const win = windowManager.getMainWindow();
+      const info = roomManager.getRoomInfo(String(roomId));
+      const liveIdRaw = info?.liveId ?? info?.adapter?.getCurrentLiveId() ?? null;
+      const liveId = liveIdRaw ? String(liveIdRaw) : '';
+      const streamInfo = info?.streamInfo ?? info?.adapter?.getCurrentStreamInfo() ?? null;
+      const payloadWin = { roomId, status, liveId, streamInfo, isManager: info?.isManager } as any;
+      win?.webContents.send('room.status', payloadWin);
+    } catch {}
+    try {
       const dm = DataManager.getInstance();
       const plugins = pluginManager.getInstalledPlugins().filter(p => p.enabled);
-      const payload = { roomId, status };
+      const info = roomManager.getRoomInfo(String(roomId));
+      const liveIdRaw = info?.liveId ?? info?.adapter?.getCurrentLiveId() ?? null;
+      const liveId = liveIdRaw ? String(liveIdRaw) : '';
+      const streamInfo = info?.streamInfo ?? info?.adapter?.getCurrentStreamInfo() ?? null;
+      const payload = { roomId, status, liveId, streamInfo } as any;
       for (const p of plugins) {
         const channel = `plugin:${p.id}:overlay`;
         dm.publish(channel, { event: 'room-status-change', payload }, { ttlMs: 2 * 60 * 1000, persist: true, meta: { kind: 'room' } });
@@ -349,7 +376,8 @@ async function main() {
     console.error('[Main] Failed to initialize AcfunDanmuModule:', err);
   }
 
-  windowManager.createWindow(); // Placeholder for creating the main UI
+  try { await installVueDevtools(); } catch {}
+  windowManager.createWindow();
 
   try {
     const minimizeToTray = !!configManager.get<boolean>('ui.minimizeToTray', false);

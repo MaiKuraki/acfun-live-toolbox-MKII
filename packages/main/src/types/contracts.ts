@@ -10,6 +10,7 @@ export interface NormalizedEvent {
   ts: number;                 // ms since epoch (event occurrence time)
   received_at: number;        // ms since epoch (when event was received by adapter)
   room_id: string;
+  live_id?: string;
   source: string;             // Source identifier (e.g., 'acfun', 'bilibili')
   event_type: NormalizedEventType;
   user_id?: string | null;
@@ -23,6 +24,7 @@ export interface NormalizedEvent {
  */
 export type NormalizedEventType =
   | 'danmaku' | 'gift' | 'follow' | 'like' | 'enter' | 'system'
+  | 'shareLive' | 'richText' | 'recentComment'
   | 'bananaCount' | 'displayInfo' | 'topUsers' | 'redpackList'
   | 'chatCall' | 'chatAccept' | 'chatReady' | 'chatEnd'
   | 'kickedOut' | 'violationAlert' | 'managerState' | 'end';

@@ -39,6 +39,8 @@ const _listenerMap = new WeakMap<(...args: any[]) => void, (event: Electron.IpcR
   system: {
     getConfig: () => ipcRenderer.invoke('system.getConfig'),
     updateConfig: (newConfig: any) => ipcRenderer.invoke('system.updateConfig', newConfig),
+    serverStatus: () => ipcRenderer.invoke('system.serverStatus'),
+    restartServer: (opts?: { port?: number }) => ipcRenderer.invoke('system.restartServer', opts),
     getSystemLog: (count?: number) => ipcRenderer.invoke('system.getSystemLog', count),
     genDiagnosticZip: () => ipcRenderer.invoke('system.genDiagnosticZip'),
     showItemInFolder: (targetPath: string) => ipcRenderer.invoke('system.showItemInFolder', targetPath),
@@ -59,7 +61,8 @@ const _listenerMap = new WeakMap<(...args: any[]) => void, (event: Electron.IpcR
     setDir: (dir: string) => ipcRenderer.invoke('config.setDir', dir)
   },
   db: {
-    setPath: (p: string) => ipcRenderer.invoke('db.setPath', p)
+    setPath: (p: string) => ipcRenderer.invoke('db.setPath', p),
+    getPath: () => ipcRenderer.invoke('db.getPath')
   },
   // Overlay API bridging
   overlay: {
@@ -73,6 +76,7 @@ const _listenerMap = new WeakMap<(...args: any[]) => void, (event: Electron.IpcR
     uninstall: (pluginId: string) => ipcRenderer.invoke('plugin.uninstall', pluginId),
     enable: (pluginId: string) => ipcRenderer.invoke('plugin.enable', pluginId),
     disable: (pluginId: string) => ipcRenderer.invoke('plugin.disable', pluginId),
+    reload: (pluginId: string) => ipcRenderer.invoke('plugin.reload', pluginId),
     get: (pluginId: string) => ipcRenderer.invoke('plugin.get', pluginId),
     getConfig: (pluginId: string) => ipcRenderer.invoke('plugin.getConfig', pluginId),
     updateConfig: (pluginId: string, newConfig: Record<string, any>) => ipcRenderer.invoke('plugin.updateConfig', pluginId, newConfig),
@@ -90,6 +94,7 @@ const _listenerMap = new WeakMap<(...args: any[]) => void, (event: Electron.IpcR
     enableHotReload: (pluginId: string) => ipcRenderer.invoke('plugin.devtools.enableHotReload', pluginId),
     disableHotReload: (pluginId: string) => ipcRenderer.invoke('plugin.devtools.disableHotReload', pluginId),
     testConnection: (config: any) => ipcRenderer.invoke('plugin.devtools.testConnection', config),
+    openPluginsDir: () => ipcRenderer.invoke('plugin.openPluginsDir'),
     // 插件窗口能力
     window: {
       open: (pluginId: string) => ipcRenderer.invoke('plugin.window.open', pluginId),
@@ -164,8 +169,12 @@ const _listenerMap = new WeakMap<(...args: any[]) => void, (event: Electron.IpcR
   },
   http: {
     get: async (path: string, params?: Record<string, any>) => {
-      const port = parseInt(process.env.ACFRAME_API_PORT || '18299');
-      const url = new URL(path, `http://127.0.0.1:${port}`);
+      const cfg = await ipcRenderer.invoke('system.getConfig');
+      const p = Number(cfg && cfg['server.port']);
+      if (!Number.isFinite(p) || p <= 0 || p > 65535) {
+        throw new Error('API_PORT_NOT_CONFIGURED');
+      }
+      const url = new URL(path, `http://127.0.0.1:${p}`);
       if (params) {
         for (const [key, value] of Object.entries(params)) {
           if (value !== undefined && value !== null) {
@@ -245,6 +254,35 @@ try {
 } catch (error) {
   console.error('Failed to expose preload API:', error);
 }
+try {
+  const getApiPort = async (): Promise<number> => {
+    const readFromLocation = (): number | undefined => {
+      try {
+        const qs = new URLSearchParams(String(window.location.search || ''));
+        const qp = Number(qs.get('apiPort'));
+        if (Number.isFinite(qp) && qp > 0 && qp <= 65535) return qp;
+      } catch {}
+      try {
+        const u = new URL(String(window.location.href || ''));
+        const po = Number(u.port);
+        if (Number.isFinite(po) && po > 0 && po <= 65535) return po;
+      } catch {}
+      return undefined;
+    };
+    for (let i = 0; i < 10; i++) {
+      const fromLoc = readFromLocation();
+      if (fromLoc) return fromLoc;
+      try {
+        const cfg = await ipcRenderer.invoke('system.getConfig');
+        const p = Number(cfg && cfg['server.port']);
+        if (Number.isFinite(p) && p > 0 && p <= 65535) return p;
+      } catch {}
+      await new Promise(r => setTimeout(r, 500));
+    }
+    throw new Error('API_PORT_NOT_CONFIGURED');
+  };
+  contextBridge.exposeInMainWorld('getApiPort', getApiPort);
+} catch {}
 try {
   const __orig = { log: console.log, warn: console.warn, error: console.error, debug: console.debug } as const;
   const __send = (level: 'info' | 'error' | 'warn' | 'debug', args: any[]) => {

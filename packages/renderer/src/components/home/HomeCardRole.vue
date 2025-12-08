@@ -12,7 +12,7 @@
         </div>
       </div>
       <div v-else class="role-body">
-        <div v-if="role.current === 'anchor'" class="stats-block">
+        <div class="stats-block">
           <div class="overview-grid">
             <div class="overview-item">
               <div class="overview-icon">
@@ -61,20 +61,6 @@
             </div>
           </div>
         </div>
-        <div v-else-if="role.current === 'moderator'" class="rooms-block">
-          <div v-if="home.modRooms.length === 0" class="empty-state">暂无管理房间</div>
-          <div v-else>
-            <div v-for="r in home.modRooms" :key="r.roomId" class="room-card">
-              <div class="room-title">{{ r.title }}</div>
-              <div class="room-status">{{ r.status || '-' }}</div>
-            </div>
-          </div>
-        </div>
-        <div v-else class="dev-block">
-          <div class="stats-row"><span>错误数:</span><span>{{ home.devMetrics?.errorCount ?? 0 }}</span></div>
-          <div class="stats-row"><span>消息数:</span><span>{{ home.devMetrics?.messageCount ?? 0 }}</span></div>
-          <div class="stats-row"><span>错误类型:</span><span>{{ home.devMetrics?.uniqueErrorTypes ?? 0 }}</span></div>
-        </div>
       </div>
       <template #footer>
         <t-space align="center" direction="horizontal">
@@ -82,7 +68,6 @@
             <t-radio-button value="7d">7天</t-radio-button>
             <t-radio-button value="30d">30天</t-radio-button>
           </t-radio-group>
-          <t-link v-if="role.current === 'moderator'" theme="primary" @click="goMore">查看更多</t-link>
         </t-space>
       </template>
     </t-card>
@@ -91,20 +76,18 @@
 
 <script setup lang="ts">
 import { computed } from 'vue';
-import { useRouter } from 'vue-router';
 import { useHomeStore } from '../../stores/home';
 import { useRoleStore } from '../../stores/role';
 
 const home = useHomeStore();
 const role = useRoleStore();
-const router = useRouter();
 
-const roleTitle = computed(() => role.current === 'anchor' ? '主播统计' : (role.current === 'moderator' ? '管理房间' : '开发者指标'));
+const roleTitle = computed(() => '主播统计');
 
 const onScopeChange = (v: string | number) => {
   const val = typeof v === 'string' ? v : String(v);
   role.setStatsScope(val === '30d' ? '30d' : '7d');
-  home.fetchRoleSpecific();
+  home.fetchAnchorStats();
 };
 
 
@@ -126,7 +109,7 @@ const formatNumber = (num?: number) => {
   return num.toString();
 };
 
-const goMore = () => router.push('/live/room');
+// 移除“查看更多”入口，统一为主播视图
 </script>
 
 <style scoped>

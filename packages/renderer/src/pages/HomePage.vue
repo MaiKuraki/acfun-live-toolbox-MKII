@@ -196,23 +196,7 @@
 
     <!-- 已迁移到账号卡片的二维码登录对话框（删除） -->
 
-    <!-- 首次登录角色选择对话框 -->
-    <t-dialog
-      v-model:visible="role.firstLoginRoleDialogVisible"
-      title="选择你的使用角色"
-      :close-on-overlay-click="false"
-    >
-      <t-radio-group :value="role.current" @change="(v:any)=>role.setRole(v)">
-        <t-radio value="anchor">主播</t-radio>
-        <t-radio value="moderator">房管</t-radio>
-        <t-radio value="developer">开发者</t-radio>
-      </t-radio-group>
-      <template #footer>
-        <t-space>
-          <t-button theme="primary" @click="confirmRoleAndInit">确定</t-button>
-        </t-space>
-      </template>
-    </t-dialog>
+    
   </div>
 </template>
 
@@ -227,19 +211,12 @@ const logout = () => {};
 const kpiData: any = { liveTime: 0, giftCount: 0, danmuCount: 0, likeCount: 0 };
 const kpiLoading = false;
 import { useHomeStore } from '../stores/home';
-import { useRoleStore } from '../stores/role';
 import HomeCardWelcome from '../components/home/HomeCardWelcome.vue';
 import HomeCardAccount from '../components/home/HomeCardAccount.vue';
 import HomeCardRole from '../components/home/HomeCardRole.vue';
 import HomeCardDocs from '../components/home/HomeCardDocs.vue';
 
 const home = useHomeStore();
-const role = useRoleStore();
-
-const confirmRoleAndInit = async () => {
-  role.confirmFirstLoginRole();
-  await home.fetchRoleSpecific();
-};
 
 onMounted(async () => {
   await home.initialize();

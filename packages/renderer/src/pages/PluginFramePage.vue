@@ -1,25 +1,20 @@
 <template>
   <div class="plugin-frame-page">
     <!-- 插件 UI 通过 Wujie 微前端组件承载 -->
-    <div class="plugin-ui-full-container">
-      <WujieVue
+     <WujieVue
         v-if="isWujieUi"
+        class="plugin-ui-full-container"
         :key="uiKey"
         :name="wujieName"
         :url="wujieUrl"
         :props="wujieProps"
+        :plugins="wujiePlugins"
         :sync="true"
         :alive="false"
         :width="'100%'"
         :height="'100%'"
-        @beforeLoad="onBeforeLoad"
-        @beforeMount="onBeforeMount"
-        @afterMount="onAfterMount"
-        @beforeUnmount="onBeforeUnmount"
-        @afterUnmount="onAfterUnmount"
         @loadError="onLoadError"
       />
-    </div>
      </div>
 </template>
 
@@ -29,6 +24,7 @@ import { useRoute } from 'vue-router';
 import WujieVue from 'wujie-vue3';
 import { usePluginStore } from '../stores/plugin';
 import { getApiBase, buildPluginPageUrl } from '../utils/hosting';
+import { createPluginApi, getWujiePlugins, type PluginApiContext } from '../utils/plugin-injection';
 
 const pluginStore = usePluginStore();
 const route = useRoute();
@@ -45,29 +41,12 @@ const wujieUrl = ref('');
 const wujieName = ref('');
 const uiKey = ref('');
 const wujieProps = ref<Record<string, any>>({});
+const wujiePlugins = ref<any[]>([]);
 
 const pluginId = computed(() => String((route.params as any).plugname || '').trim());
-const isWindowMode = computed(() => {
-  try { return String((route.query as any).type || '').toLowerCase() === 'window' || /\/plugins\/[^/]+\/window$/.test(String(route.path || '')); } catch { return false; }
-});
+
 watch(pluginId, () => { resolveWujieUIConfig(); }, { immediate: true });
 
-// 共享只读仓库供子页访问（与 overlay-wrapper 对齐）
-;(window as any).__WUJIE_SHARED = (window as any).__WUJIE_SHARED || {};
-;(window as any).__WUJIE_SHARED.readonlyStore = (window as any).__WUJIE_SHARED.readonlyStore || {};
-
-function isElectronRenderer(): boolean {
-  try {
-    const hasNode = typeof process !== 'undefined' && typeof (process as any).versions === 'object';
-    const isElectronVersion = hasNode && !!(process as any).versions?.electron;
-    const protocol = typeof window !== 'undefined' && window.location ? window.location.protocol : '';
-    const isFile = protocol === 'file:';
-    const ua = (typeof navigator !== 'undefined' && (navigator as any).userAgent) ? String((navigator as any).userAgent) : '';
-    const isElectronUA = /electron/i.test(ua);
-    const hasPreloadApi = typeof (window as any).electronApi !== 'undefined';
-    return (isElectronVersion || hasPreloadApi) && (isFile || isElectronUA);
-  } catch { return false; }
-}
 
 async function resolveWujieUIConfig() {
   try {
@@ -77,45 +56,67 @@ async function resolveWujieUIConfig() {
     if (res && 'success' in res && res.success) {
       const info = res.data as PluginInfoLite;
       pluginInfo.value = info;
-      const mode: 'ui' | 'window' = isWindowMode.value ? 'window' : 'ui';
+      // PluginFramePage is strictly for UI mode (embedded in main window)
+      const mode: 'ui' | 'window' = 'ui';
       const conf = (info?.manifest?.[mode] || {}) as PluginUiConfig;
       const hasConf = !!(conf.html || conf.spa);
       if (hasConf) {
-        const url = buildPluginPageUrl(id, mode, {
-          spa: !!conf.spa,
-          route: conf.route || '/',
-          html: conf.html || `${mode}.html`
-        });
+        let url = '';
+        
+        // 尝试加载开发配置，若存在 projectUrl 则优先使用（调试模式）
+        try {
+          const devRes = await window.electronApi.plugin.loadDevConfig(id);
+          if (devRes && (devRes as any).success && (devRes as any).data) {
+            const devCfg = (devRes as any).data;
+            if (devCfg && devCfg.projectUrl) {
+              const devBase = String(devCfg.projectUrl).trim().replace(/\/$/, '');
+              // 开发模式下：如果是 SPA，则追加 route 参数；如果是 MPA，暂不追加 html 文件名（假设 projectUrl 指向正确入口）
+              // 或者：开发模式下完全信任 projectUrl
+              const u = new URL(devBase);
+              if (conf.spa) {
+                const r = conf.route || '/';
+                if (r !== '/') u.searchParams.append('route', r);
+              }
+              url = u.toString();
+              console.log('[PluginFramePage] Using dev project url:', url);
+            }
+          }
+        } catch (e) {
+          console.warn('[PluginFramePage] Failed to load dev config:', e);
+        }
+
+        if (!url) {
+          url = buildPluginPageUrl(id, mode, {
+            spa: !!conf.spa,
+            route: conf.route || '/',
+            html: conf.html || `${mode}.html`
+          });
+        }
+
         isWujieUi.value = true;
         wujieUrl.value = url;
         wujieName.value = `${mode}-${id}`;
         uiKey.value = `${id}-${Date.now()}`;
-        const shared = (window as any).__WUJIE_SHARED || {};
+        
+        // 构建 API 上下文
+        const apiContext: PluginApiContext = {
+          pluginId: id,
+          version: info.version,
+          mode: mode
+        };
+        
+        // 使用统一注入工具生成 API 和 插件配置
+        const toolboxApi = createPluginApi(apiContext);
+        wujiePlugins.value = getWujiePlugins(apiContext);
+        
         wujieProps.value = {
           pluginId: id,
           version: info.version,
-          shared: { readonlyStore: shared.readonlyStore },
+          // 注入 toolboxApi 到 props，配合 wujiePlugins 挂载到 window
+          toolboxApi: toolboxApi,
+          // 兼容旧版 API 结构 (可选，根据需要保留)
           api: {
-            overlay: {
-              send: (overlayId: string | undefined, event: string, payload?: any) => {
-                const base = getApiBase();
-                const url = new URL(`/api/plugins/${encodeURIComponent(String(id))}/overlay/messages`, base).toString();
-                const body: any = { event: String(event), payload };
-                const ovId = String(overlayId || '').trim();
-                if (ovId) body.overlayId = ovId;
-                return fetch(url, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
-              },
-              action: (overlayId: string, action: string, data?: any) => {
-                const base = getApiBase();
-                const url = new URL(`/api/overlay/${encodeURIComponent(String(overlayId))}/action`, base).toString();
-                return fetch(url, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ action: String(action), data }) });
-              },
-              updateStyle: (overlayId: string, updates: Record<string, any>) => {
-                const base = getApiBase();
-                const url = new URL(`/api/overlay/${encodeURIComponent(String(overlayId))}/action`, base).toString();
-                return fetch(url, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ action: 'update', data: updates }) });
-              }
-            }
+            overlay: toolboxApi.overlay
           },
           initialRoute: conf.spa ? (conf.route || '/') : undefined
         };
@@ -130,12 +131,6 @@ async function resolveWujieUIConfig() {
     isWujieUi.value = false;
   }
 }
-
-function emitToChild(_payload: any) {}
-
-function subscribeReadonlyStore() {}
-
-
 
 async function emitInitMessage() {
   try {
@@ -174,7 +169,6 @@ function registerBusHandlers() {
   const onReady = () => {
     try { console.log('[PluginFramePage] bus ready'); } catch {}
     emitInitMessage();
-    sendLifecycleEvent('ready');
   };
   bus?.$on?.('plugin-ready', onReady);
   bus?.$on?.('ui-ready', onReady);
@@ -280,7 +274,7 @@ function registerBusHandlers() {
             await pluginStore.updatePluginConfig(pluginId.value, nextCfg);
             try { console.log('[PluginFramePage] bridge set-config', { pluginId: pluginId.value, keys: Object.keys(nextCfg || {}) }); } catch {}
             respond(true, { success: true });
-            sendLifecycleEvent('config-updated');
+            // sendLifecycleEvent('config-updated');
           } catch (e) {
             respond(false, null, (e as Error).message);
           }
@@ -380,19 +374,9 @@ function safeClone(obj: any) {
   try { return JSON.parse(JSON.stringify(obj)); } catch { return obj; }
 }
 
-function sendLifecycleEvent(event: string) {
-  const payload = { type: 'plugin-event', eventType: 'lifecycle', event };
-  emitToChild(payload);
-}
-
 // 页级只读仓库上报逻辑已移除，改为各 Pinia store 级变更订阅并统一上报
 
 // Wujie 生命周期钩子（占位）
-const onBeforeLoad = () => {};
-const onBeforeMount = () => {};
-const onAfterMount = () => {};
-const onBeforeUnmount = () => {};
-const onAfterUnmount = () => {};
 const onLoadError = (e: any) => {
   try { console.warn('[PluginFramePage] Wujie load error:', e); } catch {}
 };
@@ -413,13 +397,16 @@ const onLoadError = (e: any) => {
   position: relative;
   width: 100%;
   height: 100%;
-  overflow: scroll;
+  overflow: hidden;
+  /* overflow: scroll; */
 }
 
+
 /* Wujie 容器占满区域 */
-:deep(.wujie-container) {
+:deep(.wujie_iframe) {
+  display: block;
   width: 100%;
   height: 100%;
-  overflow: scroll;
+  overflow: hidden;
 }
 </style>

@@ -326,17 +326,57 @@ export function initializeIpcHandlers(
   ipcMain.handle('room.status', async (_event, roomId: string) => {
     try {
       const info = roomManager.getRoomInfo(String(roomId));
-      return info
-        ? {
-            roomId: info.roomId,
-            status: info.status,
-            eventCount: info.eventCount,
-            connectedAt: info.connectedAt ?? null,
-            lastEventAt: info.lastEventAt ?? null,
-            reconnectAttempts: info.reconnectAttempts
-          }
-        : { error: 'not_found', code: 'not_found' };
+      if (info) {
+        return {
+          roomId: info.roomId,
+          status: info.status,
+          eventCount: info.eventCount,
+          connectedAt: info.connectedAt ?? null,
+          lastEventAt: info.lastEventAt ?? null,
+          reconnectAttempts: info.reconnectAttempts
+        };
+      }
+      try {
+        const db = databaseManager.getDb();
+        const stmt = db.prepare(
+          'SELECT room_id, status, is_live, title, cover_url, like_count, viewer_count, live_id, created_at FROM rooms_meta WHERE room_id = ? ORDER BY created_at DESC LIMIT 1'
+        );
+        const row: any = stmt.get(String(roomId));
+        try { stmt.finalize?.(); } catch {}
+        if (row) {
+          return {
+            roomId: String(row.room_id),
+            status: String(row.status || 'closed'),
+            eventCount: 0,
+            connectedAt: null,
+            lastEventAt: null,
+            reconnectAttempts: 0,
+            stale: true
+          };
+        }
+      } catch {}
+      return { error: 'not_found', code: 'not_found' };
     } catch (err: any) {
+      
+      try {
+        const db = databaseManager.getDb();
+        const stmt = db.prepare(
+          'SELECT room_id, status, is_live, title, cover_url, like_count, viewer_count, live_id, created_at FROM rooms_meta WHERE room_id = ? ORDER BY created_at DESC LIMIT 1'
+        );
+        const row: any = stmt.get(String(roomId));
+        try { stmt.finalize?.(); } catch {}
+        if (row) {
+          return {
+            roomId: String(row.room_id),
+            status: String(row.status || 'closed'),
+            eventCount: 0,
+            connectedAt: null,
+            lastEventAt: null,
+            reconnectAttempts: 0,
+            stale: true
+          };
+        }
+      } catch {}
       return { error: err?.message || String(err) };
     }
   });
@@ -444,14 +484,32 @@ export function initializeIpcHandlers(
         const db = databaseManager.getDb();
         const stmt = db.prepare(`
           INSERT INTO rooms_meta (
+            live_id,
             room_id, streamer_name, streamer_user_id,
             title, cover_url, status, is_live,
             viewer_count, online_count, like_count, live_cover,
             category_id, category_name, sub_category_id, sub_category_name,
-            updated_at
-          ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
+            created_at
+          ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
+          ON CONFLICT(live_id) DO UPDATE SET
+            room_id=excluded.room_id,
+            streamer_name=excluded.streamer_name,
+            streamer_user_id=excluded.streamer_user_id,
+            title=excluded.title,
+            cover_url=excluded.cover_url,
+            status=excluded.status,
+            is_live=excluded.is_live,
+            viewer_count=excluded.viewer_count,
+            online_count=excluded.online_count,
+            like_count=excluded.like_count,
+            live_cover=excluded.live_cover,
+            category_id=excluded.category_id,
+            category_name=excluded.category_name,
+            sub_category_id=excluded.sub_category_id,
+            sub_category_name=excluded.sub_category_name
         `);
         stmt.run(
+          String(liveId ? String(liveId) : String(roomId)),
           roomId,
           streamerNameFinal || null,
           streamerUidFinal || null,
@@ -491,6 +549,39 @@ export function initializeIpcHandlers(
         }
       };
     } catch (err: any) {
+      
+      try {
+        const roomId = String(roomIdRaw || '').trim();
+        const db = databaseManager.getDb();
+        const stmt = db.prepare(
+          'SELECT room_id, live_id, title, cover_url, status, is_live, viewer_count, like_count, streamer_name, streamer_user_id, created_at FROM rooms_meta WHERE room_id = ? ORDER BY created_at DESC LIMIT 1'
+        );
+        const row: any = stmt.get(roomId);
+        try { stmt.finalize?.(); } catch {}
+        if (row) {
+          return {
+            success: true,
+            data: {
+              roomId: String(row.room_id),
+              liveId: row.live_id ? String(row.live_id) : undefined,
+              title: typeof row.title === 'string' && row.title ? row.title : `直播间 ${roomId}`,
+              isLive: Number(row.is_live) === 1,
+              status: String(row.status || (Number(row.is_live) === 1 ? 'open' : 'closed')),
+              startTime: undefined,
+              viewerCount: typeof row.viewer_count === 'number' ? row.viewer_count : 0,
+              likeCount: typeof row.like_count === 'number' ? row.like_count : 0,
+              coverUrl: typeof row.cover_url === 'string' ? row.cover_url : '',
+              streamer: {
+                userId: row.streamer_user_id ? String(row.streamer_user_id) : String(row.room_id),
+                userName: typeof row.streamer_name === 'string' && row.streamer_name ? row.streamer_name : `主播${roomId}`,
+                avatar: '',
+                level: 0
+              },
+              stale: true
+            }
+          };
+        }
+      } catch {}
       return { success: false, code: 'exception', error: err?.message || String(err) };
     }
   });
@@ -580,11 +671,35 @@ export function initializeIpcHandlers(
     }
   });
 
+  // 重新加载插件
+  ipcMain.handle('plugin.reload', async (_event, pluginId: string) => {
+    try {
+      await pluginManager.reloadPlugin(pluginId);
+      return { success: true };
+    } catch (err: any) {
+      return { success: false, error: err?.message || String(err) };
+    }
+  });
+
   // 获取单个插件信息
   ipcMain.handle('plugin.get', async (_event, pluginId: string) => {
     try {
       const plugin = await pluginManager.getPlugin(pluginId);
       return plugin ? { success: true, data: plugin } : { success: false, error: '插件未找到' };
+    } catch (err: any) {
+      return { success: false, error: err?.message || String(err) };
+    }
+  });
+
+  // 打开插件目录
+  ipcMain.handle('plugin.openPluginsDir', async () => {
+    try {
+      const pluginsDir = pluginManager.pluginsDir;
+      if (pluginsDir && fs.existsSync(pluginsDir)) {
+        await shell.openPath(pluginsDir);
+        return { success: true };
+      }
+      return { success: false, error: '插件目录不存在' };
     } catch (err: any) {
       return { success: false, error: err?.message || String(err) };
     }
@@ -640,14 +755,8 @@ export function initializeIpcHandlers(
         const info = (pluginManager as any).getPlugin?.(String(pluginId));
         const proc = pm.getProcessInfo?.(String(pluginId));
         if (!proc && info && info.manifest && typeof info.manifest.main === 'string' && info.manifest.main.trim().length > 0) {
-          const isDev = process.env.NODE_ENV === 'development' || !app.isPackaged;
-          const bundledRootCandidates = [
-            path.join(process.cwd(), 'buildResources', 'plugins', String(info.id)),
-            path.join(((process as any).resourcesPath || process.cwd()), 'plugins', String(info.id))
-          ];
-          const bundledRoot = bundledRootCandidates.find(p => { try { return fs.existsSync(p); } catch { return false; } });
-          const preferBundled = !!bundledRoot && (info.manifest as any)?.test === true;
-          const mainPath = preferBundled ? path.join(bundledRoot!, info.manifest.main) : path.join(info.installPath, info.manifest.main);
+          // 直接使用 installPath
+          const mainPath = path.join(info.installPath, info.manifest.main);
           await pm.startPluginProcess?.(String(pluginId), mainPath);
         }
       } catch {}
@@ -729,8 +838,34 @@ export function initializeIpcHandlers(
 
   // 清理：插件禁用或卸载时停止ticker
   try {
-    (pluginManager as any).on?.('plugin.disabled', ({ id }: any) => stopTicker(String(id)));
-    (pluginManager as any).on?.('plugin.uninstalled', ({ id }: any) => stopTicker(String(id)));
+    const broadcastPluginStatus = (event: string, payload: any) => {
+      try {
+        const win = windowManager.getMainWindow();
+        if (win && !win.isDestroyed()) {
+          win.webContents.send('plugin-status-changed', { event, ...payload });
+        }
+      } catch (err) {
+        console.warn('[IPC] Failed to broadcast plugin status:', err);
+      }
+    };
+
+    (pluginManager as any).on?.('plugin.disabled', ({ id }: any) => {
+      stopTicker(String(id));
+      broadcastPluginStatus('disabled', { id });
+    });
+    (pluginManager as any).on?.('plugin.uninstalled', ({ id }: any) => {
+      stopTicker(String(id));
+      broadcastPluginStatus('uninstalled', { id });
+    });
+    (pluginManager as any).on?.('plugin.enabled', ({ id }: any) => {
+      broadcastPluginStatus('enabled', { id });
+    });
+    (pluginManager as any).on?.('plugin.installed', ({ plugin }: any) => {
+      broadcastPluginStatus('installed', { plugin });
+    });
+    (pluginManager as any).on?.('plugin.error', ({ id, error }: any) => {
+      broadcastPluginStatus('error', { id, error });
+    });
   } catch {}
 
   // 获取插件配置
@@ -1367,20 +1502,6 @@ export function initializeIpcHandlers(
           const enabled = !!newConfig['app.autoStart'];
           try { app.setLoginItemSettings({ openAtLogin: enabled }); } catch {}
         }
-        // 配置目录：复制当前配置到新目录（完整切换需重启）
-        if (Object.prototype.hasOwnProperty.call(newConfig, 'config.dir')) {
-          const dir = String(newConfig['config.dir'] || '');
-          if (dir && dir.length > 0) {
-            try {
-              const userData = app.getPath('userData');
-              const srcConfig = path.join(userData, 'config.json');
-              const srcSecrets = path.join(userData, 'secrets.json');
-              try { if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true }); } catch {}
-              try { if (fs.existsSync(srcConfig)) fs.copyFileSync(srcConfig, path.join(dir, 'config.json')); } catch {}
-              try { if (fs.existsSync(srcSecrets)) fs.copyFileSync(srcSecrets, path.join(dir, 'secrets.json')); } catch {}
-            } catch {}
-          }
-        }
       } catch {}
       return { success: true };
     } catch (error: any) {
@@ -1431,6 +1552,56 @@ export function initializeIpcHandlers(
       }
 
       return { success: true, version, buildTime };
+    } catch (err: any) {
+      return { success: false, error: err?.message || String(err) };
+    }
+  });
+
+  // HTTP Server: status
+  ipcMain.handle('system.serverStatus', async () => {
+    try {
+      const apiServer = (pluginManager as any).apiServer as any;
+      const running = !!apiServer && !!apiServer.isRunning?.();
+      const port = Number(configManager.get<number>('server.port'));
+      const error = String(apiServer?.getLastError?.() || '');
+      let health: any = undefined;
+      if (running && Number.isFinite(port) && port > 0 && port <= 65535) {
+        try {
+          const url = new URL('/api/health', `http://127.0.0.1:${port}`);
+          const res = await fetch(url.toString(), { method: 'GET' });
+          if (res.ok) {
+            const ct = res.headers.get('content-type') || '';
+            health = ct.includes('application/json') ? await res.json() : await res.text();
+          }
+        } catch {}
+      }
+      return { success: true, data: { running, port, error: error || undefined, health } };
+    } catch (err: any) {
+      return { success: false, error: err?.message || String(err) };
+    }
+  });
+
+  // HTTP Server: restart
+  ipcMain.handle('system.restartServer', async (_event, opts?: { port?: number }) => {
+    try {
+      const apiServer = (pluginManager as any).apiServer as any;
+      if (!apiServer) return { success: false, error: 'api_server_not_available' };
+      const current = Number(configManager.get<number>('server.port', 18299));
+      const nextPort = Number((opts && typeof opts.port === 'number') ? opts.port : current);
+      if (Number.isFinite(nextPort)) {
+        try { apiServer.setPort?.(nextPort); } catch {}
+      }
+      try { await apiServer.stop?.(); } catch {}
+      try {
+        await apiServer.start?.();
+        // 成功后再持久化端口到配置
+        if (Number.isFinite(nextPort) && nextPort !== current) {
+          try { configManager.set('server.port', nextPort); } catch {}
+        }
+        return { success: true };
+      } catch (e: any) {
+        return { success: false, error: e?.message || String(e) };
+      }
     } catch (err: any) {
       return { success: false, error: err?.message || String(err) };
     }

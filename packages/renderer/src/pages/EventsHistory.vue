@@ -143,6 +143,7 @@
 <script setup lang="ts">
 import { ref, computed } from 'vue';
 import EventFeed from '../components/EventFeed.vue';
+import { getApiBase } from '../utils/hosting'
 
 const allTypes = ['danmaku','gift','follow','like','enter','system'];
 
@@ -194,8 +195,8 @@ async function fetchEvents() {
     params.set('page', String(page.value));
     params.set('pageSize', String(pageSize.value));
 
-    const host = location.hostname || 'localhost';
-    const url = `http://${host}:1299/api/events?${params.toString()}`;
+    const base = getApiBase();
+    const url = `${new URL('/api/events', base).toString()}?${params.toString()}`;
     const resp = await fetch(url);
     const data = await resp.json();
     if ((data as any)?.error) throw new Error((data as any).error);

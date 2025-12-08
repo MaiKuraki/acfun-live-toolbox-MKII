@@ -33,13 +33,7 @@
       </div>
     <!-- 账户区域和房间状态 -->
     <div class="topbar-center">
-      <!-- 账户弹出卡片 + 头像下拉菜单（右键触发角色/登出） -->
-      <t-dropdown
-        :options="roleMenuItems"
-        placement="bottom-left"
-        trigger="context-menu"
-        @click="handleRoleMenu"
-      >
+      <!-- 账户弹出卡片 -->
         <t-popup
           v-model:visible="showAccountCard"
           placement="bottom-left"
@@ -79,7 +73,25 @@
                   </div>
                 </div>
               </div>
-              <t-divider />
+               <div  v-if="userInfo?.userID" class="account-actions links-actions">
+                <t-button
+                  variant="outline"
+                  size="small"
+                  theme="primary"
+                  @click="openCreatorCenter"
+                >
+                  创作者中心
+                </t-button>
+                <t-button
+                  variant="outline"
+                  size="small"
+                  theme="success"
+                  @click="openFeeds"
+                >
+                  关注动态
+                </t-button>
+              </div>
+              <t-divider style="margin: 8px 0;" />
               <div class="account-actions">
                 <t-button
                   v-if="!userInfo?.userID"
@@ -98,10 +110,10 @@
                   退出登录
                 </t-button>
               </div>
+             
             </div>
           </template>
         </t-popup>
-      </t-dropdown>
       
      
     </div>
@@ -155,7 +167,10 @@
           >
             <div class="room-info">
               <div class="room-name">
-                {{ room.name }}
+                {{ (room.title && room.title.trim()) || (room.streamer?.userName ? `${room.streamer.userName}的直播间` : (room.id ? `直播间 ${room.id}` : '直播间')) }}
+              </div>
+              <div class="room-anchor">
+                {{ room.streamer?.userName || room.uperName || '未知主播' }}
               </div>
               <div class="room-stats">
                 <t-tag 
@@ -173,11 +188,22 @@
               </div>
             </div>
             <t-button
+                v-if="room.isLive"
               size="small"
               variant="text"
-              @click="openRoom(room)"
+              shape="square"
+              @click="enterLiveRoom(room)"
             >
               <t-icon name="jump" />
+            </t-button>
+            <t-button
+              v-if="room.isLive"
+              size="small"
+              variant="text"
+              shape="square"
+              @click="openLivePage(room)"
+            >
+              <t-icon name="link" />
             </t-button>
           </div>
         </div>
@@ -192,11 +218,10 @@ import { useRouter } from 'vue-router';
 import { useAccountStore } from '../stores/account';
 import { useRoomStore } from '../stores/room';
 import type { Room } from '../stores/room';
-import { useRoleStore } from '../stores/role';
+import { GlobalPopup } from '../services/globalPopup';
 
 const accountStore = useAccountStore();
 const roomStore = useRoomStore();
-const roleStore = useRoleStore();
 const router = useRouter();
 
 const showAccountCard = ref(false);
@@ -210,23 +235,26 @@ const liveRoomCount = computed(() => rooms.value.filter(room => room.isLive).len
 const roomStatusText = computed(() => {
   if (rooms.value.length === 0) return '无房间';
   if (liveRoomCount.value === 0) return '全部离线';
-  return `${liveRoomCount.value}个直播中`;
+  return `${liveRoomCount.value}个用户正在直播`;
 });
 
 
 function toggleRoomDrawer() {
+  if (rooms.value.length === 0) {
+    showRoomDrawer.value = false;
+    GlobalPopup.toast('请开启直播或到“房间管理”添加房间');
+    return;
+  }
   showRoomDrawer.value = !showRoomDrawer.value;
 }
 
 function minimizeWindow() {
-  // 调用Electron API最小化窗口
   if (window.electronApi) {
     window.electronApi.window.minimizeWindow();
   }
 }
 
 function closeWindow() {
-  // 调用Electron API关闭窗口
   if (window.electronApi) {
     window.electronApi.window.closeWindow();
   }
@@ -256,14 +284,62 @@ function formatViewerCount(count: number): string {
   return count.toString();
 }
 
-function openRoom(room: Room) {
-  // 导航到房间管理页面，并携带房间ID用于定位
+async function enterLiveRoom(room: Room) {
   try {
-    router.push({ path: '/live/room', query: { roomId: String(room.liveId || room.id) } });
-    // 进入页面后关闭抽屉，避免遮挡
+    const st = await window.electronApi?.room?.status?.(room.id);
+    const s = String(st?.status || '').toLowerCase();
+    if (s === 'connected' || s === 'open') {
+      router.push({ name: 'LiveManage', params: { roomId: room.id } });
+      showRoomDrawer.value = false;
+      return;
+    }
+    if (room.isLive) {
+      try {
+        const resp: any = await window.electronApi?.popup?.confirm?.(
+          '提示',
+          '开启弹幕采集才能进入直播间查看弹幕及统计数据，需要现在开启吗？',
+          { confirmBtn: { content: '开启', theme: 'primary' }, cancelBtn: { content: '取消' }, contextId: 'topbar-enter-connect' }
+        );
+        const ok = resp?.result === true || resp === true;
+        if (ok) {
+          await window.electronApi?.room?.connect?.(room.id);
+          let connected = false;
+          for (let i = 0; i < 10; i++) {
+            await new Promise(r => setTimeout(r, 500));
+            const st2 = await window.electronApi?.room?.status?.(room.id);
+            const s2 = String(st2?.status || '').toLowerCase();
+            if (s2 === 'connected' || s2 === 'open') { connected = true; break; }
+          }
+          showRoomDrawer.value = false;
+          if (connected) {
+            router.push({ name: 'LiveManage', params: { roomId: room.id } });
+          } else {
+            try { GlobalPopup.toast('连接失败，请稍后重试'); } catch {}
+          }
+          return;
+        }
+      } catch {}
+    }
+    router.push({ name: 'LiveManage', params: { roomId: room.id } });
     showRoomDrawer.value = false;
   } catch (err) {
-    console.error('[Topbar] 打开房间页面失败:', err);
+    try {
+      router.push({ name: 'LiveManage', params: { roomId: room.id } });
+      showRoomDrawer.value = false;
+    } catch {}
+  }
+}
+
+function openLivePage(room: Room) {
+  const url = `https://live.acfun.cn/live/${room.id}`;
+  try {
+    if (window.electronApi?.system?.openExternal) {
+      window.electronApi.system.openExternal(url);
+    } else {
+      window.open(url, '_blank');
+    }
+  } catch {
+    window.open(url, '_blank');
   }
 }
 
@@ -271,36 +347,44 @@ function getAttachElement(): HTMLElement | null {
   return accountArea.value || null;
 }
 
-const roleMenuItems = computed(() => [
-  { value: 'profile', content: 'Profile' },
-  {
-    value: 'switch-role',
-    content: '切换角色',
-    children: [
-      { value: 'anchor', content: roleStore.current === 'anchor' ? '主播（当前）' : '主播' },
-      { value: 'moderator', content: roleStore.current === 'moderator' ? '房管（当前）' : '房管' },
-      { value: 'developer', content: roleStore.current === 'developer' ? '开发（当前）' : '开发' },
-    ],
-  },
-  ...(accountStore.isLoggedIn ? [{ value: 'logout', content: 'Logout' }] : []),
-]);
-
-function handleRoleMenu(item: any) {
-  const key = item?.value;
-  if (key === 'logout') {
-    logout();
-    return;
-  }
-  if (key === 'anchor' || key === 'moderator' || key === 'developer') {
-    roleStore.setRole(key);
-  }
-}
+ 
 
 onMounted(() => {
   // 初始化用户信息和房间状态
-  accountStore.loadUserInfo();
   roomStore.loadRooms();
 });
+
+async function openCreatorCenter() {
+  const url = 'https://member.acfun.cn/live-data-center';
+  try {
+    if (window.electronApi?.system?.openExternal) {
+      const res = await window.electronApi.system.openExternal(url);
+      if (!res?.success) {
+        window.open(url, '_blank');
+      }
+    } else {
+      window.open(url, '_blank');
+    }
+  } catch {
+    window.open(url, '_blank');
+  }
+}
+
+async function openFeeds() {
+  const url = 'https://www.acfun.cn/member/feeds';
+  try {
+    if (window.electronApi?.system?.openExternal) {
+      const res = await window.electronApi.system.openExternal(url);
+      if (!res?.success) {
+        window.open(url, '_blank');
+      }
+    } else {
+      window.open(url, '_blank');
+    }
+  } catch {
+    window.open(url, '_blank');
+  }
+}
 </script>
 
 <style scoped>
@@ -463,6 +547,11 @@ onMounted(() => {
   justify-content: center;
 }
 
+.links-actions {
+  gap: 8px;
+  margin-top: 8px;
+}
+
 /* 房间列表样式 */
 .room-list {
   height: 100%;
@@ -512,6 +601,15 @@ onMounted(() => {
   display: flex;
   align-items: center;
   gap: 8px;
+}
+
+.room-anchor {
+  font-size: 12px;
+  color: var(--td-text-color-secondary);
+  margin-bottom: 2px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .viewer-count {

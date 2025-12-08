@@ -82,7 +82,24 @@
                 />
                 <div class="input-hint">
                   <t-icon name="info-circle" />
-                  <span>修改端口后需要重启应用才能生效</span>
+                  <span>修改端口后需要重启服务才能生效</span>
+                </div>
+                <div class="server-status-row">
+                  <div class="status-items">
+                    <t-tag :theme="serverStatus.running ? 'success' : 'danger'" shape="round" variant="light">
+                      {{ serverStatus.running ? '服务运行中' : '服务未运行' }}
+                    </t-tag>
+                    <t-tag theme="default" shape="round" variant="light">端口：{{ networkSettings.serverPort }}</t-tag>
+                  </div>
+                  <div class="status-actions">
+                    <t-button :loading="restarting" size="small" theme="primary" @click="onRestartServer">
+                      重启服务
+                    </t-button>
+                  </div>
+                </div>
+                <div v-if="!serverStatus.running && serverStatus.error" class="error-hint">
+                  <t-icon name="error-circle" />
+                  <span>启动错误：{{ serverStatus.error }}</span>
                 </div>
               </div>
             </div>
@@ -147,18 +164,15 @@
                     class="path-input"
                     placeholder="数据库文件路径"
                   />
-                </div>
-                <div class="button-group">
                   <t-button 
                     variant="outline" 
                     @click="chooseDbFile"
-                    class="action-btn"
+                    class="path-select-btn"
                   >
-                   <template #icon>
-                     <t-icon name="browse" />
-                  </template>
-                    选择数据文件
+                    浏览
                   </t-button>
+                </div>
+                <div class="button-group">
                   <t-button 
                     variant="outline" 
                     @click="openDbFolder"
@@ -166,7 +180,7 @@
                   >
                     <template #icon>
                       <t-icon name="folder-open" />
-                  </template>
+                    </template>
                     打开所在目录
                   </t-button>
                 </div>
@@ -252,6 +266,7 @@
 <script setup lang="ts">
 import { ref, computed, onMounted, watch } from 'vue';
 import { MessagePlugin } from 'tdesign-vue-next';
+import { useNetworkStore } from '../stores/network';
 
 const activeTab = ref('general');
 
@@ -264,8 +279,12 @@ const tabItems = [
 
 const isLoadingConfig = ref(false);
 let saveTimer: any = null;
+let lastSaveAt = 0;
+let pendingSave = false;
 const originalPort = ref(18299);
 const portChanged = ref(false);
+const serverStatus = ref<{ running: boolean; error?: string; health?: any }>({ running: false });
+const restarting = ref(false);
 
 function dotGet<T>(obj: any, path: string, def?: T): T {
   try {
@@ -383,22 +402,41 @@ watch(() => networkSettings.value.serverPort, (newPort) => {
 
 function saveSettings(opts: { silent?: boolean } = {}) {
   const { silent = false } = opts;
+  const now = Date.now();
+  const elapsed = now - lastSaveAt;
+  if (elapsed < 1000) {
+    pendingSave = true;
+    if (saveTimer) clearTimeout(saveTimer);
+    saveTimer = setTimeout(() => {
+      if (!pendingSave) return;
+      pendingSave = false;
+      lastSaveAt = Date.now();
+      doSave(silent);
+    }, 1000 - elapsed);
+    return;
+  }
+  lastSaveAt = now;
+  pendingSave = false;
   if (saveTimer) clearTimeout(saveTimer);
   saveTimer = setTimeout(() => {
+    doSave(silent);
+  }, 0);
+}
+
+function doSave(silent: boolean) {
     const port = Math.max(1, Math.min(65535, parseInt(String(networkSettings.value.serverPort)) || 18299));
     const payload = {
       'auth.keepLogin': !!generalSettings.value.keepLogin,
       'ui.minimizeToTray': !!generalSettings.value.minimizeToTray,
       'app.autoStart': !!generalSettings.value.autoStart,
       'server.port': port,
-      'config.dir': String(configDir.value || ''),
       'meta.repoUrl': String(repoUrl.value || '')
     };
     window.electronApi.system.updateConfig(payload).then((res: any) => {
       if (res && res.success) {
         if (!silent) {
           if (portChanged.value) {
-            MessagePlugin.info('网络设置已保存，重启应用后生效');
+            MessagePlugin.info('网络设置已保存，重启应用或手动重启服务器后生效');
           } else {
             MessagePlugin.success('设置已自动保存');
           }
@@ -411,7 +449,6 @@ function saveSettings(opts: { silent?: boolean } = {}) {
       try { window.electronApi.systemExt.setMinimizeToTray(!!generalSettings.value.minimizeToTray); } catch {}
       try { window.electronApi.systemExt.setAutoStart(!!generalSettings.value.autoStart); } catch {}
     }
-  }, 300);
 }
 
 function loadSettings() {
@@ -434,7 +471,7 @@ function loadSettings() {
           window.electronApi.system.getUserDataDir().then((res) => {
             if (res && res.success && res.path) {
               configDir.value = res.path;
-              window.electronApi.system.updateConfig({ 'config.dir': res.path });
+              (window as any).electronApi.config.setDir(res.path);
             }
           });
         } catch {}
@@ -446,6 +483,42 @@ function loadSettings() {
   }).finally(() => {
     isLoadingConfig.value = false;
   });
+}
+
+async function refreshServerStatus() {
+  try {
+    const res = await window.electronApi.system.serverStatus();
+    if (res && res.success) {
+      const data = (res as any).data || {};
+      serverStatus.value = { running: !!data.running, error: data.error || undefined, health: data.health };
+    }
+  } catch {}
+}
+
+async function onRestartServer() {
+  try {
+    const port = Math.max(1, Math.min(65535, parseInt(String(networkSettings.value.serverPort)) || 18299));
+    const changed = port !== originalPort.value;
+    if (changed) {
+      const ok = await (window as any).electronApi.popup.confirm('确认重启', '端口已修改，确认后将按新端口重启服务');
+      if (!ok) return;
+    }
+    restarting.value = true;
+    const r = await window.electronApi.system.restartServer(changed ? { port } : undefined);
+    if (r && r.success) {
+      originalPort.value = port;
+      portChanged.value = false;
+      try { const ns = useNetworkStore(); await ns.refreshPort(); await ns.refreshStatus(); } catch {}
+      MessagePlugin.success('服务已重启，注意修改obs中浏览器源链接');
+    } else {
+      MessagePlugin.error((r as any)?.error || '重启失败');
+    }
+    await refreshServerStatus();
+  } catch (e: any) {
+    MessagePlugin.error(e?.message || String(e));
+  } finally {
+    restarting.value = false;
+  }
 }
 
 async function chooseConfigDir() {
@@ -523,6 +596,7 @@ async function importConfigDirect() {
 
 onMounted(() => {
   loadSettings();
+  refreshServerStatus();
   try {
     window.electronApi.system.getBuildInfo().then((info: any) => {
       try {
@@ -586,6 +660,11 @@ onMounted(() => {
   color: var(--td-text-color-secondary);
   font-weight: 400;
 }
+
+.server-status-row { display: flex; align-items: center; justify-content: space-between; margin-top: 12px; }
+.status-items { display: flex; gap: 8px; align-items: center; }
+.status-actions { display: flex; align-items: center; }
+.error-hint { display: flex; gap: 8px; align-items: center; color: var(--td-error-color); margin-top: 8px; }
 
 /* Settings Container */
 .settings-container { flex: 1; display: flex; gap: 16px; min-height: 0; }

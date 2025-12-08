@@ -159,9 +159,10 @@
 
 <script setup lang="ts">
 import { ref } from 'vue'
+import { getApiBase } from '../utils/hosting'
 
 function openExternalDocs() {
-  const url = 'http://127.0.0.1:18299/docs/api/index.html'
+  const url = new URL('/docs/api/index.html', getApiBase()).toString()
   try {
     if ((window as any).electronApi?.system?.openExternal) {
       (window as any).electronApi.system.openExternal(url)
@@ -173,11 +174,24 @@ function openExternalDocs() {
 
 const indexJsExample = ref(`export function init(ctx) {\n  return { ok: true }\n}\n\nexport function cleanup(ctx) {\n  return { ok: true }\n}\n\nexport function handleMessage({ overlayId, event, payload }) {\n  if (event === 'ping') {\n  }\n  return { ok: true }\n}`)
 
-const sseExample = ref(`const es = new EventSource('http://127.0.0.1:18299/sse/renderer/readonly-store')\nes.addEventListener('readonly-store-init', e => {\n  const data = JSON.parse(e.data)\n})\nes.addEventListener('readonly-store-update', e => {\n  const data = JSON.parse(e.data)\n})\nes.addEventListener('heartbeat', e => {})`)
+const sseExample = ref(`const es = new EventSource('${new URL('/sse/renderer/readonly-store', getApiBase()).toString()}')
+es.addEventListener('readonly-store-init', e => {
+  const data = JSON.parse(e.data)
+})
+es.addEventListener('readonly-store-update', e => {
+  const data = JSON.parse(e.data)
+})
+es.addEventListener('heartbeat', e => {})`)
 
-const curlSendExample = ref(`curl -X POST \\\n  http://127.0.0.1:18299/api/overlay/OVERLAY_ID/send \\\n  -H "Content-Type: application/json" \\\n  -d '{"event":"ping","payload":{"t":Date.now()}}'`)
+const curlSendExample = ref(`curl -X POST \
+  ${new URL('/api/overlay/OVERLAY_ID/send', getApiBase()).toString()} \
+  -H "Content-Type: application/json" \
+  -d '{"event":"ping","payload":{"t":Date.now()}}'`)
 
-const curlActionExample = ref(`curl -X POST \\\n  http://127.0.0.1:18299/api/overlay/OVERLAY_ID/action \\\n  -H "Content-Type: application/json" \\\n  -d '{"action":"bringToFront"}'`)
+const curlActionExample = ref(`curl -X POST \
+  ${new URL('/api/overlay/OVERLAY_ID/action', getApiBase()).toString()} \
+  -H "Content-Type: application/json" \
+  -d '{"action":"bringToFront"}'`)
 
 function copy(text: string) {
   try { navigator.clipboard?.writeText(text) } catch {}

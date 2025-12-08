@@ -38,24 +38,13 @@
 
 <script setup lang="ts">
 import { useHomeStore } from '../../stores/home';
-import { useRoleStore } from '../../stores/role';
 import { useRouter } from 'vue-router';
 import { computed } from 'vue';
 
 const home = useHomeStore();
-const role = useRoleStore();
 const router = useRouter();
 
-const welcomeText = computed(() => {
-  switch (role.current) {
-    case 'moderator':
-      return '欢迎，管理员！按下按钮开始管理房间。';
-    case 'developer':
-      return '欢迎，开发者！按下按钮进入开发工具。';
-    default:
-      return '欢迎，主播！按下按钮开始直播相关功能。';
-  }
-});
+const welcomeText = computed(() => '欢迎，主播！按下按钮开始直播相关功能。');
 
 const goStep = (n: number) => {
   if (n === 1) router.push('/live/room');

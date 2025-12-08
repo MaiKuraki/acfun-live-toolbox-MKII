@@ -140,6 +140,9 @@ export class AcfunAdapter extends EventEmitter {
   private isdestroyed: boolean = false;
   /** 弹幕会话ID */
   private danmuSessionId: string | null = null;
+  /** 当前直播场次ID */
+  private currentLiveId: string | null = null;
+  private currentStreamInfo: any | null = null;
   /** 消息处理器映射 */
   private messageHandlers: Map<string, (data: any) => void> = new Map();
 
@@ -428,6 +431,16 @@ export class AcfunAdapter extends EventEmitter {
       } catch (error) {
         console.warn('[AcfunAdapter] Error stopping danmu service:', error);
       }
+      try {
+        if (this.api?.danmu && typeof this.api.danmu.getSessionsByLiver === 'function' && typeof this.api.danmu.stopSessions === 'function') {
+          const existing = this.api.danmu.getSessionsByLiver(String(this.config.roomId));
+          const ids = existing && existing.success && Array.isArray(existing.data) ? existing.data.map((s: any) => s.sessionId).filter((x: any) => !!x) : [];
+          if (ids.length) { await this.api.danmu.stopSessions(ids); }
+        }
+        if (this.api?.danmu && typeof (this.api.danmu as any).cleanupFailedSessions === 'function') {
+          try { (this.api.danmu as any).cleanupFailedSessions(); } catch {}
+        }
+      } catch {}
     }
 
     // 释放 API 实例
@@ -602,44 +615,77 @@ export class AcfunAdapter extends EventEmitter {
       throw new Error('API instance not available');
     }
 
-    try {
-      // 确保令牌已加载并同步到统一 API 实例（TokenManager 会负责设置）
-      await this.tokenManager.getTokenInfo();
+    await this.tokenManager.getTokenInfo();
 
-      // 启动弹幕服务 - 使用标准的 startDanmu 方法
-      if (this.api.danmu && typeof this.api.danmu.startDanmu === 'function') {
-        const result = await this.api.danmu.startDanmu(this.config.roomId, (event: any) => {
-          try {
-            const t = String((event && (event.type || event.action || event.messageType)) || '');
-            const tsIn = Number(event?.timestamp || event?.sendTime || Date.now());
-            const userIdIn = event?.userId ?? event?.userInfo?.userID ?? event?.user?.id ?? null;
-            const userNameIn = event?.username ?? event?.userInfo?.nickname ?? event?.user?.name ?? null;
-            const contentIn = event?.content ?? event?.comment?.content ?? event?.message ?? event?.text ?? null;
-            console.info('[Adapter] callback event type=' + t + ' keys=' + Object.keys(event || {}).join(',') + ' user=' + String(userNameIn || '') + '(' + String(userIdIn || '') + ')' + ' content="' + String(contentIn || '') + '" ts=' + String(tsIn));
-          } catch {}
-          // 处理弹幕事件回调
-          this.handleDanmuEvent(event);
-        });
-        
-        if (result.success && result.data) {
-          // 保存会话ID用于后续停止操作
-          this.danmuSessionId = result.data.sessionId;
+    for (let attempt = 0; attempt < 2; attempt++) {
+      try {
+        if (this.api.danmu && typeof this.api.danmu.getSessionsByLiver === 'function' && typeof this.api.danmu.stopSessions === 'function') {
+          const existing = this.api.danmu.getSessionsByLiver(String(this.config.roomId));
+          const ids = existing && existing.success && Array.isArray(existing.data) ? existing.data.map((s: any) => s.sessionId).filter((x: any) => !!x) : [];
+          if (ids.length) {
+            await this.api.danmu.stopSessions(ids);
+          }
+        }
 
-          if (this.config.debug) {
-            console.log('[AcfunAdapter] Danmu service started with session ID:', this.danmuSessionId);
+        if (this.api.danmu && typeof this.api.danmu.startDanmu === 'function') {
+          const result = await this.api.danmu.startDanmu(this.config.roomId, (event: any) => {
+            try {
+              const t = String((event && (event.type || event.action || event.messageType)) || '');
+              const tsIn = Number(event?.timestamp || event?.sendTime || Date.now());
+              const userIdIn = event?.userId ?? event?.userInfo?.userID ?? event?.user?.id ?? null;
+              const userNameIn = event?.username ?? event?.userInfo?.nickname ?? event?.user?.name ?? null;
+              const contentIn = event?.content ?? event?.comment?.content ?? event?.message ?? event?.text ?? null;
+              console.info('[Adapter] callback event type=' + t + ' keys=' + Object.keys(event || {}).join(',') + ' user=' + String(userNameIn || '') + '(' + String(userIdIn || '') + ')' + ' content="' + String(contentIn || '') + '" ts=' + String(tsIn));
+            } catch {}
+            this.handleDanmuEvent(event);
+          });
+
+          if (result.success && result.data) {
+            this.danmuSessionId = result.data.sessionId;
+            const si = (result as any)?.data?.StreamInfo ?? (result as any)?.data?.streamInfo ?? null;
+            if (si) {
+              const lid = (si as any)?.liveID ?? (si as any)?.liveId ?? '';
+              this.currentLiveId = lid ? String(lid) : this.currentLiveId;
+              this.currentStreamInfo = si;
+              try { this.emit('streamInfoReady'); } catch {}
+            }
+
+            if (this.config.debug) {
+              console.log('[AcfunAdapter] Danmu service started with session ID:', this.danmuSessionId);
+            }
+            if (process.env.ACFRAME_DEBUG_LOGS === '1') {
+              try { console.log('[Adapter] danmu start roomId=' + String(this.config.roomId) + ' sessionId=' + String(this.danmuSessionId)); } catch {}
+            }
+            return;
           }
-          if (process.env.ACFRAME_DEBUG_LOGS === '1') {
-            try { console.log('[Adapter] danmu start roomId=' + String(this.config.roomId) + ' sessionId=' + String(this.danmuSessionId)); } catch {}
-          }
-        } else {
           throw new Error(result.error || 'Failed to start danmu service');
         }
-      } else {
         throw new Error('DanmuService.startDanmu method not available');
+      } catch (error: any) {
+        const msg = String((error && (error.message || error)) || '');
+        let sid: string | null = null;
+        try {
+          const m = msg.match(/活动会话[:：]\s*([\w-]+)/);
+          if (m && m[1]) sid = m[1];
+        } catch {}
+        if (sid && this.api?.danmu && typeof this.api.danmu.stopDanmu === 'function') {
+          try { await this.api.danmu.stopDanmu(sid); } catch {}
+          if (attempt === 0) { continue; }
+        }
+        if (msg.includes('获取直播 token 失败') && this.api?.danmu) {
+          try { if (typeof (this.api.danmu as any).cleanupFailedSessions === 'function') { (this.api.danmu as any).cleanupFailedSessions(); } } catch {}
+          try {
+            if (typeof this.api.danmu.getSessionsByLiver === 'function' && typeof this.api.danmu.stopSessions === 'function') {
+              const ex2 = this.api.danmu.getSessionsByLiver(String(this.config.roomId));
+              const ids2 = ex2 && ex2.success && Array.isArray(ex2.data) ? ex2.data.map((s: any) => s.sessionId).filter((x: any) => !!x) : [];
+              if (ids2.length) { await this.api.danmu.stopSessions(ids2); }
+            }
+          } catch {}
+          if (attempt === 0) { continue; }
+        }
+        console.error('[AcfunAdapter] Failed to start danmu service:', error);
+        throw error;
       }
-    } catch (error) {
-      console.error('[AcfunAdapter] Failed to start danmu service:', error);
-      throw error;
     }
   }
 
@@ -665,8 +711,9 @@ export class AcfunAdapter extends EventEmitter {
           console.warn('[AcfunAdapter] Failed to stop danmu service:', result.error);
         }
         
-        // 清除会话ID
+        // 清除会话信息
         this.danmuSessionId = null;
+        this.currentLiveId = null;
       }
     } catch (error) {
       console.error('[AcfunAdapter] Failed to stop danmu service:', error);
@@ -727,17 +774,6 @@ export class AcfunAdapter extends EventEmitter {
           this.emitUnifiedEvent('topUsers', { timestamp: Number(event?.timestamp || Date.now()), content: summary, roomId: this.config.roomId, raw: event });
           break;
         }
-        case 'recentComment': {
-          const comments = Array.isArray(event?.data) ? event.data : [];
-          for (const c of comments) {
-            const ts = Number(c?.danmuInfo?.sendTime || Date.now());
-            const userId = c?.danmuInfo?.userInfo?.userID ?? null;
-            const userName = c?.danmuInfo?.userInfo?.nickname ?? null;
-            const content = c?.content ?? '';
-            this.handleDanmuMessage({ timestamp: ts, userId, userInfo: { userID: Number(userId) || 0, nickname: String(userName || '') }, content, roomId: this.config.roomId, raw: c });
-          }
-          break;
-        }
         case 'redpackList': {
           const arr = Array.isArray(event?.data) ? event.data : [];
           const summary = 'count=' + String(arr.length);
@@ -770,8 +806,9 @@ export class AcfunAdapter extends EventEmitter {
           this.emitUnifiedEvent('violationAlert', { timestamp: Number(event?.timestamp || Date.now()), content: summary, roomId: this.config.roomId, raw: event });
           break;
         }
-        case 'managerState': {
-          const summary = String(event?.data ?? '');
+        case 'manager_state': {
+          const summary = String(event?.state);
+          event.type = 'managerState';
           this.emitUnifiedEvent('managerState', { timestamp: Number(event?.timestamp || Date.now()), content: summary, roomId: this.config.roomId, raw: event });
           break;
         }
@@ -858,12 +895,24 @@ export class AcfunAdapter extends EventEmitter {
       const userName = event?.username ?? event?.user?.name ?? event?.userInfo?.nickname ?? event?.payload?.[0]?.userName ?? null;
       const content = event?.content ?? event?.comment?.content ?? event?.payload?.[0]?.comment?.content ?? event?.message ?? event?.text ?? null;
       console.info('[Adapter] ActionSignal type=' + st + ' room=' + String(this.config.roomId) + ' user=' + String(userName || '') + '(' + String(userId || '') + ')' + ' content="' + String(content || '') + '" ts=' + String(ts));
+      const at = String(event?.actionType || '').toLowerCase();
+      const tLower = String(event?.type || '').toLowerCase();
+      const sLower = String(st || '').toLowerCase();
+      if (!sLower) {
+        if (at === 'enterroom' || tLower.includes('enter')) { st = 'enter'; }
+        else if (at === 'followauthor' || tLower.includes('follow')) { st = 'follow'; }
+      }
       if (!st) {
         try {
           if (event?.comment || event?.content || event?.text) st = 'comment';
           else if (event?.giftDetail || event?.giftId || event?.giftName || event?.gift) st = 'gift';
           else if (typeof event?.likeCount === 'number' || typeof event?.likeDelta === 'number' || typeof event?.totalLike === 'number') st = 'like';
-          else if ((event?.userId || event?.userInfo) && !event?.comment && !event?.gift && !event?.content) st = String(event?.parentType || 'like');
+          else if ((event?.userId || event?.userInfo) && !event?.comment && !event?.gift && !event?.content) {
+            const pt = String(event?.parentType || '').toLowerCase();
+            if (pt.includes('enter')) st = 'enter';
+            else if (pt.includes('follow')) st = 'follow';
+            else st = 'like';
+          }
         } catch {}
       }
       if (String(st).toLowerCase().includes('comment')) {
@@ -1140,28 +1189,36 @@ export class AcfunAdapter extends EventEmitter {
     this.emit('error', error);
     
     if (this.config.autoReconnect && !this.isDestroyed()) {
-      this.scheduleReconnect();
+      let delay = this.config.reconnectInterval;
+      if (error && error.message && error.message.includes('Circuit breaker is open')) {
+        console.log('[AcfunAdapter] Circuit breaker detected, increasing reconnection delay to 65s');
+        delay = 65000;
+      }
+      this.scheduleReconnect(delay);
     }
   }
 
   /**
    * 安排重连
+   * @param delay 延迟时间（毫秒），如果不指定则使用配置的间隔
    * @private
    */
-  private scheduleReconnect(): void {
+  private scheduleReconnect(delay?: number): void {
     if (this.isdestroyed || this.reconnectTimer) {
       return;
     }
 
+    const interval = delay || this.config.reconnectInterval;
+
     if (this.config.debug) {
-      console.log(`[AcfunAdapter] Scheduling reconnection in ${this.config.reconnectInterval}ms`);
+      console.log(`[AcfunAdapter] Scheduling reconnection in ${interval}ms`);
     }
 
     this.reconnectTimer = setTimeout(() => {
       this.reconnect().catch(error => {
         console.error('[AcfunAdapter] Scheduled reconnection failed:', error);
       });
-    }, this.config.reconnectInterval);
+    }, interval);
   }
 
   /**
@@ -1218,5 +1275,12 @@ export class AcfunAdapter extends EventEmitter {
   isDestroyed(): boolean {
     return this.isdestroyed;
   }
-}
 
+  /** 获取当前直播场次ID */
+  getCurrentLiveId(): string | null {
+    return this.currentLiveId;
+  }
+  public getCurrentStreamInfo(): any | null {
+    return this.currentStreamInfo;
+  }
+}
