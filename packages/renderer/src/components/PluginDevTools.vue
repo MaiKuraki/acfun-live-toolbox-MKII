@@ -289,7 +289,7 @@ function validateUrl() {
 
 async function selectNodePath() {
   try {
-    const result = await window.electronApi.dialog.showOpenDialog({
+    const result = await window.electronApi?.dialog.showOpenDialog({
       properties: ['openFile'],
       filters: [{ name: 'JavaScript', extensions: ['js'] }],
       title: '选择插件入口文件(index.js)'
@@ -305,7 +305,7 @@ async function selectNodePath() {
 
 async function selectManifestPath() {
   try {
-    const result = await window.electronApi.dialog.showOpenDialog({
+    const result = await window.electronApi?.dialog.showOpenDialog({
       properties: ['openFile'],
       filters: [{ name: 'JSON', extensions: ['json'] }],
       title: '选择manifest.json文件'
@@ -325,7 +325,7 @@ async function loadManifestContent() {
     return;
   }
   try {
-    const text = await window.electronApi.fs.readFile(config.value.manifestPath);
+    const text = await window.electronApi?.fs.readFile(config.value.manifestPath);
     manifestContent.value = JSON.parse(String(text || '{}'));
     
     // Auto-update derivedPluginId if possible
@@ -350,7 +350,7 @@ async function testLoad() {
       nodePath: config.value.nodePath,
       manifestPath: config.value.manifestPath
     };
-    const res = await window.electronApi.plugin.testConnection(payload);
+    const res = await window.electronApi?.plugin.testConnection(payload);
     const inner = (res && (res as any).data) || {};
     const ok = !!inner.success;
     
@@ -390,7 +390,7 @@ async function testLoad() {
 async function saveConfig() {
   try {
     const payload = { ...config.value, pluginId: derivedPluginId.value } as any;
-    await window.electronApi.plugin.saveDevConfig(payload);
+    await window.electronApi?.plugin.saveDevConfig(payload);
     addLog('info', '配置已保存');
   } catch (error) {
     addLog('error', `保存配置失败: ${error}`);
@@ -400,7 +400,7 @@ async function saveConfig() {
 async function loadConfig() {
   try {
     if (props.pluginId) {
-      const res = await window.electronApi.plugin.loadDevConfig(props.pluginId);
+      const res = await window.electronApi?.plugin.loadDevConfig(props.pluginId);
       if (res && (res as any).success) {
         const saved = (res as any).data || {};
         config.value = { ...config.value, ...saved };
@@ -409,7 +409,7 @@ async function loadConfig() {
         addLog('error', `加载配置失败: ${(res as any).error}`);
       }
     } else {
-      const result = await window.electronApi.plugin.loadDevConfig();
+      const result = await window.electronApi?.plugin.loadDevConfig();
       if (result && (result as any).success) {
         const savedConfig = (result as any).data || {};
         config.value = { ...config.value, ...savedConfig };

@@ -26,6 +26,8 @@ export default /** @type import('electron-builder').Configuration */
     output: 'dist',
     buildResources: 'buildResources',
   },
+  // 禁用 asar 打包，确保渲染进程页面可以由外部服务器托管并直接访问静态资源
+  asar: false,
   // 强制 electron-builder 下载 Electron 二进制时使用国内镜像与代理
   // 说明：electron-builder 在下载 Electron 时会遵循环境变量 `HTTP_PROXY`/`HTTPS_PROXY`，
   // 同时也支持 `electronDownload` 配置以覆盖下载源（mirror）。
@@ -48,7 +50,9 @@ export default /** @type import('electron-builder').Configuration */
   files: [
     'LICENSE*',
     pkg.main,
-    '!node_modules/@app/**',
+    // Ensure workspace build outputs are explicitly included (renderer and main dist)
+    'packages/renderer/dist/**',
+    'packages/main/dist/**',
     ...await getListOfFilesFromEachWorkspace(),
   ],
 });
@@ -129,8 +133,9 @@ async function getListOfFilesFromEachWorkspace() {
 
     let patterns = workspacePkg.files || ['dist/**', 'package.json'];
 
-    patterns = patterns.map(p => join('node_modules', name, p));
-    allFilesToInclude.push(...patterns);
+    const nodeModulesPatterns = patterns.map(p => join('node_modules', name, p));
+    const workspacePathPatterns = patterns.map(p => join(path, p));
+    allFilesToInclude.push(...nodeModulesPatterns, ...workspacePathPatterns);
   }
 
   return allFilesToInclude;

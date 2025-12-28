@@ -1,5 +1,6 @@
 import { defineStore } from 'pinia';
 import { ref, computed, watch } from 'vue';
+import { MessagePlugin } from 'tdesign-vue-next';
 import { reportReadonlyUpdate, reportReadonlyInit } from '../utils/readonlyReporter';
 import type { UserInfo } from 'acfunlive-http-api';
 
@@ -50,6 +51,12 @@ export const useAccountStore = defineStore('account', () => {
     isLogging: false,
   });
 
+  // Token 检查定时器
+  const tokenCheckTimer = ref<ReturnType<typeof setInterval> | null>(null);
+  let lastWarningTime = 0;
+  const TWELVE_HOURS = 3 * 60 * 60 * 1000;
+  const WARNING_THROTTLE = 60 * 60 * 1000; // 1小时节流
+
   // 计算属性
   const isLoggedIn = computed(() => loginState.value.isLoggedIn);
   const isLogging = computed(() => loginState.value.isLogging);
@@ -78,7 +85,10 @@ export const useAccountStore = defineStore('account', () => {
 
       // 启动时始终向主进程请求用户信息，若未认证或过期则回退未登录
       try {
-        const result = await window.electronApi.account.getUserInfo();
+        if(!window.electronApi?.account){
+          return
+        }
+        const result = await window.electronApi?.account.getUserInfo();
         if ('success' in result && result.success && result.data) {
           // 统一完整用户信息（将 userName 映射为 UserInfo.username）
           const full: ExtendedUserInfo = {
@@ -130,30 +140,13 @@ export const useAccountStore = defineStore('account', () => {
     }
   }
 
-  async function syncAuthStatus() {
-    try {
-      const base = (await import('../utils/hosting')).getApiBase()
-      const r = await fetch(new URL('/api/acfun/auth/status', base).toString(), { method: 'GET' })
-      const s = await r.json()
-      const authed = !!(s && s.success && s.data && s.data.authenticated);
-      if (!authed) {
-        userInfo.value = null;
-        fullUserInfo.value = null;
-        loginState.value.isLoggedIn = false;
-        localStorage.removeItem('userInfo');
-        reportReadonlyUpdate({ account: { isLoggedIn: false, profile: null } });
-      }
-    } catch {}
-  }
-
-
   async function startLogin() {
     try {
       loginState.value.isLogging = true;
       loginState.value.loginError = undefined;
       
       // 使用真实的preload API
-      const result = await window.electronApi.login.qrStart();
+      const result = await window.electronApi?.login.qrStart();
       
       if ('error' in result) {
         throw new Error(result.error);
@@ -177,7 +170,7 @@ export const useAccountStore = defineStore('account', () => {
   async function logout() {
     try {
       // 使用真实的preload API
-      await window.electronApi.login.logout();
+      await window.electronApi?.login.logout();
       
       // logout API 总是返回 { ok: true }，没有 error 属性
       console.log('Logout successful');
@@ -208,7 +201,7 @@ export const useAccountStore = defineStore('account', () => {
       loginState.value.loginError = undefined;
 
       // 每次登录向主进程请求用户信息；若主进程未保存token或已过期则报错并回退未登录
-      const result = await window.electronApi.account.getUserInfo();
+      const result = await window.electronApi?.account.getUserInfo();
       if (!('success' in result) || result.success !== true || !result.data) {
         const errMsg = 'error' in result ? result.error : 'unknown_error';
         console.error('Failed to get user info from main:', errMsg);
@@ -259,7 +252,7 @@ export const useAccountStore = defineStore('account', () => {
         console.log('Refreshing user info for logged in user:', userInfo.value.userID);
         
         try {
-          const result = await window.electronApi.account.getUserInfo();
+          const result = await window.electronApi?.account.getUserInfo();
           if ('success' in result && result.success && result.data) {
             const full: ExtendedUserInfo = {
               ...(result.data as any),
@@ -304,9 +297,73 @@ export const useAccountStore = defineStore('account', () => {
     }
   }
 
-  // 初始化时加载用户信息
-  loadUserInfo();
-  try { syncAuthStatus(); } catch {}
+  async function checkTokenAvailability() {
+    if(!await window.electronApi?.account){
+      return
+    }
+    try {
+      const result = await window.electronApi?.account.tokenAvailable();
+      if (!result.success || !result.data) {
+        return;
+      }
+
+      const { available, expiresAt } = result.data;
+
+      // 如果 token 不可用且当前在登录态，强制登出
+      if (!available && loginState.value.isLoggedIn) {
+        console.warn('Token unavailable, forcing logout');
+        await logout();
+        return;
+      }
+
+      // 如果 token 可用且有过期时间，检查剩余时间
+      if (available && expiresAt) {
+        const remaining = expiresAt - Date.now();
+        
+        // 如果剩余时间不足 12 小时，显示警告（节流：1小时内最多提示一次）
+        if (remaining > 0 && remaining < TWELVE_HOURS) {
+          const now = Date.now();
+          if (now - lastWarningTime > WARNING_THROTTLE) {
+            lastWarningTime = now;
+            
+            const hours = Math.floor(remaining / (60 * 60 * 1000));
+            const minutes = Math.floor((remaining % (60 * 60 * 1000)) / (60 * 1000));
+            const timeText = hours > 0 
+              ? `${hours} 小时${minutes > 0 ? ` ${minutes} 分钟` : ''}`
+              : `${minutes} 分钟`;
+            
+            MessagePlugin.warning({
+              content: `当前 token 剩余时间：${timeText}，请及时登出重新登录`,
+              duration: 5000
+            });
+          }
+        }
+      }
+    } catch (error) {
+      console.error('Failed to check token availability:', error);
+    }
+  }
+
+  // 清理定时器
+  function cleanupTokenCheck() {
+    if (tokenCheckTimer.value) {
+      clearInterval(tokenCheckTimer.value);
+      tokenCheckTimer.value = null;
+    }
+  }
+
+  // 初始化时加载用户信息（内部已包含一次 /api/acfun/auth/status 校验）
+  // 避免重复调用相同接口，这里不再额外调用 syncAuthStatus
+  loadUserInfo().then(() => {
+    // 初始化时调用一次 token 检查
+    checkTokenAvailability();
+    
+    // 设置定时器，每 10 分钟检查一次
+    tokenCheckTimer.value = setInterval(() => {
+      checkTokenAvailability();
+    }, 10 * 60 * 1000);
+  });
+
   try {
     const profile = userInfo.value
       ? { userID: userInfo.value.userID, nickname: userInfo.value.nickname, avatar: userInfo.value.avatar }
@@ -345,5 +402,7 @@ export const useAccountStore = defineStore('account', () => {
     logout,
     refreshUserInfo,
     handleLoginSuccess,
+    checkTokenAvailability,
+    cleanupTokenCheck,
   };
 });

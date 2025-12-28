@@ -168,7 +168,8 @@ export class PluginHotReloadManager extends EventEmitter {
 
     try {
       const watcher = watch(pluginPath, {
-        ignored: this.config.ignorePatterns,
+        // chokidar supports array patterns at runtime; typings may be narrower in some versions
+        ignored: this.config.ignorePatterns as any,
         persistent: true,
         ignoreInitial: true,
         followSymlinks: false,

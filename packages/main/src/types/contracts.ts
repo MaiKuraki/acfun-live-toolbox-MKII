@@ -53,6 +53,13 @@ export interface IPluginManager {
   installPlugin(options: { filePath: string; overwrite?: boolean; enable?: boolean }): Promise<any>;
   uninstallPlugin(id: string): Promise<void>;
   getPluginLogs(pluginId?: string, limit?: number): any[];
+
+  /**
+   * Optional helper APIs exposed by the concrete PluginManager implementation.
+   * These are used by some HTTP routes but are not required for all consumers.
+   */
+  getApi?(pluginId: string): any;
+  getDevConfig?(pluginId: string): Promise<any>;
 }
 
 export interface IConsoleManager {

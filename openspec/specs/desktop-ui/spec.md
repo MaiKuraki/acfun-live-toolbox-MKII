@@ -278,6 +278,7 @@ UI SHALL build overlay links and SSE URLs using the ApiServer base from bridge (
 #### Scenario: SSE subscription in frame
 - WHEN overlay frame subscribes to messages,
 - THEN it opens `GET /sse/plugins/<pluginId>/overlay` on the Api base and relies on SSE auto-reconnect with `Last-Event-ID`,
+- AND it parses SSE `data` as a unified envelope JSON (SSE `event` equals envelope `kind`),
 - AND re-emits all incoming SSE messages to inner HTML via Wujie eventBus.
 
 ### Requirement: Remove manual overlay controls in UI

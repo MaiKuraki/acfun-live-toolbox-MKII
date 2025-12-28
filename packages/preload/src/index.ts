@@ -34,7 +34,8 @@ const _listenerMap = new WeakMap<(...args: any[]) => void, (event: Electron.IpcR
     minimizeWindow: () => ipcRenderer.invoke('window.minimize'),
     closeWindow: () => ipcRenderer.invoke('window.close'),
     maximizeWindow: () => ipcRenderer.invoke('window.maximize'),
-    restoreWindow: () => ipcRenderer.invoke('window.restore')
+    restoreWindow: () => ipcRenderer.invoke('window.restore'),
+    openDevtools: () => ipcRenderer.invoke('window.openDevtools')
   },
   system: {
     getConfig: () => ipcRenderer.invoke('system.getConfig'),
@@ -72,7 +73,14 @@ const _listenerMap = new WeakMap<(...args: any[]) => void, (event: Electron.IpcR
   // Plugin API bridging
   plugin: {
     list: () => ipcRenderer.invoke('plugin.list'),
-    install: (options: { filePath?: string; url?: string; force?: boolean }) => ipcRenderer.invoke('plugin.install', options),
+    install: (options: { filePath?: string; url?: string; force?: boolean }) =>
+      ipcRenderer.invoke('plugin.install', options).then((res: any) => {
+        // 兼容主进程返回结构：{ success: true, data: PluginInfo }
+        if (res && res.success && res.data && res.data.id) {
+          return { success: true, pluginId: res.data.id, data: res.data };
+        }
+        return res;
+      }),
     uninstall: (pluginId: string) => ipcRenderer.invoke('plugin.uninstall', pluginId),
     enable: (pluginId: string) => ipcRenderer.invoke('plugin.enable', pluginId),
     disable: (pluginId: string) => ipcRenderer.invoke('plugin.disable', pluginId),
@@ -101,12 +109,8 @@ const _listenerMap = new WeakMap<(...args: any[]) => void, (event: Electron.IpcR
       focus: (pluginId: string) => ipcRenderer.invoke('plugin.window.focus', pluginId),
       close: (pluginId: string) => ipcRenderer.invoke('plugin.window.close', pluginId),
       isOpen: (pluginId: string) => ipcRenderer.invoke('plugin.window.isOpen', pluginId),
-      list: () => ipcRenderer.invoke('plugin.window.list')
-    }
-    ,
-    process: {
-      execute: (pluginId: string, method: string, args?: any[]) => ipcRenderer.invoke('plugin.process.execute', pluginId, method, args),
-      message: (pluginId: string, type: string, payload?: any) => ipcRenderer.invoke('plugin.process.message', pluginId, type, payload)
+      list: () => ipcRenderer.invoke('plugin.window.list'),
+      getMemoryStats: () => ipcRenderer.invoke('plugin.window.getMemoryStats')
     }
   },
   // Wujie helper bridging
@@ -165,7 +169,8 @@ const _listenerMap = new WeakMap<(...args: any[]) => void, (event: Electron.IpcR
   },
   // Account API bridging
   account: {
-    getUserInfo: () => ipcRenderer.invoke('account.getUserInfo')
+    getUserInfo: () => ipcRenderer.invoke('account.getUserInfo'),
+    tokenAvailable: () => ipcRenderer.invoke('account.tokenAvailable')
   },
   http: {
     get: async (path: string, params?: Record<string, any>) => {

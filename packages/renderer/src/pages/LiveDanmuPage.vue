@@ -46,7 +46,7 @@
     >
       <template #header>
         <div class="danmu-card-header">
-          <div class="danmu-card-title">弹幕列表</div>
+          <!-- <div class="danmu-card-title">弹幕列表</div> -->
           <t-form
             ref="formRef"
             :data="formData"
@@ -140,7 +140,7 @@
           size="small"
           bordered
           hover
-          height="410px"
+          height="450px"
           :ellipsis="true"
           cellEllipsisType="title"
         />

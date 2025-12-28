@@ -67,9 +67,15 @@ export class TrayManager {
   }
 
   private getIconPath(): string {
-    const fallback = path.join(process.cwd(), 'assets', 'logo.png');
+    const fallback = path.join(process.cwd(), 'buildResources', 'icon.png');
     try {
-      const devIcon = path.join(process.cwd(), 'assets', 'logo.png');
+      // 生产环境下从buildResources加载
+      if (!process.env.VITE_DEV_SERVER_URL) {
+        const prodIcon = path.join(process.cwd(), 'buildResources', 'icon.png');
+        return prodIcon;
+      }
+      // 开发环境下也尝试从buildResources加载，如果不存在则使用默认路径
+      const devIcon = path.join(process.cwd(), 'buildResources', 'icon.png');
       return devIcon;
     } catch {
       return fallback;

@@ -1,6 +1,7 @@
 import { EventEmitter } from 'events';
 import * as fs from 'fs';
 import * as path from 'path';
+import { app } from 'electron';
 import { pluginLogger } from './PluginLogger';
 import type { PluginManifest } from './PluginManager';
 
@@ -429,7 +430,31 @@ export class PluginVersionManager extends EventEmitter {
   }
 }
 
-// 导出单例实例
-export const pluginVersionManager = new PluginVersionManager(
-  path.join(process.cwd(), 'plugins')
-);
+// 延迟初始化的单例实例
+let _pluginVersionManagerInstance: PluginVersionManager | null = null;
+
+/**
+ * 获取 PluginVersionManager 单例实例
+ * 使用与 PluginManager 相同的路径（app.getPath('userData')/plugins）
+ */
+export function getPluginVersionManager(): PluginVersionManager {
+  if (!_pluginVersionManagerInstance) {
+    // 使用与 PluginManager 相同的路径
+    const pluginsDir = path.join(app.getPath('userData'), 'plugins');
+    _pluginVersionManagerInstance = new PluginVersionManager(pluginsDir);
+  }
+  return _pluginVersionManagerInstance;
+}
+
+// 为了向后兼容，导出一个 getter
+export const pluginVersionManager = new Proxy({} as PluginVersionManager, {
+  get(_target, prop) {
+    const instance = getPluginVersionManager();
+    const value = instance[prop as keyof PluginVersionManager];
+    // 如果是方法，需要绑定 this
+    if (typeof value === 'function') {
+      return value.bind(instance);
+    }
+    return value;
+  }
+});

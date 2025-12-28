@@ -4,6 +4,19 @@ import path from 'path';
 import { TrayManager } from './TrayManager';
 
 const VITE_DEV_SERVER_URL = process.env['VITE_DEV_SERVER_URL'];
+const shouldOpenDevTools = () => {
+  // If the app started with --debug, always open devtools
+  try {
+    for (const a of process.argv) {
+      if (String(a).trim() === '--debug') return true;
+    }
+  } catch {}
+
+  // Default: keep existing behavior (open devtools when using Vite dev server).
+  const flag = String(process.env.ACFRAME_OPEN_DEVTOOLS || '').trim().toLowerCase();
+  if (flag === '0' || flag === 'false' || flag === 'off') return false;
+  return !!VITE_DEV_SERVER_URL;
+};
 
 /**
  * A simplified window manager for creating and managing the application's main window.
@@ -12,6 +25,7 @@ const VITE_DEV_SERVER_URL = process.env['VITE_DEV_SERVER_URL'];
 export class WindowManager {
   private mainWindow: BrowserWindow | null = null;
   private trayManager: TrayManager;
+  private minimizeToTrayEnabled = false;
 
   constructor() {
     this.trayManager = new TrayManager(() => this.mainWindow);
@@ -50,9 +64,8 @@ export class WindowManager {
 
     this.mainWindow.once('ready-to-show', () => {
       this.mainWindow?.show();
-      // Automatically open DevTools in development
-      if (VITE_DEV_SERVER_URL) {
-        this.mainWindow?.webContents.openDevTools();
+      if (shouldOpenDevTools()) {
+        this.mainWindow?.webContents.openDevTools({ mode: 'detach' });
       }
     });
 
@@ -86,6 +99,15 @@ export class WindowManager {
   }
 
   public setMinimizeToTray(enabled: boolean) {
+    this.minimizeToTrayEnabled = enabled;
     try { this.trayManager.setEnabled(enabled); } catch {}
+  }
+
+  public isMainWindow(win?: BrowserWindow | null): boolean {
+    return !!win && win === this.mainWindow;
+  }
+
+  public isMinimizeToTrayEnabled(): boolean {
+    return this.minimizeToTrayEnabled;
   }
 }

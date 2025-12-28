@@ -235,6 +235,8 @@ The overlay MUST treat incoming messages as an append-only feed for the demo win
 
 ### Requirement: Central Message Center for Plugin Overlay
 The system SHALL use a unified main-process message center (DataManager) to publish/subscribe plugin events: store updates, lifecycle notifications, and overlay messages.
+All plugin overlay SSE deliveries (`GET /sse/plugins/<pluginId>/overlay`) SHALL use a single unified event envelope JSON as SSE `data`, and SHALL use SSE `event` as the envelope `kind`.
+The envelope SHALL include `ts` and SHOULD include `id` for replayable events (to support `Last-Event-ID`).
 
 #### Scenario: UI sends message before overlay opens
 - **WHEN** a UI/window posts `POST /api/plugins/<pluginId>/overlay/messages` with a payload

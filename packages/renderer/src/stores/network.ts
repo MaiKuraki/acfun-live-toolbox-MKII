@@ -1,4 +1,6 @@
 import { defineStore } from 'pinia'
+import router from '../router';
+
 
 export const useNetworkStore = defineStore('network', {
   state: () => ({
@@ -8,6 +10,10 @@ export const useNetworkStore = defineStore('network', {
   }),
   getters: {
     apiBase(state): string {
+      if(!state.apiPort){
+        //@ts-ignore
+        this.init()
+      }
       const p = Number(state.apiPort)
       if (!Number.isFinite(p) || p <= 0 || p > 65535) throw new Error('API_PORT_NOT_CONFIGURED')
       return `http://127.0.0.1:${p}`
@@ -15,27 +21,20 @@ export const useNetworkStore = defineStore('network', {
   },
   actions: {
     async init() {
-      await this.refreshPort()
-      await this.refreshStatus()
-    },
-    async refreshPort() {
-      const cfg = await (window as any).electronApi.system.getConfig()
-      const p = Number(cfg && cfg['server.port'])
-      if (Number.isFinite(p) && p > 0 && p <= 65535) this.apiPort = p
+      if ((window as any).electronApi) {
+        await this.refreshStatus()
+      } else {
+        this.apiPort = Number(router.currentRoute.value.query.apiPort)
+      }
     },
     async refreshStatus() {
       try {
-        const res = await (window as any).electronApi.system.serverStatus()
-        const data = (res && res.success) ? (res as any).data || {} : {}
-        this.running = !!data.running
-        this.error = data.error || undefined
-        const p = Number(data.port)
-        if (Number.isFinite(p) && p > 0 && p <= 65535) this.apiPort = p
-      } catch {}
-    },
-    setPort(p: number) {
-      this.apiPort = Number(p)
+        const res = await (window as any).electronApi?.system.serverStatus()
+        const { running, error, port } = (res && res.success) ? (res as any).data || {} : {}
+        this.running = !!running
+        this.error = error || undefined
+        this.apiPort = Number(port)
+      } catch { console.error('refresh network status error') }
     },
   }
 })
-

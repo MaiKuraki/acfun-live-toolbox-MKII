@@ -49,7 +49,7 @@ export const useConsoleStore = defineStore('console', () => {
    */
   async function createSession(): Promise<string> {
     try {
-      const response = await window.electronApi.console.createSession({
+      const response = await window.electronApi?.console.createSession({
         source: 'local'
       });
 
@@ -76,7 +76,7 @@ export const useConsoleStore = defineStore('console', () => {
     }
 
     try {
-      await window.electronApi.console.endSession({
+      await window.electronApi?.console.endSession({
         sessionId: currentSession.value.id
       });
 
@@ -99,7 +99,7 @@ export const useConsoleStore = defineStore('console', () => {
     isExecuting.value = true;
 
     try {
-      const response = await window.electronApi.console.executeCommand({
+      const response = await window.electronApi?.console.executeCommand({
         sessionId: currentSession.value.id,
         commandLine
       });
@@ -155,7 +155,7 @@ export const useConsoleStore = defineStore('console', () => {
    */
   async function loadAvailableCommands(): Promise<ConsoleCommand[]> {
     try {
-      const response = await window.electronApi.console.getCommands();
+      const response = await window.electronApi?.console.getCommands();
 
       if (response.success) {
         availableCommands.value = response.data;
@@ -199,7 +199,7 @@ export const useConsoleStore = defineStore('console', () => {
     }
 
     try {
-      const response = await window.electronApi.console.getSession({
+      const response = await window.electronApi?.console.getSession({
         sessionId: currentSession.value.id
       });
 

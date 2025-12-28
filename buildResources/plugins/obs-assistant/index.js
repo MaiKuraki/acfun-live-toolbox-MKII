@@ -26,6 +26,7 @@ let state = {
   overlaySseConn: null,
   overlaySseBuffer: "",
   overlaySseReconnectTimer: null,
+  overlayClientId: "",
   obsReconnectTimer: null,
   obsRetryCount: 0,
   obsRetryBaseDelay: 3000,
@@ -355,7 +356,8 @@ async function openPluginOverlaySse() {
     const lastId = String(state.overlayLastId || "").trim();
     const headers = { Accept: "text/event-stream" };
     try { if (lastId) { headers["Last-Event-ID"] = lastId; } } catch {}
-    const options = { hostname: "127.0.0.1", port, path: "/sse/plugins/obs-assistant/overlay?types=ui,lifecycle", method: "GET", headers };
+    // Subscribe with the unified Envelope protocol (kind = SSE event name)
+    const options = { hostname: "127.0.0.1", port, path: "/sse/plugins/obs-assistant/overlay", method: "GET", headers };
   const req = http.request(options, (res) => {
     try {
       if (typeof res.statusCode === 'number' && res.statusCode !== 200) {
@@ -377,6 +379,19 @@ async function openPluginOverlaySse() {
   }
 }
 
+async function subscribeOverlayKinds(kinds) {
+  try {
+    const cid = String(state.overlayClientId || "").trim();
+    if (!cid) return;
+    await httpPostJson("/api/plugins/obs-assistant/subscribe", {
+      clientId: cid,
+      kinds: Array.isArray(kinds) ? kinds : [],
+    });
+  } catch (e) {
+    try { console.warn("[obs-assistant] subscribeOverlayKinds failed", e && e.message ? e.message : String(e)); } catch {}
+  }
+}
+
 function handleOverlaySseChunk(chunk) {
   try {
     state.overlaySseBuffer = (state.overlaySseBuffer || "") + String(chunk || "");
@@ -384,7 +399,7 @@ function handleOverlaySseChunk(chunk) {
     while (idx >= 0) {
       const msg = state.overlaySseBuffer.slice(0, idx);
       state.overlaySseBuffer = state.overlaySseBuffer.slice(idx + 2);
-      try { parseOverlaySseMessage(msg); } catch {}
+      try { parseOverlaySseEnvelope(msg); } catch {}
       idx = state.overlaySseBuffer.indexOf("\n\n");
     }
   } catch (e) {
@@ -392,19 +407,25 @@ function handleOverlaySseChunk(chunk) {
   }
 }
 
-function parseOverlaySseMessage(msg) {
+function parseOverlaySseEnvelope(msg) {
   try {
     let ev = "";
     let data = "";
+    let sid = "";
     const lines = String(msg || "").split(/\r?\n/);
     for (const line of lines) {
+      if (line.startsWith("id:")) sid = line.slice(3).trim();
       if (line.startsWith("event:")) ev = line.slice(6).trim();
       else if (line.startsWith("data:")) data += line.slice(5).trim();
     }
     if (!ev || !data) return;
-    try { onPluginOverlayEvent(ev, JSON.parse(data)); } catch {}
+    try {
+      const env = JSON.parse(data);
+      if (sid && env && typeof env === 'object' && !env.id) env.id = sid;
+      onPluginOverlayEvent(ev, env);
+    } catch {}
   } catch (e) {
-    try { console.warn('[obs-assistant] parseOverlaySseMessage error', e && e.message ? e.message : String(e)); } catch {}
+    try { console.warn('[obs-assistant] parseOverlaySseEnvelope error', e && e.message ? e.message : String(e)); } catch {}
   }
 }
 
@@ -482,46 +503,34 @@ function postOverlayEvent(event, payload) {
 }
 
 let obsTimer = null;
-async function onPluginOverlayEvent(ev, rec) {
+async function onPluginOverlayEvent(ev, env) {
   clearTimeout(obsTimer);
   try {
     try {
-      const rid = rec && rec.id ? String(rec.id) : '';
+      const rid = env && env.id ? String(env.id) : '';
       if (rid && state.overlayLastId === rid) return;
       state.overlayLastId = rid;
     } catch {}
-    if (ev === "ui") {
-      const inner = rec && rec.payload ? rec.payload : null;
-      const p = inner && inner.payload ? inner.payload : null;
-      const route = p && p.routePath ? String(p.routePath) : "";
-      state.currentRoutePath = route;
-      if (inner && inner.event === "route-changed" && route === "/live/create") {
-        try {
-          if (state.obsReconnectTimer) {
-            clearTimeout(state.obsReconnectTimer);
-            state.obsReconnectTimer = null;
-          }
-          state.obsRetryCount = 0;
-          if (state.autoObsFlowTimer) { clearTimeout(state.autoObsFlowTimer); state.autoObsFlowTimer = null; }
-        } catch {}
-        obsTimer = setTimeout(()=>{
-          tryAutoObsFlow();
-        },3000)
+    if (ev === "client") {
+      try {
+        const cid = env && (env.clientId || (env.payload && env.payload.clientId));
+        if (cid) {
+          state.overlayClientId = String(cid);
+          await subscribeOverlayKinds(["lifecycle", "config"]);
+        }
+      } catch {}
+      return;
+    }
+    if (ev === "lifecycle") {
+      if (env && env.event === "config-updated") {
+        const conf = env && env.payload && env.payload.config ? env.payload.config : null;
+        if (conf && typeof conf === "object") {
+          try { state.config = Object.assign({}, state.config, conf); } catch {}
+        }
       }
-      if (inner && inner.event === "route-changed" && route !== "/live/create") {
-        try {
-          if (state.obsReconnectTimer) {
-            clearTimeout(state.obsReconnectTimer);
-            state.obsReconnectTimer = null;
-          }
-          state.obsRetryCount = 0;
-          if (state.autoObsFlowTimer) { clearTimeout(state.autoObsFlowTimer); state.autoObsFlowTimer = null; }
-        } catch {}
-      }
-    } else if (ev === "lifecycle") {
-      const inner = rec && rec.payload ? rec.payload : null;
-      if (inner && inner.event === "config-updated") {
-        const conf = inner && inner.payload && inner.payload.config ? inner.payload.config : null;
+    } else if (ev === "config") {
+      if (env && env.event === "config-changed") {
+        const conf = env && env.payload ? env.payload : null;
         if (conf && typeof conf === "object") {
           try { state.config = Object.assign({}, state.config, conf); } catch {}
         }

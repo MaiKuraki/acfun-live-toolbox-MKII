@@ -1,6 +1,6 @@
 <template>
   <div class="window-frame-plugin-page">
-    <div class="topbar">
+    <div v-if="showTopbar" class="topbar">
       <div class="title">{{ titleText }}</div>
       <div class="window-controls">
         <button class="btn" title="最小化" @click="minimize">—</button>
@@ -9,19 +9,8 @@
       </div>
     </div>
     <div class="content">
-      <WujieVue
-        v-if="isWujieWindow"
-        :key="uiKey"
-        :name="wujieName"
-        :url="wujieUrl"
-        :props="wujieProps"
-        :plugins="wujiePlugins"
-        :sync="true"
-        :alive="false"
-        :width="'100%'"
-        :height="'100%'"
-        @loadError="onLoadError"
-      />
+      <WujieVue v-if="isWujie" :key="uiKey" :name="wujieName" :url="wujieUrl" :props="wujieProps"
+        :plugins="wujiePlugins" :sync="true" :alive="false" :width="'100%'" :height="'100%'" @loadError="onLoadError" />
       <div v-else class="empty">
         未配置窗口页面（manifest.window 缺失）。
       </div>
@@ -30,130 +19,63 @@
 </template>
 
 <script setup lang="ts">
-import { ref, computed, watch } from 'vue';
-import { useRoute } from 'vue-router';
+import { ref, computed, onUnmounted } from 'vue';
 import WujieVue from 'wujie-vue3';
-import { buildPluginPageUrl } from '../utils/hosting';
-import { createPluginApi, getWujiePlugins, type PluginApiContext } from '../utils/plugin-injection';
-// Popups are bridged to main window via preload popup API
+import { windowTopbarVisible } from '../utils/plugin-injection';
+import { setReadonlyIsMain } from '../utils/readonlyReporter';
+import { usePluginFrame } from '../composables/usePluginFrame';
 
-interface PluginUiConfig { html?: string; spa?: boolean; route?: string }
-interface PluginManifestLite { window?: PluginUiConfig; name?: string }
-interface PluginInfoLite { id: string; version: string; name?: string; manifest: PluginManifestLite }
+setReadonlyIsMain(false);
 
-const route = useRoute();
-const pluginInfo = ref<PluginInfoLite | null>(null);
-const isWujieWindow = ref(false);
-const wujieUrl = ref('');
-const wujieName = ref('');
-const uiKey = ref('');
-const wujieProps = ref<Record<string, any>>({});
-const wujiePlugins = ref<any[]>([]);
-
-const pluginId = computed(() => String((route.params as any).plugname || '').trim());
-const titleText = computed(() => pluginInfo.value?.name ? `${pluginInfo.value.name}` : `插件窗口 - ${pluginId.value}`);
-
-watch(pluginId, async (id) => {
-  await resolveWujieWindowConfig(id);
-}, { immediate: true });
-
-async function resolveWujieWindowConfig(id: string) {
-  try {
-    if (!id) { isWujieWindow.value = false; return; }
-    const res = await (window as any).electronApi?.plugin?.get?.(id);
-    if (res && 'success' in res && res.success) {
-      const info = res.data as PluginInfoLite;
-      pluginInfo.value = info;
-      const conf = (info?.manifest?.window || {}) as PluginUiConfig;
-      const hasConf = !!(conf.html || conf.spa);
-      if (hasConf) {
-        let url = '';
-
-        // 尝试加载开发配置，若存在 projectUrl 则优先使用（调试模式）
-        try {
-          const devRes = await window.electronApi.plugin.loadDevConfig(id);
-          if (devRes && (devRes as any).success && (devRes as any).data) {
-            const devCfg = (devRes as any).data;
-            if (devCfg && devCfg.projectUrl) {
-              const devBase = String(devCfg.projectUrl).trim().replace(/\/$/, '');
-              // 开发模式处理
-              if (conf.spa) {
-                // SPA模式：使用 projectUrl 作为根，直接拼接路由
-                const r = conf.route || '/';
-                url = new URL(r, devBase).toString();
-              } else {
-                // MPA模式：追加 html 文件名（如果 projectUrl 不含文件名）
-                // 假设 projectUrl 是目录根
-                const u = new URL(devBase);
-                if (!u.pathname.endsWith('.html') && !u.pathname.endsWith('.htm')) {
-                   const htmlFile = conf.html || 'window.html';
-                   // 简单拼接，注意 devBase 已去除结尾斜杠
-                   url = `${devBase}/${htmlFile}`;
-                } else {
-                   url = devBase;
-                }
-              }
-              console.log('[WindowFramePluginPage] Using dev project url:', url);
-            }
-          }
-        } catch (e) {
-          console.warn('[WindowFramePluginPage] Failed to load dev config:', e);
-        }
-
-        if (!url) {
-          url = buildPluginPageUrl(id, 'window', {
-            spa: !!conf.spa,
-            route: conf.route || '/',
-            html: conf.html || 'window.html'
-          });
-        }
-        
-        isWujieWindow.value = true;
-        wujieUrl.value = url;
-        wujieName.value = `window-${id}`;
-        uiKey.value = `${id}-${Date.now()}`;
-        
-        // 构建 API 上下文
-        const apiContext: PluginApiContext = {
-          pluginId: id,
-          version: info.version,
-          mode: 'window'
-        };
-        
-        // 使用统一注入工具
-        const toolboxApi = createPluginApi(apiContext);
-        wujiePlugins.value = getWujiePlugins(apiContext);
-        
-        wujieProps.value = {
-          pluginId: id,
-          version: info.version,
-          toolboxApi: toolboxApi,
-          initialRoute: conf.spa ? (conf.route || '/') : undefined
-        };
-      } else {
-        isWujieWindow.value = false;
-      }
-    } else {
-      isWujieWindow.value = false;
-    }
-  } catch (err) {
-    console.error('[WindowFramePluginPage] resolveWujieWindowConfig failed:', err);
-    isWujieWindow.value = false;
+// 从 manifest 初始化 showTopbar 的函数
+const initializeTopbarFromManifest = (info: any) => {
+  if (info?.manifest?.window) {
+    const conf = info.manifest.window;
+    // 读取 manifest.window.topbar 字段
+    // 如果 topbar 为 false，则隐藏；否则（true 或 undefined）显示
+    windowTopbarVisible.value = conf.topbar !== false;
+  } else {
+    // 如果没有 window 配置，默认显示
+    windowTopbarVisible.value = true;
   }
-}
+};
+
+// 使用统一的插件框架 composable
+const {
+  pluginInfo,
+  isWujie,
+  wujieUrl,
+  wujieName,
+  uiKey,
+  wujieProps,
+  wujiePlugins,
+  onLoadError
+} = usePluginFrame({
+  mode: 'window',
+  routeParamName: 'plugname',
+  onPluginInfo: initializeTopbarFromManifest
+});
+
+const titleText = computed(() => pluginInfo.value?.name ? `${pluginInfo.value.name}` : `插件窗口 - ${pluginInfo.value?.id || ''}`);
+
+// 直接使用共享的响应式变量
+const showTopbar = windowTopbarVisible;
+
+// 清理：组件卸载时移除状态（可选，如果希望保留状态可以不移除）
+onUnmounted(() => {
+  // 注意：这里不移除状态，因为插件可能还在使用
+  // 如果需要清理，可以调用 removePluginTopbarState(id);
+});
 
 function minimize() {
-  try { window.electronApi.window.minimizeWindow(); } catch {}
+  try { window.electronApi?.window.minimizeWindow(); } catch { }
 }
 function toggleMax() {
-  try { window.electronApi.window.maximizeWindow(); } catch {}
+  try { window.electronApi?.window.maximizeWindow(); } catch { }
 }
 function close() {
-  try { window.electronApi.window.closeWindow(); } catch {}
+  try { window.electronApi?.window.closeWindow(); } catch { }
 }
-
-function onLoadError(e: any) { try { console.warn('[WindowFramePluginPage] Wujie load error:', e); } catch {} }
-
 
 </script>
 
@@ -164,6 +86,7 @@ function onLoadError(e: any) { try { console.warn('[WindowFramePluginPage] Wujie
   display: flex;
   flex-direction: column;
 }
+
 .topbar {
   height: 24px;
   display: flex;
@@ -174,15 +97,18 @@ function onLoadError(e: any) { try { console.warn('[WindowFramePluginPage] Wujie
   border-bottom: 1px solid var(--td-border-level-1-color);
   -webkit-app-region: drag;
 }
+
 .title {
   font-size: 11px;
   color: var(--td-text-color-primary);
 }
-.window-controls { 
-  display: flex; 
-  gap: 4px; 
+
+.window-controls {
+  display: flex;
+  gap: 4px;
   -webkit-app-region: no-drag;
 }
+
 .btn {
   border: none;
   background: transparent;
@@ -197,8 +123,15 @@ function onLoadError(e: any) { try { console.warn('[WindowFramePluginPage] Wujie
   box-sizing: border-box;
   font-size: 10px;
 }
-.btn:hover { background: var(--td-bg-color-component-hover); }
-.btn.close:hover { background: #f44336; color: white; }
+
+.btn:hover {
+  background: var(--td-bg-color-component-hover);
+}
+
+.btn.close:hover {
+  background: #f44336;
+  color: white;
+}
 
 .content {
   flex: 1;

@@ -268,12 +268,12 @@ export class AcfunDanmuModule implements AppModule {
     }, 'checkQRLoginStatus');
   }
 
-  // 观看列表相关方法 - 暂时移除，因为 API 中不存在此方法
-  // async getWatchingList(liveID: number): Promise<any> {
-  //   return this.callApiMethod(async (api) => {
-  //     return api.live.getWatchingList(liveID);
-  //   }, 'getWatchingList');
-  // }
+  // 观看列表相关方法
+  async getWatchingList(liveID: number): Promise<any> {
+    return this.callApiMethod(async (api) => {
+      return api.live.getWatchingList(liveID.toString());
+    }, 'getWatchingList');
+  }
 
   // 榜单相关方法 - 暂时移除，因为 API 中不存在此方法
   // async getBillboard(): Promise<any> {
@@ -335,6 +335,17 @@ export class AcfunDanmuModule implements AppModule {
     return this.callApiMethod(async (api) => {
       return api.live.getLiveList();
     }, 'getAllLiveList');
+  }
+
+  // 获取直播列表（支持分类筛选）
+  async getChannelList(options?: {
+    filters?: Array<{ filterType: number; filterId: number }>;
+    count?: number;
+    pcursor?: string;
+  }): Promise<any> {
+    return this.callApiMethod(async (api) => {
+      return api.live.getChannelList(options);
+    }, 'getChannelList');
   }
 
   // 直播数据相关方法

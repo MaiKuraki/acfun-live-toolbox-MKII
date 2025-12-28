@@ -11,10 +11,7 @@
             添加插件
           </t-button>
         </t-dropdown>
-        <t-button
-          variant="outline"
-          @click="openPluginFolder"
-        >
+        <t-button variant="outline" @click="openPluginFolder">
           <template #icon>
             <t-icon name="folder" />
           </template>
@@ -35,83 +32,40 @@
     <!-- 过滤栏已移除；搜索迁移至列表卡片头部 -->
 
     <!-- 插件列表 -->
-    <t-card
-      class="plugin-list-card"
-      title="插件列表"
-      hover-shadow
-    >
+    <t-card class="plugin-list-card" title="插件列表" hover-shadow>
       <template #actions>
         <div class="list-header-actions">
-          <t-input 
-            v-model="searchKeyword" 
-            placeholder="搜索插件名称或描述..." 
-            clearable
-            style="width: 260px;"
-          >
+          <t-input v-model="searchKeyword" placeholder="搜索插件名称或描述..." clearable style="width: 260px;">
             <template #prefix-icon>
               <t-icon name="search" />
             </template>
           </t-input>
         </div>
       </template>
-      <div
-        v-if="pluginStore.isLoading"
-        class="loading-state"
-      >
+      <div v-if="pluginStore.isLoading" class="loading-state">
         <t-loading />
         <span>加载插件列表中...</span>
       </div>
 
-      <div
-        v-else-if="filteredPlugins.length === 0"
-        class="empty-state"
-      >
-        <t-icon
-          name="plugin"
-          size="48px"
-        />
+      <div v-else-if="filteredPlugins.length === 0" class="empty-state">
+        <t-icon name="plugin" size="48px" />
         <p>{{ searchKeyword ? '未找到匹配的插件' : '暂无插件' }}</p>
-        <t-button
-          v-if="!searchKeyword"
-          theme="primary"
-          @click="showInstallDialog = true"
-        >
+        <t-button v-if="!searchKeyword" theme="primary" @click="showInstallDialog = true">
           安装第一个插件
         </t-button>
       </div>
 
-  <div
-        v-else
-        class="plugin-grid"
-      >
-        <div 
-          v-for="plugin in filteredPlugins" 
-          :key="plugin.id"
-          class="plugin-card"
-          :class="{ 
-            active: plugin.status === 'active',
-            inactive: plugin.status === 'inactive',
-            error: plugin.status === 'error'
-          }"
-        >
+      <div v-else class="plugin-grid">
+        <div v-for="plugin in filteredPlugins" :key="plugin.id" class="plugin-card" :class="{
+          active: plugin.status === 'active',
+          inactive: plugin.status === 'inactive',
+          error: plugin.status === 'error'
+        }">
           <div class="plugin-header">
             <div class="plugin-icon">
-              <img
-                v-if="plugin.icon"
-                :src="plugin.icon"
-                :alt="plugin.name"
-                @error="handleIconError(plugin)"
-              >
-              <t-icon
-                v-else-if="isDebugPlugin(plugin.id)"
-                :name="getRandomIcon(plugin.id)"
-                size="32px"
-              />
-              <t-icon
-                v-else
-                name="plugin"
-                size="32px"
-              />
+              <img v-if="plugin.icon" :src="plugin.icon" :alt="plugin.name" @error="handleIconError(plugin)">
+              <t-icon v-else-if="isDebugPlugin(plugin.id)" :name="getRandomIcon(plugin.id)" size="32px" />
+              <t-icon v-else name="plugin" size="32px" />
             </div>
             <div class="plugin-info">
               <div class="plugin-name">
@@ -121,23 +75,17 @@
                 v{{ plugin.version }}
               </div>
             </div>
-          <div class="plugin-status">
-            <t-tag :theme="getStatusTheme(plugin.status)">
-              <template #icon>
-                <t-icon :name="getStatusIcon(plugin.status)" />
-              </template>
-              {{ getStatusText(plugin.status) }}
-            </t-tag>
-            <t-tag
-              v-if="isDebugPlugin(plugin.id)"
-              theme="warning"
-              variant="light"
-              size="small"
-              class="debug-badge"
-            >
-              调试插件
-            </t-tag>
-          </div>
+            <div class="plugin-status">
+              <t-tag :theme="getStatusTheme(plugin.status)">
+                <template #icon>
+                  <t-icon :name="getStatusIcon(plugin.status)" />
+                </template>
+                {{ getStatusText(plugin.status) }}
+              </t-tag>
+              <t-tag v-if="isDebugPlugin(plugin.id)" theme="warning" variant="light" size="small" class="debug-badge">
+                调试插件
+              </t-tag>
+            </div>
           </div>
 
           <div class="plugin-description">
@@ -156,42 +104,22 @@
           </div>
 
           <div class="plugin-actions">
-            <t-button 
-              v-if="canViewPlugin(plugin.id)"
-              size="small"
-              theme="primary"
-              variant="outline"
-              @click="viewPlugin(plugin)"
-            >
+            <t-button v-if="canViewPlugin(plugin.id)" size="small" theme="primary" variant="outline"
+              @click="viewPlugin(plugin)">
               打开面板
             </t-button>
-            <t-button
-              size="small"
-              variant="outline"
-              @click="viewPluginDetails(plugin)"
-            >
+            <t-button size="small" variant="outline" @click="viewPluginDetails(plugin)">
               查看详情
             </t-button>
-            <t-button
-              v-if="canCopyOverlay(plugin.id)"
-              size="small"
-              variant="outline"
-              @click="copyOverlayLink(plugin)"
-            >
+            <t-button v-if="canCopyOverlay(plugin.id)" size="small" variant="outline" @click="copyOverlayLink(plugin)">
               复制链接
             </t-button>
-            <t-button 
-              size="small" 
-              :theme="plugin.status === 'active' ? 'danger' : 'primary'"
-              @click="togglePlugin(plugin)"
-            >
+            <t-button size="small" :theme="plugin.status === 'active' ? 'danger' : 'primary'"
+              @click="togglePlugin(plugin)">
               {{ plugin.status === 'active' ? '禁用' : '启用' }}
             </t-button>
             <t-dropdown :options="getPluginMenuOptions(plugin)" :min-column-width="140">
-              <t-button
-                size="small"
-                variant="text"
-              >
+              <t-button size="small" variant="text">
                 <t-icon name="more" />
               </t-button>
             </t-dropdown>
@@ -201,28 +129,12 @@
     </t-card>
 
     <!-- 安装插件对话框（仅本地文件） -->
-    <t-dialog 
-      v-model:visible="showInstallDialog" 
-      :header="false"
-      width="600px"
-      @confirm="installPlugin"
-      @cancel="resetInstallForm"
-    >
+    <t-dialog v-model:visible="showInstallDialog" :header="false" width="600px" @confirm="installPlugin"
+      @cancel="resetInstallForm">
       <div class="install-form">
-        <t-form
-          ref="installFormRef"
-          :data="installForm"
-          :rules="installFormRules"
-          layout="vertical"
-        >
-          <t-form-item
-            label="插件文件"
-            name="filePath"
-          >
-            <t-input 
-              v-model="installForm.filePath"
-              placeholder="选择插件压缩包（.zip/.tar/.tgz/.gz）"
-            >
+        <t-form ref="installFormRef" :data="installForm" :rules="installFormRules" layout="vertical">
+          <t-form-item label="插件文件" name="filePath">
+            <t-input v-model="installForm.filePath" placeholder="选择插件压缩包（.zip/.tar/.tgz/.gz）">
               <template #suffix>
                 <t-button size="small" @click="pickPluginFile">选择文件</t-button>
               </template>
@@ -232,47 +144,33 @@
       </div>
     </t-dialog>
 
-    
+
 
     <!-- 插件详情对话框（全屏） -->
-    <t-dialog 
-      class="dialog-fullscreen"
-      v-model:visible="showDetailDialog" 
-      :title="`插件详情 - ${selectedPlugin?.name || ''}`"
-      :close-on-overlay-click="true"
-      :destroy-on-close="true"
-      mode="full-screen"
-      :footer="false"
-    >
-      <PluginDetail 
-        v-if="showDetailDialog && selectedPlugin" 
-        :plugin-id="selectedPlugin.id"
-        @back="showDetailDialog = false"
-        @pluginUpdated="async () => { await pluginStore.refreshPlugins(); }"
-      />
+    <t-dialog class="dialog-fullscreen" v-model:visible="showDetailDialog"
+      :title="`插件详情 - ${selectedPlugin?.name || ''}`" :close-on-overlay-click="true" :destroy-on-close="true"
+      mode="full-screen" :footer="false">
+      <PluginDetail v-if="showDetailDialog && selectedPlugin" :plugin-id="selectedPlugin.id"
+        @back="showDetailDialog = false" @pluginUpdated="async () => { await pluginStore.refreshPlugins(); }" />
       <div class="dialog-footer-back">
         <t-button theme="primary" variant="outline" @click="showDetailDialog = false">返回</t-button>
       </div>
     </t-dialog>
 
     <!-- 调试工具对话框 -->
-    <t-dialog
-      v-model:visible="showDevToolsDialog"
-      title="插件开发工具"
-      width="800px"
-      mode="full-screen"
-      :footer="false"
-    >  <div class="dev-tools-header">
-      <h3>插件开发工具</h3>
-      <p class="description">
-        配置外部Vue/React项目进行插件开发和调试
-      </p>
-    </div>
+    <t-dialog v-model:visible="showDevToolsDialog" title="插件开发工具" width="800px" mode="full-screen" :footer="false">
+      <div class="dev-tools-header">
+        <h3>插件开发工具</h3>
+        <p class="description">
+          配置外部Vue/React项目进行插件开发和调试
+        </p>
+      </div>
       <PluginDevTools ref="devToolsRef" />
       <div class="dialog-footer-actions">
         <t-button variant="outline" :loading="testingDev" @click="onTestLoad">测试加载</t-button>
         <t-button variant="outline" @click="onCancelDevPlugin">取消</t-button>
-        <t-button theme="primary" :disabled="!canConfirmDev" :loading="confirmingDev" @click="onConfirmDevPlugin">确认</t-button>
+        <t-button theme="primary" :disabled="!canConfirmDev" :loading="confirmingDev"
+          @click="onConfirmDevPlugin">确认</t-button>
       </div>
     </t-dialog>
   </div>
@@ -285,7 +183,7 @@ import { usePluginStore } from '../stores/plugin';
 import type { PluginInfo } from '../stores/plugin';
 import PluginDetail from '../components/PluginDetail.vue';
 import PluginDevTools from '../components/PluginDevTools.vue';
-import { resolvePrimaryHostingType, buildOverlayWrapperBase } from '../utils/hosting';
+import { resolvePrimaryHostingType, buildOverlayFrameUrl } from '../utils/hosting';
 import { copyText } from '../utils/format';
 
 const pluginStore = usePluginStore();
@@ -309,7 +207,6 @@ const isDebugPlugin = (pluginId: string) => {
   return !!devConfigMap.value && !!devConfigMap.value[pluginId];
 };
 
-// 取消 mock：严格依赖插件提供的 manifest.config
 
 // 安装相关状态
 const installForm = ref({
@@ -328,7 +225,7 @@ const filteredPlugins = computed(() => {
   // 搜索过滤
   if (searchKeyword.value) {
     const keyword = searchKeyword.value.toLowerCase();
-    plugins = plugins.filter(plugin => 
+    plugins = plugins.filter(plugin =>
       plugin.name.toLowerCase().includes(keyword) ||
       plugin.description?.toLowerCase().includes(keyword) ||
       plugin.author?.toLowerCase().includes(keyword)
@@ -338,19 +235,13 @@ const filteredPlugins = computed(() => {
   return plugins;
 });
 
-// 不再需要商店筛选逻辑
 
-// 方法
 const refreshPlugins = async () => {
   await pluginStore.refreshPlugins();
 };
 
-let hasRefreshedOnce = false;
 onMounted(async () => {
-  if (!hasRefreshedOnce) {
-    await refreshPlugins();
-    hasRefreshedOnce = true;
-  }
+  await refreshPlugins();
 });
 
 const addPluginOptions = [
@@ -416,16 +307,16 @@ const viewPlugin = async (plugin: PluginInfo) => {
       console.warn('[plugin-view] 插件无 ui/window 托管入口，无法查看:', plugin.id);
       return;
     }
-  if (primary.type === 'ui') {
-    // 导航到框架页以加载 UI（匹配 router.ts: /plugins/:plugname）
-    router.push(`/plugins/${plugin.id}`);
-    return;
-  }
-  if (primary.type === 'window') {
-    // 打开插件独立窗口（单实例），无需切换主窗口路由
-    await window.electronApi.plugin.window.open(plugin.id);
-    return;
-  }
+    if (primary.type === 'ui') {
+      // 导航到框架页以加载 UI（匹配 router.ts: /plugins/:plugname）
+      router.push(`/plugins/${plugin.id}`);
+      return;
+    }
+    if (primary.type === 'window') {
+      // 打开插件独立窗口（单实例），无需切换主窗口路由
+      await window.electronApi?.plugin.window.open(plugin.id);
+      return;
+    }
   } catch (err) {
     console.error('[plugin-view] 查看插件失败:', err);
   }
@@ -437,8 +328,8 @@ const copyOverlayLink = async (plugin: PluginInfo) => {
       console.warn('[plugin-overlay] 插件处于禁用或非活动状态，禁止复制链接:', plugin.id);
       return;
     }
-    // 直接构建外部包装页基础链接（插件级消息中心）
-    const finalUrl = buildOverlayWrapperBase(plugin.id);
+    const finalUrl = await pluginStore.getPluginOverlayUrl(plugin.id);
+    if(!finalUrl) throw new Error('获取插件链接失败');
     await copyText(finalUrl);
   } catch (err) {
     console.error('[plugin-overlay] 复制链接失败:', err);
@@ -496,183 +387,183 @@ const togglePlugin = async (plugin: PluginInfo) => {
 };
 
 
-  async function importPluginConfig(plugin: PluginInfo) {
-    try {
-      const pick = await window.electronApi.dialog.showOpenDialog({
-        properties: ['openFile'],
-        filters: [{ name: 'JSON', extensions: ['json'] }]
-      });
-      const file = (pick && pick.filePaths && pick.filePaths[0]) || '';
-      if (!file) return;
-      const content = await window.electronApi.fs.readFile(file);
-      const parsed = JSON.parse(String(content || '{}'));
-      validateSingleConfig(plugin, parsed);
-      const res = await window.electronApi.plugin.updateConfig(plugin.id, parsed);
-      if (res && (res as any).success) {
-        await pluginStore.refreshPlugins();
-        try { (await import('../services/globalPopup')).GlobalPopup.toast('配置已导入'); } catch {}
-      }
-    } catch (err) {
-      console.error('[plugin-config] 导入失败:', err);
-      try { (await import('../services/globalPopup')).GlobalPopup.alert('导入失败', String((err as Error)?.message || err)); } catch {}
-    }
-  }
-
-  function validateSingleConfig(plugin: PluginInfo, cfg: any) {
-    if (!cfg || typeof cfg !== 'object' || Array.isArray(cfg)) throw new Error('配置必须为对象');
-    const schema = (plugin.config || {}) as any;
-    for (const key of Object.keys(cfg)) {
-      const def = schema[key];
-      const val = cfg[key];
-      if (!def) continue; // 允许额外字段但忽略
-      const t = (def && def.type) || typeof (def.default ?? def.value);
-      if (t === 'boolean' && typeof val !== 'boolean') throw new Error(`字段 ${key} 需要布尔值`);
-      if (t === 'number' && typeof val !== 'number') throw new Error(`字段 ${key} 需要数字`);
-      if (t === 'select' || t === 'text' || t === 'string') { if (typeof val !== 'string') throw new Error(`字段 ${key} 需要字符串`); }
-    }
-  }
-
-  async function backupAllConfigs() {
-    const list = pluginStore.plugins;
-    const data: Record<string, any> = {};
-    for (const p of list) {
-      try {
-        const res = await window.electronApi.plugin.getConfig(p.id);
-        if (res && (res as any).success) data[p.id] = (res as any).data || {};
-      } catch {}
-    }
-    const blob = new Blob([JSON.stringify(data, null, 2)], { type: 'application/json' });
-    const url = URL.createObjectURL(blob);
-    const a = document.createElement('a');
-    a.href = url;
-    a.download = `plugins-config-backup.json`;
-    a.click();
-    URL.revokeObjectURL(url);
-  }
-
-  async function importAllConfigs() {
-    try {
-      const pick = await window.electronApi.dialog.showOpenDialog({ properties: ['openFile'], filters: [{ name: 'JSON', extensions: ['json'] }] });
-      const file = (pick && pick.filePaths && pick.filePaths[0]) || '';
-      if (!file) return;
-      const content = await window.electronApi.fs.readFile(file);
-      const parsed = JSON.parse(String(content || '{}'));
-      if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) throw new Error('批量导入文件必须为对象映射');
-      for (const p of pluginStore.plugins) {
-        const cfg = parsed[p.id];
-        if (!cfg) continue;
-        try { validateSingleConfig(p, cfg); await window.electronApi.plugin.updateConfig(p.id, cfg); } catch (e) { console.warn('[batch-import] 跳过', p.id, e); }
-      }
+async function importPluginConfig(plugin: PluginInfo) {
+  try {
+    const pick = await window.electronApi?.dialog.showOpenDialog({
+      properties: ['openFile'],
+      filters: [{ name: 'JSON', extensions: ['json'] }]
+    });
+    const file = (pick && pick.filePaths && pick.filePaths[0]) || '';
+    if (!file) return;
+    const content = await window.electronApi?.fs.readFile(file);
+    const parsed = JSON.parse(String(content || '{}'));
+    validateSingleConfig(plugin, parsed);
+    const res = await window.electronApi?.plugin.updateConfig(plugin.id, parsed);
+    if (res && (res as any).success) {
       await pluginStore.refreshPlugins();
-      try { (await import('../services/globalPopup')).GlobalPopup.toast('批量导入完成'); } catch {}
-    } catch (err) {
-      console.error('[batch-import] 失败:', err);
-      try { (await import('../services/globalPopup')).GlobalPopup.alert('批量导入失败', String((err as Error)?.message || err)); } catch {}
+      try { (await import('../services/globalPopup')).GlobalPopup.toast('配置已导入'); } catch { }
     }
+  } catch (err) {
+    console.error('[plugin-config] 导入失败:', err);
+    try { (await import('../services/globalPopup')).GlobalPopup.alert('导入失败', String((err as Error)?.message || err)); } catch { }
   }
+}
 
-  const getPluginMenuOptions = (plugin: PluginInfo) => {
-    const hasParsed = plugin.id in primaryHostingMap.value;
-    const supports = hasParsed && primaryHostingMap.value[plugin.id] !== null;
-    const renderIndentedLabel = (text: string, indent: boolean) => {
-      return indent
-        ? h(
-            'div',
-            { style: 'display:flex;align-items:center;' },
-            [
-              h('span', { style: 'display:inline-block;width:24px;' }),
-              h('span', text)
-            ]
-          )
-        : text;
-    };
-    const checkboxNode = supports
-      ? h(
-          resolveComponent('t-checkbox') as any,
-          {
-            modelValue: isInSidebar(plugin),
-            disabled: !plugin.enabled,
-            onChange: (checked: boolean) => {
-              if (!plugin.enabled) return;
-              toggleSidebarCheckbox(plugin, !!checked);
-            }
-          },
-          { default: () => '在侧边栏显示' }
-        )
-      : null;
-    const checkboxContainer = supports && checkboxNode
-      ? h(
-          'div',
-          {
-            style: 'display:flex;align-items:center;',
-            onClick: (e: Event) => { e.stopPropagation(); },
-            onMousedown: (e: Event) => { e.stopPropagation(); }
-          },
-          [checkboxNode]
-        )
-      : null;
+function validateSingleConfig(plugin: PluginInfo, cfg: any) {
+  if (!cfg || typeof cfg !== 'object' || Array.isArray(cfg)) throw new Error('配置必须为对象');
+  const schema = (plugin.config || {}) as any;
+  for (const key of Object.keys(cfg)) {
+    const def = schema[key];
+    const val = cfg[key];
+    if (!def) continue; // 允许额外字段但忽略
+    const t = (def && def.type) || typeof (def.default ?? def.value);
+    if (t === 'boolean' && typeof val !== 'boolean') throw new Error(`字段 ${key} 需要布尔值`);
+    if (t === 'number' && typeof val !== 'number') throw new Error(`字段 ${key} 需要数字`);
+    if (t === 'select' || t === 'text' || t === 'string') { if (typeof val !== 'string') throw new Error(`字段 ${key} 需要字符串`); }
+  }
+}
 
-    const liveCheckboxNode = supports
-      ? h(
-          resolveComponent('t-checkbox') as any,
-          {
-            modelValue: isInLiveRoom(plugin),
-            disabled: !plugin.enabled,
-            onChange: (checked: boolean) => {
-              if (!plugin.enabled) return;
-              toggleLiveRoomCheckbox(plugin, !!checked);
-            }
-          },
-          { default: () => '在直播间显示' }
-        )
-      : null;
-    const liveCheckboxContainer = supports && liveCheckboxNode
-      ? h(
-          'div',
-          {
-            style: 'display:flex;align-items:center;',
-            onClick: (e: Event) => { e.stopPropagation(); },
-            onMousedown: (e: Event) => { e.stopPropagation(); }
-          },
-          [liveCheckboxNode]
-        )
-      : null;
+async function backupAllConfigs() {
+  const list = pluginStore.plugins;
+  const data: Record<string, any> = {};
+  for (const p of list) {
+    try {
+      const res = await window.electronApi?.plugin.getConfig(p.id);
+      if (res && (res as any).success) data[p.id] = (res as any).data || {};
+    } catch { }
+  }
+  const blob = new Blob([JSON.stringify(data, null, 2)], { type: 'application/json' });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = url;
+  a.download = `plugins-config-backup.json`;
+  a.click();
+  URL.revokeObjectURL(url);
+}
 
-    const options: any[] = [
-      // 仅在支持 ui/window 能力时展示复选框项
-      ...(supports
-        ? [
-            { content: checkboxContainer, value: 'sidebar-display', disabled: !plugin.enabled },
-            { content: liveCheckboxContainer, value: 'live-display', disabled: !plugin.enabled }
-          ]
-        : []),
-      {
-        content: renderIndentedLabel('重新加载', supports),
-        value: 'reload',
-        onClick: () => reloadPlugin(plugin)
-      },
-      {
-        content: renderIndentedLabel('导出配置', supports),
-        value: 'export',
-        onClick: () => exportPluginConfig(plugin)
-      },
-      {
-        content: renderIndentedLabel('导入配置', supports),
-        value: 'import',
-        onClick: () => importPluginConfig(plugin)
-      },
-      {
-        content: renderIndentedLabel('卸载插件', supports),
-        value: 'uninstall',
-        theme: 'error',
-        onClick: () => uninstallPlugin(plugin)
-      }
-    ];
+async function importAllConfigs() {
+  try {
+    const pick = await window.electronApi?.dialog.showOpenDialog({ properties: ['openFile'], filters: [{ name: 'JSON', extensions: ['json'] }] });
+    const file = (pick && pick.filePaths && pick.filePaths[0]) || '';
+    if (!file) return;
+    const content = await window.electronApi?.fs.readFile(file);
+    const parsed = JSON.parse(String(content || '{}'));
+    if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) throw new Error('批量导入文件必须为对象映射');
+    for (const p of pluginStore.plugins) {
+      const cfg = parsed[p.id];
+      if (!cfg) continue;
+      try { validateSingleConfig(p, cfg); await window.electronApi?.plugin.updateConfig(p.id, cfg); } catch (e) { console.warn('[batch-import] 跳过', p.id, e); }
+    }
+    await pluginStore.refreshPlugins();
+    try { (await import('../services/globalPopup')).GlobalPopup.toast('批量导入完成'); } catch { }
+  } catch (err) {
+    console.error('[batch-import] 失败:', err);
+    try { (await import('../services/globalPopup')).GlobalPopup.alert('批量导入失败', String((err as Error)?.message || err)); } catch { }
+  }
+}
 
-    return options;
+const getPluginMenuOptions = (plugin: PluginInfo) => {
+  const hasParsed = plugin.id in primaryHostingMap.value;
+  const supports = hasParsed && primaryHostingMap.value[plugin.id] !== null;
+  const renderIndentedLabel = (text: string, indent: boolean) => {
+    return indent
+      ? h(
+        'div',
+        { style: 'display:flex;align-items:center;' },
+        [
+          h('span', { style: 'display:inline-block;width:24px;' }),
+          h('span', text)
+        ]
+      )
+      : text;
   };
+  const checkboxNode = supports
+    ? h(
+      resolveComponent('t-checkbox') as any,
+      {
+        modelValue: isInSidebar(plugin),
+        disabled: !plugin.enabled,
+        onChange: (checked: boolean) => {
+          if (!plugin.enabled) return;
+          toggleSidebarCheckbox(plugin, !!checked);
+        }
+      },
+      { default: () => '在侧边栏显示' }
+    )
+    : null;
+  const checkboxContainer = supports && checkboxNode
+    ? h(
+      'div',
+      {
+        style: 'display:flex;align-items:center;',
+        onClick: (e: Event) => { e.stopPropagation(); },
+        onMousedown: (e: Event) => { e.stopPropagation(); }
+      },
+      [checkboxNode]
+    )
+    : null;
 
-  const viewPluginDetails = (plugin: PluginInfo) => {
+  const liveCheckboxNode = supports
+    ? h(
+      resolveComponent('t-checkbox') as any,
+      {
+        modelValue: isInLiveRoom(plugin),
+        disabled: !plugin.enabled,
+        onChange: (checked: boolean) => {
+          if (!plugin.enabled) return;
+          toggleLiveRoomCheckbox(plugin, !!checked);
+        }
+      },
+      { default: () => '在直播间显示' }
+    )
+    : null;
+  const liveCheckboxContainer = supports && liveCheckboxNode
+    ? h(
+      'div',
+      {
+        style: 'display:flex;align-items:center;',
+        onClick: (e: Event) => { e.stopPropagation(); },
+        onMousedown: (e: Event) => { e.stopPropagation(); }
+      },
+      [liveCheckboxNode]
+    )
+    : null;
+
+  const options: any[] = [
+    // 仅在支持 ui/window 能力时展示复选框项
+    ...(supports
+      ? [
+        { content: checkboxContainer, value: 'sidebar-display', disabled: !plugin.enabled },
+        { content: liveCheckboxContainer, value: 'live-display', disabled: !plugin.enabled }
+      ]
+      : []),
+    {
+      content: renderIndentedLabel('重新加载', supports),
+      value: 'reload',
+      onClick: () => reloadPlugin(plugin)
+    },
+    {
+      content: renderIndentedLabel('导出配置', supports),
+      value: 'export',
+      onClick: () => exportPluginConfig(plugin)
+    },
+    {
+      content: renderIndentedLabel('导入配置', supports),
+      value: 'import',
+      onClick: () => importPluginConfig(plugin)
+    },
+    {
+      content: renderIndentedLabel('卸载插件', supports),
+      value: 'uninstall',
+      theme: 'error',
+      onClick: () => uninstallPlugin(plugin)
+    }
+  ];
+
+  return options;
+};
+
+const viewPluginDetails = (plugin: PluginInfo) => {
   selectedPlugin.value = plugin;
   showDetailDialog.value = true;
 };
@@ -728,7 +619,7 @@ const uninstallPlugin = async (plugin: PluginInfo) => {
     await pluginStore.uninstallPlugin(plugin.id);
   } catch (error) {
     console.error('卸载插件失败:', error);
-    try { (await import('../services/globalPopup')).GlobalPopup.alert('卸载失败', String((error as Error)?.message || error)); } catch {}
+    try { (await import('../services/globalPopup')).GlobalPopup.alert('卸载失败', String((error as Error)?.message || error)); } catch { }
   }
 };
 
@@ -745,6 +636,7 @@ const installPlugin = async () => {
     await refreshPlugins();
   } catch (error) {
     console.error('安装插件失败:', error);
+    try { (await import('../services/globalPopup')).GlobalPopup.toast(String((error as Error)?.message || error), { type: 'error' }); } catch { }
   }
 };
 
@@ -760,7 +652,7 @@ const resetInstallForm = () => {
 
 const pickPluginFile = async () => {
   try {
-    const res = await window.electronApi.dialog.showOpenDialog({
+    const res = await window.electronApi?.dialog.showOpenDialog({
       properties: ['openFile'],
       filters: [
         { name: 'Plugin Package', extensions: ['zip', 'tgz', 'tar', 'gz'] },
@@ -781,10 +673,10 @@ const pickPluginFile = async () => {
 
 const openPluginFolder = async () => {
   try {
-    await window.electronApi.plugin.openPluginsDir();
+    await window.electronApi?.plugin.openPluginsDir();
   } catch (error) {
     console.error('Failed to open plugins folder:', error);
-    try { (await import('../services/globalPopup')).GlobalPopup.alert('打开失败', String((error as Error)?.message || error)); } catch {}
+    try { (await import('../services/globalPopup')).GlobalPopup.alert('打开失败', String((error as Error)?.message || error)); } catch { }
   }
 };
 
@@ -802,7 +694,7 @@ async function onTestLoad() {
     const passed = !!(result?.pass ?? devToolsRef.value?.getTestPassed?.());
     canConfirmDev.value = passed;
     const msg = passed ? '测试加载通过' : `测试加载失败：${String(result?.error || '未知原因')}`;
-    try { (await import('../services/globalPopup')).GlobalPopup.toast(msg); } catch {}
+    try { (await import('../services/globalPopup')).GlobalPopup.toast(msg); } catch { }
   } finally {
     testingDev.value = false;
   }
@@ -812,7 +704,7 @@ async function onConfirmDevPlugin() {
   try {
     confirmingDev.value = true;
     await devToolsRef.value?.saveConfig?.();
-    try { await pluginStore.refreshPlugins(); } catch {}
+    try { await pluginStore.refreshPlugins(); } catch { }
     showDevToolsDialog.value = false;
   } finally {
     confirmingDev.value = false;
@@ -830,7 +722,7 @@ onMounted(() => {
   // 加载调试配置映射：存在配置即视为“调试插件”
   (async () => {
     try {
-      const res = await window.electronApi.plugin.loadDevConfig();
+      const res = await window.electronApi?.plugin.loadDevConfig();
       if (res && 'success' in res && (res as any).success) {
         devConfigMap.value = (((res as any).data) as Record<string, any>) || {};
       } else {
@@ -858,11 +750,9 @@ watch(filteredPlugins, async (list, prev) => {
 </script>
 
 <style scoped>
-
-
 .dev-tools-header {
- padding-top: 24px;
- padding-left: 24px;
+  padding-top: 24px;
+  padding-left: 24px;
   margin-bottom: 32px;
 }
 
@@ -909,6 +799,7 @@ watch(filteredPlugins, async (list, prev) => {
   display: inline-flex;
   align-items: center;
 }
+
 .header-actions :deep(.t-button .t-icon) {
   line-height: 1;
 }
@@ -1123,36 +1014,38 @@ watch(filteredPlugins, async (list, prev) => {
 .plugin-config :deep(.t-form__item) {
   display: block;
 }
+
 .plugin-config :deep(.t-form__label) {
   display: block;
   width: 100% !important;
   white-space: normal;
   margin-bottom: 6px;
 }
+
 .plugin-config :deep(.t-form__controls) {
   display: block;
 }
 
 /* 响应式设计 */
 @media (max-width: 1024px) {
-  
+
   .plugin-grid {
     grid-template-columns: repeat(auto-fill, minmax(250px, 1fr));
   }
 }
 
 @media (max-width: 768px) {
-  
+
   .plugin-grid {
     grid-template-columns: 1fr;
   }
-  
+
   .page-header {
     flex-direction: column;
     gap: 12px;
     align-items: flex-start;
   }
-  
+
   .header-actions {
     width: 100%;
     justify-content: space-between;

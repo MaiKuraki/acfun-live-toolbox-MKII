@@ -69,7 +69,7 @@ export const useLiveStore = defineStore('live', () => {
       let connected = false
       try {
         if ((window as any).electronApi?.room?.status && uid) {
-          const st = await (window as any).electronApi.room.status(uid)
+          const st = await (window as any).electronApi?.room.status(uid)
           connected = st && typeof st.status === 'string' ? st.status === 'connected' : false
         } else {
           const base = getApiBase()
@@ -143,7 +143,7 @@ export const useLiveStore = defineStore('live', () => {
             }
           }
         } else {
-          audienceByRoom[String(currentRoomUid)] = []
+          audienceByRoom[String(currentLiveId)] = []
         }
       } else {
         // 无主房间ID，跳过

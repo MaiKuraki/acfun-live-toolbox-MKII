@@ -475,7 +475,7 @@ async function loadLogs() {
   
   logsLoading.value = true;
   try {
-    const result = await window.electronApi.plugin.logs(props.pluginId, 100);
+    const result = await window.electronApi?.plugin.logs(props.pluginId, 100);
     if (result && 'success' in result && (result as any).success) {
       logs.value = (((result as any).data) as any[]) || [];
       filterLogs();
@@ -512,11 +512,12 @@ function normalizeLogLevel(level: any): 'error' | 'warn' | 'info' | 'debug' {
     return 'info';
   }
   if (typeof level === 'number') {
-    // Common numeric mapping: 40+=error, 30+=warn, 20+=info, else debug
-    if (level >= 40) return 'error';
-    if (level >= 30) return 'warn';
-    if (level >= 20) return 'info';
-    return 'debug';
+    // LogLevel enum mapping: 0=DEBUG, 1=INFO, 2=WARN, 3=ERROR
+    if (level === 3) return 'error';
+    if (level === 2) return 'warn';
+    if (level === 1) return 'info';
+    if (level === 0) return 'debug';
+    return 'info';
   }
   return 'info';
 }
@@ -590,12 +591,12 @@ async function updateDebugStatus() {
     // 优先使用 getDebugStatus（若已在 preload 暴露）
     const hasGetDebug = !!(window as any)?.electronApi?.plugin?.getDebugStatus;
     if (hasGetDebug) {
-      const res = await (window as any).electronApi.plugin.getDebugStatus(id);
+      const res = await (window as any).electronApi?.plugin.getDebugStatus(id);
       isDebugPlugin.value = !!(res && 'success' in res && res.success && res.data && (res.data.debugActive || res.data.hotReloadEnabled || res.data.config));
       return;
     }
     // 回退方案：读取单个插件的 devtools 配置
-    const res = await (window as any).electronApi.plugin.loadDevConfig(id);
+    const res = await (window as any).electronApi?.plugin.loadDevConfig(id);
     isDebugPlugin.value = !!(res && 'success' in res && res.success && res.data);
   } catch (e) {
     console.warn('[devtools] updateDebugStatus failed:', e);
@@ -679,7 +680,7 @@ function handleDebugStarted() {
       return;
     }
     try {
-      const res = await window.electronApi.plugin.getConfig(id);
+      const res = await window.electronApi?.plugin.getConfig(id);
       if (res && res.success) {
         pluginConfig.value = { ...base, ...(res.data || {}) };
       } else {
@@ -746,7 +747,7 @@ function handleDebugStarted() {
   async function pickPath(fieldKey: string, type: string) {
     try {
       const props: string[] = type === 'directory' ? ['openDirectory'] : ['openFile'];
-      const res = await window.electronApi.dialog.showOpenDialog({ properties: props });
+      const res = await window.electronApi?.dialog.showOpenDialog({ properties: props });
       const p = (res && Array.isArray(res.filePaths) && res.filePaths[0]) || '';
       if (!p) return;
       pluginConfig.value[fieldKey] = p;

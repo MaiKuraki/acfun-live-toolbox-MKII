@@ -2,7 +2,9 @@ import { MessagePlugin, DialogPlugin } from 'tdesign-vue-next';
 
 export interface PopupOptions {
   durationMs?: number;
-  contextId?: string; // pluginId 或窗口上下文标识，用于节流
+  contextId?: string;
+  type?: 'info' | 'success' | 'warning' | 'error' | 'question' | 'loading';
+  icon?: string;
 }
 
 type ThrottleBucket = { count: number; windowEnd: number };
@@ -35,18 +37,34 @@ export const GlobalPopup = {
     bucket.count += 1;
     toastBuckets.set(ctx, bucket);
     const dur = Math.max(1000, Math.min(10000, Number(options?.durationMs ?? 2500)));
-    MessagePlugin.info({ content: sanitizeText(message), duration: dur });
+    const type = String(options?.type || 'info');
+    const content = sanitizeText(message);
+    if (type === 'success') { MessagePlugin.success({ content, duration: dur }); return; }
+    if (type === 'warning') { MessagePlugin.warning({ content, duration: dur }); return; }
+    if (type === 'error') { MessagePlugin.error({ content, duration: dur }); return; }
+    if (type === 'question') { MessagePlugin.question({ content, duration: dur }); return; }
+    if (type === 'loading') { MessagePlugin.loading({ content, duration: 0 }); return; }
+    MessagePlugin.info({ content, duration: dur });
   },
 
-  alert(title: string, message: string, options?: PopupOptions) {
+  alert(title: string, message?: string, options?: PopupOptions) {
     const ctx = getContextId(options);
     if (alertLocks.get(ctx)) {
       return; // 并发受限：每上下文一次
     }
     alertLocks.set(ctx, true);
+
+    // 如果只传了一个参数，将其作为消息，标题为空
+    const actualTitle = message ? sanitizeText(title) : '';
+    const actualMessage = message ? sanitizeText(message) : sanitizeText(title);
+
     const inst = DialogPlugin.alert({
-      header: sanitizeText(title),
-      body: sanitizeText(message),
+      header: actualTitle,
+      body: actualMessage,
+      onConfirm: () => {
+        try { inst?.hide?.(); } catch {}
+        alertLocks.delete(ctx);
+      },
       onClosed: () => { alertLocks.delete(ctx); }
     });
     // 兜底：如未触发 onClosed（异常），在 30s 后释放锁
@@ -79,6 +97,20 @@ export const GlobalPopup = {
         }
       }, 30000);
     });
+  }
+  ,
+  close(id?: string) {
+    try {
+      if (id && typeof id === 'string' && id.trim().length > 0) {
+        (MessagePlugin as any).close(id);
+        return;
+      }
+      if ((MessagePlugin as any).closeAll) {
+        (MessagePlugin as any).closeAll();
+      } else {
+        (MessagePlugin as any).close();
+      }
+    } catch {}
   }
 };
 

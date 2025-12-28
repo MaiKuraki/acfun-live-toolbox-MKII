@@ -272,18 +272,34 @@ export class QueryService {
       )
     `;
 
-    // 执行删除前先获取受影响行数（SQLite DELETE 不直接返回 count，但在 run 的 this.changes 中返回）
-    // 或者我们可以直接 run，然后获取 changes
-    
+    // 执行删除，并在成功后触发一次 VACUUM 以回收空间
+    // 注意：VACUUM 可能比较耗时，这里仅在实际删除到记录时执行
     return new Promise((resolve, reject) => {
       const db = this.databaseManager.getDb();
-      db.run(deleteSql, paramsActions, function(err) {
+      const databaseManager = this.databaseManager;
+
+      db.run(deleteSql, paramsActions, function (err) {
         if (err) {
           console.error('[QueryService] deleteEvents error:', err);
           reject(err);
-        } else {
-          resolve(this.changes);
+          return;
         }
+
+        const changes = typeof this.changes === 'number' ? this.changes : 0;
+
+        // 异步执行 VACUUM，不阻塞当前 Promise 的 resolve
+        if (changes > 0) {
+          databaseManager
+            .vacuum()
+            .catch((vacuumErr) => {
+              // 仅记录日志，不影响本次接口的返回
+              try {
+                console.error('[QueryService] VACUUM after deleteEvents failed:', vacuumErr);
+              } catch {}
+            });
+        }
+
+        resolve(changes);
       });
     });
   }

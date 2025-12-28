@@ -137,9 +137,8 @@
           :key="room.id"
           class="room-item"
           :class="{ 
-            online: room.status === 'connected',
-            offline: room.status === 'disconnected',
-            preparing: room.status === 'connecting'
+            online: room.isLive === true,
+            offline: room.isLive === false
           }"
         >
           <div class="room-cover">
@@ -152,7 +151,7 @@
             <div v-else class="cover-placeholder"></div>
             <div
               class="status-indicator"
-              :class="room.status"
+              :class="room.isLive ? 'connected' : 'disconnected'"
             />
           </div>
           
@@ -251,17 +250,30 @@
         >
           <t-select
             v-model="addForm.roomId"
-            :options="hotOptions"
+            :options="searchOptions"
+            :loading="hotLoading"
             filterable
             creatable
             clearable
-            :loading="hotLoading"
-            placeholder="输入房间ID，或下拉选择热门直播"
+            placeholder="输入房间ID，或输入关键词搜索直播间（主播名/直播标题）"
+            @search="onSearchInput"
+            @change="onSearchSelect"
             @popup-visible-change="onSelectPopupVisible"
-            @focus="onSelectFocus"
-          />
+            @focus="onSearchFocus"
+            @blur="onSearchBlur"
+          >
+            <template #option="{ option }">
+              <div class="search-option-item">
+                <div class="option-title">{{ option.title }}</div>
+                <div class="option-meta">
+                  <span class="option-author">{{ option.authorName }}</span>
+                  <span class="option-viewers">观众: {{ option.viewers }}</span>
+                </div>
+              </div>
+            </template>
+          </t-select>
           <template #help>
-            <span>可以输入完整的直播间链接或房间ID</span>
+            <span>可以输入完整的直播间链接、房间ID，或输入关键词搜索匹配的直播间</span>
           </template>
         </t-form-item>
         
@@ -285,7 +297,7 @@
           @cancel="closeSettings"
         >
       <template #header>{{ settingsRoomTitle }}</template>
-      <t-form :data="settingsForm" class="room-settings-form" layout="horizontal" label-align="left" :label-width="180">
+      <t-form :data="settingsForm" class="room-settings-form" layout="vertical" label-align="left" :label-width="180">
         <t-form-item label="是否自动连接采集弹幕" name="autoConnect">
           <t-switch v-model="settingsForm.autoConnect" />
         </t-form-item>
@@ -373,13 +385,12 @@
 import { ref, computed, onMounted } from 'vue';
 import { useRouter } from 'vue-router';
 import { useRoomStore, type Room } from '../stores/room';
-import { useConsoleStore } from '../stores/console';
 import { getApiBase } from '../utils/hosting';
 import { useAccountStore } from '../stores/account';
+import { debounce } from 'lodash';
 
 const router = useRouter();
 const roomStore = useRoomStore();
-const consoleStore = useConsoleStore();
 const accountStore = useAccountStore();
 
 // 响应式状态
@@ -408,6 +419,16 @@ const addFormRules = {
   ]
 };
 
+// 辅助函数：检查是否为当前用户的房间
+const isCurrentUserRoom = (room: Room): boolean => {
+  const myUid = Number(accountStore?.userInfo?.userID || 0) || 0;
+  if (!myUid) return false;
+  const uidStr = String(myUid);
+  return String(room.liverUID || '') === uidStr || 
+         String(room.id || '') === uidStr || 
+         String(room.streamer?.userId || '') === uidStr;
+};
+
 // 计算属性
 const filteredRooms = computed(() => {
   const base = (() => {
@@ -420,17 +441,12 @@ const filteredRooms = computed(() => {
       (room.streamer?.userName || '').toLowerCase().includes(keyword)
     );
   })();
-  const myUid = Number(accountStore?.userInfo?.userID || 0) || 0;
-  const isMine = (r: Room) => {
-    const uidStr = String(myUid || '');
-    return uidStr && (String(r.liverUID || '') === uidStr || String(r.id || '') === uidStr || String(r.streamer?.userId || '') === uidStr);
-  };
   base.sort((a, b) => {
     const aLive = a.isLive ? 1 : 0;
     const bLive = b.isLive ? 1 : 0;
     if (aLive !== bLive) return bLive - aLive;
-    const aMine = isMine(a) ? 1 : 0;
-    const bMine = isMine(b) ? 1 : 0;
+    const aMine = isCurrentUserRoom(a) ? 1 : 0;
+    const bMine = isCurrentUserRoom(b) ? 1 : 0;
     if (aMine !== bMine) return bMine - aMine;
     const ap = typeof a.priority === 'number' ? a.priority : 999;
     const bp = typeof b.priority === 'number' ? b.priority : 999;
@@ -441,12 +457,6 @@ const filteredRooms = computed(() => {
   });
   return base;
 });
-
-const isCurrentUserRoom = (room: Room) => {
-  const myUid = Number(accountStore?.userInfo?.userID || 0) || 0;
-  const uidStr = String(myUid || '');
-  return uidStr && (String(room.liverUID || '') === uidStr || String(room.id || '') === uidStr || String(room.streamer?.userId || '') === uidStr);
-};
 
 // 方法
 const refreshRooms = async () => {
@@ -492,61 +502,180 @@ const getStatusText = (status: string) => {
     return id ? `直播间 ${id}` : '直播间';
   };
 
-const validateRoomId = () => {
-  const roomId = addForm.value.roomId.trim();
-  if (roomId.includes('live.acfun.cn/live/')) {
-    // 从链接中提取房间ID
-    const match = roomId.match(/live\.acfun\.cn\/live\/(\d+)/);
-    if (match) {
-      addForm.value.roomId = match[1];
-    }
+// 辅助函数：从输入中提取房间ID
+const extractRoomId = (input: string): string => {
+  if (input.includes('live.acfun.cn/live/')) {
+    const match = input.match(/live\.acfun\.cn\/live\/(\d+)/);
+    if (match) return match[1];
   }
   // 仅保留数字
-  addForm.value.roomId = addForm.value.roomId.replace(/\D+/g, '');
+  return input.replace(/\D+/g, '');
+};
+
+const validateRoomId = () => {
+  addForm.value.roomId = extractRoomId(addForm.value.roomId);
 };
 
 const hotLives = ref<any[]>([]);
 const hotLoading = ref(false);
-const hotError = ref<string | null>(null);
-  const hotOptions = computed(() => {
-    const list = hotLives.value || [];
-    return list.map((item: any) => {
-      const uid = item?.streamer?.userId ?? item?.owner?.userID ?? item?.userId;
-      const name = String((item?.streamer && item.streamer.userName) || (item?.owner && item.owner.username) || '').trim();
-      const titleRaw = String(item?.title || '').trim();
-      const title = titleRaw || (name ? `${name}的直播间` : '直播间');
-      const viewers = typeof item?.onlineCount === 'number' ? item.onlineCount : (typeof item?.viewerCount === 'number' ? item.viewerCount : 0);
-      return { label: `${title} ｜ ${name} ｜ 观众 ${viewers}`, value: String(uid || '') };
+const roomSearchKeyword = ref('');
+
+// 辅助函数：将直播项转换为选项格式
+const mapLiveItemToOption = (item: any) => {
+  const authorId = String(item?.authorId || item?.user?.id || '');
+  const authorName = String(item?.user?.name || '').trim();
+  const title = String(item?.title || '').trim() || (authorName ? `${authorName}的直播间` : '直播间');
+  const viewers = typeof item?.onlineCount === 'number' ? item.onlineCount : 0;
+  return {
+    label: `${title} | ${authorName} | 观众 ${viewers}`,
+    value: authorId,
+    title,
+    authorName,
+    viewers,
+    item
+  };
+};
+
+// 搜索选项
+const searchOptions = computed(() => {
+  const keyword = roomSearchKeyword.value.trim().toLowerCase();
+  if (!keyword) {
+    // 如果没有关键词，显示热门直播
+    return hotLives.value.slice(0, 20).map(mapLiveItemToOption);
+  }
+  
+  // 如果输入的是纯数字，可能是房间ID
+  if (/^\d+$/.test(keyword)) {
+    // 检查是否有完全匹配的房间ID
+    const exactMatch = hotLives.value.find((item: any) => {
+      const authorId = String(item?.authorId || item?.user?.id || '');
+      return authorId === keyword;
     });
-  });
+    
+    if (exactMatch) {
+      return [mapLiveItemToOption(exactMatch)];
+    }
+    
+    // 如果没有完全匹配，返回包含该数字的房间ID
+    return hotLives.value
+      .filter((item: any) => {
+        const authorId = String(item?.authorId || item?.user?.id || '');
+        return authorId.includes(keyword);
+      })
+      .slice(0, 20)
+      .map(mapLiveItemToOption);
+  }
+  
+  // 根据关键词过滤：匹配房间ID、主播用户名、直播名称
+  return hotLives.value
+    .filter((item: any) => {
+      const authorId = String(item?.authorId || item?.user?.id || '');
+      const authorName = String(item?.user?.name || '').trim().toLowerCase();
+      const title = String(item?.title || '').trim().toLowerCase();
+      const liveId = String(item?.liveId || '').toLowerCase();
+      
+      return authorId.includes(keyword) ||
+             authorName.includes(keyword) ||
+             title.includes(keyword) ||
+             liveId.includes(keyword);
+    })
+    .slice(0, 20)
+    .map(mapLiveItemToOption);
+});
+
+// 使用 getChannelList 获取直播列表
 const fetchHotLives = async () => {
   try {
     hotLoading.value = true;
-    hotError.value = null;
-    const url = new URL('/api/acfun/live/hot-lives', getApiBase());
-    url.searchParams.set('page', '0');
-    url.searchParams.set('size', '20');
+    const url = new URL('/api/acfun/live/channel-list', getApiBase());
+    url.searchParams.set('filters', JSON.stringify([{ filterType: 1, filterId: 0 }]));
+    url.searchParams.set('count', '200');
+    
     const r = await fetch(url.toString(), { method: 'GET' });
     const res = await r.json();
-    if (res && res.success) {
-      const list = Array.isArray(res?.data?.lives) ? res.data.lives : [];
-      hotLives.value = Array.isArray(list) ? list : [];
+    if (res?.success) {
+      hotLives.value = Array.isArray(res?.data?.liveList) ? res.data.liveList : [];
     } else {
-      hotError.value = String((res && res.error) || 'fetch_failed');
       hotLives.value = [];
     }
-  } catch (e: any) {
-    hotError.value = String(e?.message || 'network_error');
+  } catch {
     hotLives.value = [];
   } finally {
     hotLoading.value = false;
   }
 };
-const onSelectPopupVisible = (visible: boolean) => {
-  if (visible) fetchHotLives();
+
+// 防抖搜索函数（2秒延迟）
+const debouncedSearch = debounce((value: string) => {
+  if (value.trim() && !/^\d+$/.test(value.trim())) {
+    // 如果有关键词且不是纯数字，触发搜索（搜索在客户端过滤，不需要重新请求）
+    // 注意：这里实际上不需要重新请求，因为搜索是在客户端进行的
+  } else if (!value.trim() && !hotLives.value.length) {
+    // 如果清空了且没有数据，加载默认列表
+    fetchHotLives();
+  }
+}, 2000);
+
+// 搜索输入处理
+const onSearchInput = (value: string) => {
+  roomSearchKeyword.value = value;
+  
+  // 如果输入的是链接，提取房间ID
+  if (value.includes('live.acfun.cn/live/')) {
+    const roomId = extractRoomId(value);
+    if (roomId) {
+      addForm.value.roomId = roomId;
+      roomSearchKeyword.value = roomId;
+      return;
+    }
+  }
+  
+  // 如果输入的是纯数字，可能是房间ID，直接设置（允许直接添加）
+  if (/^\d+$/.test(value.trim())) {
+    addForm.value.roomId = value.trim();
+    // 纯数字输入时，如果有数据则显示匹配项，否则加载列表
+    if (!hotLives.value.length) {
+      fetchHotLives();
+    }
+    return;
+  }
+  
+  // 使用 lodash 防抖搜索
+  debouncedSearch(value);
 };
-const onSelectFocus = () => {
-  if (!hotLives.value.length) fetchHotLives();
+
+// 选择选项时处理
+const onSearchSelect = (value: string, context: any) => {
+  // 当用户从下拉列表选择时，设置房间ID
+  const option = context?.option || context;
+  if (option && option.value) {
+    addForm.value.roomId = String(option.value);
+    roomSearchKeyword.value = String(option.value);
+  } else if (value) {
+    // 如果是直接输入的值（creatable模式）
+    addForm.value.roomId = String(value);
+    roomSearchKeyword.value = String(value);
+  }
+};
+
+// 下拉框显示/隐藏时处理
+const onSelectPopupVisible = (visible: boolean) => {
+  if (visible && !hotLives.value.length) {
+    fetchHotLives();
+  }
+};
+
+// 聚焦时加载数据
+const onSearchFocus = () => {
+  if (!hotLives.value.length) {
+    fetchHotLives();
+  }
+};
+
+// 失焦处理
+const onSearchBlur = () => {
+  // 取消防抖
+  debouncedSearch.cancel();
 };
 
 const addRoom = async () => {
@@ -558,7 +687,7 @@ const addRoom = async () => {
     const inputId = addForm.value.roomId;
     const existed = roomStore.getRoomById(inputId);
     if (existed) {
-      try { window.electronApi.popup.toast('房间已存在，请不要重复添加'); } catch {}
+      try { window.electronApi?.popup.toast('房间已存在，请不要重复添加'); } catch {}
       return false;
     }
     // 构建房间URL
@@ -582,23 +711,30 @@ const resetAddForm = () => {
 };
 
 const toggleConnection = async (room: Room) => {
+  // 检查用户是否已登录
+  if (!accountStore.isLoggedIn) {
+    MessagePlugin.warning('请先登录后再进行弹幕采集');
+    return;
+  }
+
   try {
-    const st = await window.electronApi.room.status(room.id);
-    const status = String(st?.status || '');
+    const st = await window.electronApi?.room.status(room.id);
+    let status = '';
+    if (st && 'status' in st && typeof (st as any).status === 'string') status = String((st as any).status);
     const mapped = status.toLowerCase();
     if (mapped === 'connected' || mapped === 'open') {
-      const res = await window.electronApi.room.disconnect(room.id);
+      const res = await window.electronApi?.room.disconnect(room.id);
       if (res?.success) {
-        try { window.electronApi.popup.toast('已断开采集'); } catch {}
+        try { window.electronApi?.popup.toast('已断开采集'); } catch {}
         try { roomStore.updateRoomStatus(room.id, 'disconnected'); } catch {}
       } else {
-        try { window.electronApi.popup.toast('断开采集失败'); } catch {}
+        try { window.electronApi?.popup.toast('断开采集失败'); } catch {}
         try { roomStore.updateRoomStatus(room.id, mapped); } catch {}
       }
       await refreshRooms();
       return;
     }
-    const res = await window.electronApi.room.connect(room.id);
+    const res = await window.electronApi?.room.connect(room.id);
     if (!res?.success) console.warn('connect failed:', res?.error || res);
     await refreshRooms();
   } catch (error) {
@@ -606,14 +742,8 @@ const toggleConnection = async (room: Room) => {
   }
 };
 
-const viewRoomDetails = (room: Room) => {
-  selectedRoomId.value = room.id;
-  showDetailsDialog.value = true;
-};
-
 const openLivePage = (room: Room) => {
-  const url = `https://live.acfun.cn/live/${room.liveId || room.id}`;
-  window.electronApi.system.openExternal(url);
+  window.electronApi?.system.openExternal(`https://live.acfun.cn/live/${room.id}`);
 };
 
 const confirmConnectVisible = ref(false);
@@ -621,9 +751,16 @@ const confirmConnectRoomId = ref<string | null>(null);
 const confirmConnectLoading = ref(false);
 
 const enterLiveRoom = async (room: Room) => {
+  // 检查用户是否已登录
+  if (!accountStore.isLoggedIn) {
+    MessagePlugin.warning('请先登录后再进入直播间');
+    return;
+  }
+
   try {
-    const st = await window.electronApi.room.status(room.id);
-    const s = String(st?.status || '').toLowerCase();
+    const st = await window.electronApi?.room.status(room.id);
+    let s = '';
+    if (st && 'status' in st && typeof (st as any).status === 'string') s = String((st as any).status).toLowerCase();
     if (s === 'connected' || s === 'open') {
       router.push({ name: 'LiveManage', params: { roomId: room.id } });
       return;
@@ -653,12 +790,13 @@ const confirmConnectAndEnter = async () => {
   if (!confirmConnectRoomId.value) return;
   try {
     confirmConnectLoading.value = true;
-    await window.electronApi.room.connect(confirmConnectRoomId.value);
+    await window.electronApi?.room.connect(confirmConnectRoomId.value);
     let ok = false;
     for (let i = 0; i < 10; i++) {
       await new Promise(r => setTimeout(r, 500));
-      const st = await window.electronApi.room.status(confirmConnectRoomId.value);
-      const s = String(st?.status || '').toLowerCase();
+      const st = await window.electronApi?.room.status(confirmConnectRoomId.value);
+      let s = '';
+      if (st && 'status' in st && typeof (st as any).status === 'string') s = String((st as any).status).toLowerCase();
       if (s === 'connected' || s === 'open') { ok = true; break; }
     }
     confirmConnectVisible.value = false;
@@ -667,11 +805,11 @@ const confirmConnectAndEnter = async () => {
       try { await refreshRooms(); } catch {}
       router.push({ name: 'LiveManage', params: { roomId: confirmConnectRoomId.value } });
     } else {
-      try { window.electronApi.popup.toast('连接失败，请稍后重试'); } catch {}
+      try { window.electronApi?.popup.toast('连接失败，请稍后重试'); } catch {}
     }
   } catch (e) {
     confirmConnectLoading.value = false;
-    try { window.electronApi.popup.toast('连接失败'); } catch {}
+    try { window.electronApi?.popup.toast('连接失败'); } catch {}
   } finally {
     confirmConnectRoomId.value = null;
   }
@@ -680,13 +818,9 @@ const confirmConnectAndEnter = async () => {
 const openUserSpace = (room: Room) => {
   const uid = String(room.liverUID || room.streamer?.userId || '');
   if (!uid) return;
-  window.electronApi.system.openExternal(`https://www.acfun.cn/u/${uid}`);
+  window.electronApi?.system.openExternal(`https://www.acfun.cn/u/${uid}`);
 };
 
-const onCoverError = (e: Event) => {
-  const target = e.target as HTMLImageElement;
-  if (target) target.src = '/default-cover.png';
-};
 
 const getRoomMenuOptions = (room: Room) => {
   const opts = [
@@ -695,11 +829,16 @@ const getRoomMenuOptions = (room: Room) => {
       value: 'settings',
       onClick: () => openSettings(room)
     },
-  {
+    {
       content: '查看弹幕',
       value: 'danmu',
       onClick: () => router.push(`/live/danmu/${room.id}`)
     },
+    ...(room.isLive ? [{
+      content: '查看网页',
+      value: 'web',
+      onClick: () => openLivePage(room)
+    }] : []),
     {
       content: '复制链接',
       value: 'copy',
@@ -712,18 +851,11 @@ const getRoomMenuOptions = (room: Room) => {
       onClick: () => deleteRoom(room)
     }
   ];
-  if (room.isLive) {
-    opts.splice(2, 0, {
-      content: '查看网页',
-      value: 'web',
-      onClick: () => openLivePage(room)
-    });
-  }
   return opts;
 };
 
 const copyRoomLink = (room: Room) => {
-  const url = `https://live.acfun.cn/live/${room.liveId || room.id}`;
+  const url = `https://live.acfun.cn/live/${room.id}`;
   navigator.clipboard.writeText(url);
   // TODO: 显示成功提示
 };
@@ -731,7 +863,7 @@ const copyRoomLink = (room: Room) => {
 
 const deleteRoom = async (room: Room) => {
   try {
-    const resp: any = await window.electronApi.popup.confirm(
+    const resp: any = await window.electronApi?.popup.confirm(
       '确认删除房间？',
       '删除房间后将无法采集弹幕，历史弹幕仍然保留。确定删除该房间吗？',
       { confirmBtn: { content: '删除', theme: 'danger' }, cancelBtn: { content: '取消' }, contextId: 'room-delete' }
@@ -786,15 +918,14 @@ const settingsRoomTitle = computed(() => {
   return name ? `房间设置 - ${name}` : '房间设置';
 });
 
-const formatConnectTime = (timestamp: number | null) => {
-  if (!timestamp) return '未连接';
+// 辅助函数：格式化时间戳
+const formatTimestamp = (timestamp: number | null, defaultText: string): string => {
+  if (!timestamp) return defaultText;
   return new Date(timestamp).toLocaleString();
 };
 
-const formatLastActivity = (timestamp: number | null) => {
-  if (!timestamp) return '无活动';
-  return new Date(timestamp).toLocaleString();
-};
+const formatConnectTime = (timestamp: number | null) => formatTimestamp(timestamp, '未连接');
+const formatLastActivity = (timestamp: number | null) => formatTimestamp(timestamp, '无活动');
 
 // 生命周期
  
@@ -1057,6 +1188,35 @@ const formatLastActivity = (timestamp: number | null) => {
 
 .status-text.error {
   background-color: var(--td-error-color-1);
+}
+
+.search-option-item {
+  padding: 4px 0;
+}
+
+.search-option-item .option-title {
+  font-size: 14px;
+  font-weight: 500;
+  color: var(--td-text-color-primary);
+  margin-bottom: 4px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.search-option-item .option-meta {
+  display: flex;
+  gap: 12px;
+  font-size: 12px;
+  color: var(--td-text-color-secondary);
+}
+
+.search-option-item .option-author {
+  color: var(--td-text-color-placeholder);
+}
+
+.search-option-item .option-viewers {
+  color: var(--td-brand-color);
   color: var(--td-error-color);
 }
 

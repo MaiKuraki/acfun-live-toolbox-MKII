@@ -266,6 +266,7 @@
 <script setup lang="ts">
 import { ref, computed, onMounted, watch } from 'vue';
 import { MessagePlugin } from 'tdesign-vue-next';
+import { debounce } from 'lodash';
 import { useNetworkStore } from '../stores/network';
 
 const activeTab = ref('general');
@@ -278,15 +279,12 @@ const tabItems = [
 ];
 
 const isLoadingConfig = ref(false);
-let saveTimer: any = null;
-let lastSaveAt = 0;
-let pendingSave = false;
 const originalPort = ref(18299);
 const portChanged = ref(false);
 const serverStatus = ref<{ running: boolean; error?: string; health?: any }>({ running: false });
 const restarting = ref(false);
 
-function dotGet<T>(obj: any, path: string, def?: T): T {
+const dotGet = <T,>(obj: any, path: string, def?: T): T => {
   try {
     const parts = String(path).split('.');
     let cur = obj;
@@ -298,7 +296,7 @@ function dotGet<T>(obj: any, path: string, def?: T): T {
   } catch {
     return def as T;
   }
-}
+};
 
 const dotBool = (o: any, p: string, d = false) => Boolean(dotGet(o, p, d));
 const dotNum = (o: any, p: string, d = 0) => {
@@ -333,7 +331,6 @@ const configDir = ref('');
 const exportingData = ref(false);
 const importingData = ref(false);
 
-const canExportData = computed(() => true);
 
  
 
@@ -361,14 +358,14 @@ const formatBytes = (n: number) => {
     if (n < 1024 * 1024) return `${(n / 1024).toFixed(1)} KB`;
     if (n < 1024 * 1024 * 1024) return `${(n / 1024 / 1024).toFixed(1)} MB`;
     return `${(n / 1024 / 1024 / 1024).toFixed(2)} GB`;
-  } catch { return String(n); }
+  } catch {
+    return String(n);
+  }
 };
 
- 
-
-async function openLink(url: string) {
+const openLink = async (url: string) => {
   try {
-    const result = await window.electronApi.system.openExternal(url);
+    const result = await window.electronApi?.system.openExternal(url);
     if (!result.success) {
       console.error('打开链接失败:', result.error);
       MessagePlugin.error('打开链接失败: ' + (result.error || '未知错误'));
@@ -377,7 +374,7 @@ async function openLink(url: string) {
     console.error('打开链接异常:', error);
     MessagePlugin.error('打开链接失败: ' + (error instanceof Error ? error.message : String(error)));
   }
-}
+};
 
 watch(() => generalSettings.value.keepLogin, () => {
   if (isLoadingConfig.value) return;
@@ -400,60 +397,58 @@ watch(() => networkSettings.value.serverPort, (newPort) => {
   saveSettings({ silent: false });
 });
 
-function saveSettings(opts: { silent?: boolean } = {}) {
-  const { silent = false } = opts;
-  const now = Date.now();
-  const elapsed = now - lastSaveAt;
-  if (elapsed < 1000) {
-    pendingSave = true;
-    if (saveTimer) clearTimeout(saveTimer);
-    saveTimer = setTimeout(() => {
-      if (!pendingSave) return;
-      pendingSave = false;
-      lastSaveAt = Date.now();
-      doSave(silent);
-    }, 1000 - elapsed);
-    return;
-  }
-  lastSaveAt = now;
-  pendingSave = false;
-  if (saveTimer) clearTimeout(saveTimer);
-  saveTimer = setTimeout(() => {
-    doSave(silent);
-  }, 0);
-}
-
-function doSave(silent: boolean) {
-    const port = Math.max(1, Math.min(65535, parseInt(String(networkSettings.value.serverPort)) || 18299));
-    const payload = {
-      'auth.keepLogin': !!generalSettings.value.keepLogin,
-      'ui.minimizeToTray': !!generalSettings.value.minimizeToTray,
-      'app.autoStart': !!generalSettings.value.autoStart,
-      'server.port': port,
-      'meta.repoUrl': String(repoUrl.value || '')
-    };
-    window.electronApi.system.updateConfig(payload).then((res: any) => {
-      if (res && res.success) {
-        if (!silent) {
-          if (portChanged.value) {
-            MessagePlugin.info('网络设置已保存，重启应用或手动重启服务器后生效');
-          } else {
-            MessagePlugin.success('设置已自动保存');
-          }
+const doSave = (silent: boolean) => {
+  const port = Math.max(1, Math.min(65535, parseInt(String(networkSettings.value.serverPort)) || 18299));
+  const payload = {
+    'auth.keepLogin': !!generalSettings.value.keepLogin,
+    'ui.minimizeToTray': !!generalSettings.value.minimizeToTray,
+    'app.autoStart': !!generalSettings.value.autoStart,
+    'server.port': port,
+    'meta.repoUrl': String(repoUrl.value || '')
+  };
+  window.electronApi?.system.updateConfig(payload).then((res: any) => {
+    if (res && res.success) {
+      if (!silent) {
+        if (portChanged.value) {
+          MessagePlugin.info('网络设置已保存，重启应用或手动重启服务器后生效');
+        } else {
+          MessagePlugin.success('设置已自动保存');
         }
-      } else {
-        MessagePlugin.error(res?.error || '设置保存失败');
       }
-    });
-    if (!isLoadingConfig.value) {
-      try { window.electronApi.systemExt.setMinimizeToTray(!!generalSettings.value.minimizeToTray); } catch {}
-      try { window.electronApi.systemExt.setAutoStart(!!generalSettings.value.autoStart); } catch {}
+    } else {
+      console.error('配置保存失败:', res?.error);
+      MessagePlugin.error(res?.error || '设置保存失败');
     }
-}
+  }).catch((error: any) => {
+    console.error('配置保存异常:', error);
+    MessagePlugin.error('设置保存异常: ' + (error?.message || String(error)));
+  });
+  if (!isLoadingConfig.value) {
+    try {
+      window.electronApi?.systemExt.setMinimizeToTray(!!generalSettings.value.minimizeToTray);
+    } catch {}
+    try {
+      window.electronApi?.systemExt.setAutoStart(!!generalSettings.value.autoStart);
+    } catch {}
+  }
+};
 
-function loadSettings() {
+const doSaveThrottled = debounce(
+  (silent: boolean) => {
+    doSave(silent);
+  },
+  1000,
+  { leading: true, trailing: true }
+);
+
+const saveSettings = (opts: { silent?: boolean } = {}) => {
+  const { silent = false } = opts;
+  doSaveThrottled(silent);
+};
+
+const loadSettings = () => {
   isLoadingConfig.value = true;
-  window.electronApi.system.getConfig().then((cfg: Record<string, any>) => {
+  window.electronApi?.system.getConfig().then((cfg: Record<string, any>) => {
     try {
       const keep = dotBool(cfg, 'auth.keepLogin', true);
       const port = dotNum(cfg, 'server.port', networkSettings.value.serverPort);
@@ -461,6 +456,7 @@ function loadSettings() {
       const minimizeToTray = dotBool(cfg, 'ui.minimizeToTray', false);
       const autoStart = dotBool(cfg, 'app.autoStart', false);
       const repo = dotStr(cfg, 'meta.repoUrl', repoUrl.value);
+
       generalSettings.value.keepLogin = keep;
       generalSettings.value.minimizeToTray = minimizeToTray;
       generalSettings.value.autoStart = autoStart;
@@ -468,10 +464,10 @@ function loadSettings() {
       originalPort.value = networkSettings.value.serverPort; // 保存原始端口值
       if (!dir) {
         try {
-          window.electronApi.system.getUserDataDir().then((res) => {
+          window.electronApi?.system.getUserDataDir().then((res) => {
             if (res && res.success && res.path) {
               configDir.value = res.path;
-              (window as any).electronApi.config.setDir(res.path);
+              (window as any).electronApi?.config.setDir(res.path);
             }
           });
         } catch {}
@@ -479,36 +475,42 @@ function loadSettings() {
         configDir.value = dir;
       }
       repoUrl.value = repo;
-    } catch {}
+    } catch (error) {
+      console.error('配置解析失败:', error);
+      MessagePlugin.error('配置加载失败，请检查控制台日志');
+    }
+  }).catch((error: any) => {
+    console.error('获取配置失败:', error);
+    MessagePlugin.error('获取配置失败: ' + (error?.message || String(error)));
   }).finally(() => {
     isLoadingConfig.value = false;
   });
-}
+};
 
-async function refreshServerStatus() {
+const refreshServerStatus = async () => {
   try {
-    const res = await window.electronApi.system.serverStatus();
+    const res = await window.electronApi?.system.serverStatus();
     if (res && res.success) {
       const data = (res as any).data || {};
       serverStatus.value = { running: !!data.running, error: data.error || undefined, health: data.health };
     }
   } catch {}
-}
+};
 
-async function onRestartServer() {
+const onRestartServer = async () => {
   try {
     const port = Math.max(1, Math.min(65535, parseInt(String(networkSettings.value.serverPort)) || 18299));
     const changed = port !== originalPort.value;
     if (changed) {
-      const ok = await (window as any).electronApi.popup.confirm('确认重启', '端口已修改，确认后将按新端口重启服务');
+      const ok = await (window as any).electronApi?.popup.confirm('确认重启', '端口已修改，确认后将按新端口重启服务');
       if (!ok) return;
     }
     restarting.value = true;
-    const r = await window.electronApi.system.restartServer(changed ? { port } : undefined);
+    const r = await window.electronApi?.system.restartServer(changed ? { port } : undefined);
     if (r && r.success) {
       originalPort.value = port;
       portChanged.value = false;
-      try { const ns = useNetworkStore(); await ns.refreshPort(); await ns.refreshStatus(); } catch {}
+      try { const ns = useNetworkStore(); await ns.refreshStatus(); } catch {}
       MessagePlugin.success('服务已重启，注意修改obs中浏览器源链接');
     } else {
       MessagePlugin.error((r as any)?.error || '重启失败');
@@ -519,28 +521,28 @@ async function onRestartServer() {
   } finally {
     restarting.value = false;
   }
-}
+};
 
-async function chooseConfigDir() {
-  const res = await window.electronApi.dialog.showOpenDialog({ properties: ['openDirectory'] });
+const chooseConfigDir = async () => {
+  const res = await window.electronApi?.dialog.showOpenDialog({ properties: ['openDirectory'] });
   if (res && !res.canceled && Array.isArray(res.filePaths) && res.filePaths.length > 0) {
     configDir.value = res.filePaths[0];
-    try { await window.electronApi.config.setDir(configDir.value); } catch {}
+    try { await window.electronApi?.config.setDir(configDir.value); } catch {}
     MessagePlugin.info('已保存配置目录，重启后完全生效');
   }
-}
+};
 
-function openConfigDir() {
+const openConfigDir = () => {
   if (!configDir.value) return;
-  window.electronApi.system.showItemInFolder(configDir.value);
-}
+  window.electronApi?.system.showItemInFolder(configDir.value);
+};
 
-async function chooseDbFile() {
+const chooseDbFile = async () => {
   try {
-    const res = await window.electronApi.dialog.showOpenDialog({ properties: ['openFile'], filters: [{ name: '数据库文件', extensions: ['db'] }] });
+    const res = await window.electronApi?.dialog.showOpenDialog({ properties: ['openFile'], filters: [{ name: '数据库文件', extensions: ['db'] }] });
     const fp = Array.isArray(res?.filePaths) && res.filePaths[0] ? String(res.filePaths[0]) : '';
     if (!fp) return;
-    const r = await (window as any).electronApi.db.setPath(fp);
+    const r = await (window as any).electronApi?.db.setPath(fp);
     if (r && r.success) {
       dbPath.value = fp;
       MessagePlugin.info('数据库路径已更新，重启后完全生效');
@@ -548,18 +550,18 @@ async function chooseDbFile() {
       MessagePlugin.error(r?.error || '更新数据库路径失败');
     }
   } catch {}
-}
+};
 
-function openDbFolder() {
+const openDbFolder = () => {
   if (!dbPath.value) return;
-  window.electronApi.system.showItemInFolder(dbPath.value);
-}
+  window.electronApi?.system.showItemInFolder(dbPath.value);
+};
 
-async function exportConfigZip() {
+const exportConfigZip = async () => {
   exportingData.value = true;
   try {
     const suggested = `config-${new Date().toISOString().replace(/[:T]/g, '-').slice(0, 16)}.zip`;
-    const save = await window.electronApi.dialog.showSaveDialog({ title: '导出配置', defaultPath: suggested, filters: [{ name: 'ZIP', extensions: ['zip'] }] });
+    const save = await window.electronApi?.dialog.showSaveDialog({ title: '导出配置', defaultPath: suggested, filters: [{ name: 'ZIP', extensions: ['zip'] }] });
     const filePath = (save as any)?.filePath || (save as any)?.path;
     if (!filePath) { exportingData.value = false; return; }
     const api: any = (window as any).electronApi;
@@ -570,12 +572,12 @@ async function exportConfigZip() {
   } finally {
     exportingData.value = false;
   }
-}
+};
 
-async function importConfigDirect() {
+const importConfigDirect = async () => {
   importingData.value = true;
   try {
-    const res = await window.electronApi.dialog.showOpenDialog({ properties: ['openFile'], filters: [{ name: '配置包', extensions: ['zip'] }] });
+    const res = await window.electronApi?.dialog.showOpenDialog({ properties: ['openFile'], filters: [{ name: '配置包', extensions: ['zip'] }] });
     const fp = Array.isArray(res?.filePaths) && res.filePaths[0] ? String(res.filePaths[0]) : '';
     if (!fp) { importingData.value = false; return; }
     const api: any = (window as any).electronApi;
@@ -590,15 +592,13 @@ async function importConfigDirect() {
   } finally {
     importingData.value = false;
   }
-}
-
-
+};
 
 onMounted(() => {
   loadSettings();
   refreshServerStatus();
   try {
-    window.electronApi.system.getBuildInfo().then((info: any) => {
+    window.electronApi?.system.getBuildInfo().then((info: any) => {
       try {
         if (info && info.success) {
           const ts = typeof info.buildTime === 'number' ? info.buildTime : Date.now();
@@ -611,10 +611,10 @@ onMounted(() => {
     });
   } catch {}
   try {
-    (window as any).electronApi.db.getPath().then((res: any) => { if (res && res.success) dbPath.value = String(res.path || ''); });
+    (window as any).electronApi?.db.getPath().then((res: any) => { if (res && res.success) dbPath.value = String(res.path || ''); });
   } catch {}
   try {
-    (window as any).electronApi.system.getStorageStats().then((res: any) => {
+    (window as any).electronApi?.system.getStorageStats().then((res: any) => {
       if (res && res.success) {
         dbBytes.value = Number(res.dbBytes || 0);
         configBytes.value = Number(res.configBytes || 0);
@@ -624,7 +624,7 @@ onMounted(() => {
     });
   } catch {}
   try {
-    window.electronApi.system.getReadmeSummary().then((res) => {
+    window.electronApi?.system.getReadmeSummary().then((res) => {
       if (res && res.success && res.summary) {
         toolIntro.value = res.summary;
       } else {

@@ -388,20 +388,44 @@ export class DanmuSQLiteWriter {
     }
   }
   async insertState(liveId: string, liverId: string, type: string, data: any): Promise<void> {
-    if (type === 'bananaCount') {
-      const sql = `INSERT INTO live_states (live_id, liver_id, report_time, state_type, metric_main) VALUES (?, ?, ?, ?, ?)`;
-      const params = [toStr(liveId), toStr(liverId), Date.now(), type, toInt(data)];
-      await run(this.db, sql, params);
+    // 不保存 topUsers
+    if (type === 'topUsers') {
       return;
     }
-    if (type === 'displayInfo') {
-      const main = parseHumanNumber(data?.watchingCount);
-      const sub = parseHumanNumber(data?.likeCount);
-      const sql = `INSERT INTO live_states (live_id, liver_id, report_time, state_type, metric_main, metric_sub, raw_data) VALUES (?, ?, ?, ?, ?, ?, ?)`;
-      const params = [toStr(liveId), toStr(liverId), Date.now(), type, main, sub, jsonOrNull(data)];
-      await run(this.db, sql, params);
-      return;
+
+    // 对于 bananaCount 和 displayInfo，每分钟只保存一次
+    if (type === 'bananaCount' || type === 'displayInfo') {
+      const now = Date.now();
+      const oneMinuteAgo = now - 60000; // 1分钟 = 60000毫秒
+      
+      // 查询该 live_id 和 state_type 的最后一条记录时间
+      const lastRecord: any = await new Promise((resolve, reject) => {
+        const querySql = `SELECT report_time FROM live_states WHERE live_id = ? AND state_type = ? ORDER BY report_time DESC LIMIT 1`;
+        const queryParams = [toStr(liveId), type];
+        this.db.get(querySql, queryParams, (err, row) => err ? reject(err) : resolve(row));
+      });
+
+      // 如果存在最后一条记录，且距离现在不足1分钟，则跳过保存
+      if (lastRecord && lastRecord.report_time && lastRecord.report_time > oneMinuteAgo) {
+        return;
+      }
+
+      if (type === 'bananaCount') {
+        const sql = `INSERT INTO live_states (live_id, liver_id, report_time, state_type, metric_main) VALUES (?, ?, ?, ?, ?)`;
+        const params = [toStr(liveId), toStr(liverId), now, type, toInt(data)];
+        await run(this.db, sql, params);
+        return;
+      }
+      if (type === 'displayInfo') {
+        const main = parseHumanNumber(data?.watchingCount);
+        const sub = parseHumanNumber(data?.likeCount);
+        const sql = `INSERT INTO live_states (live_id, liver_id, report_time, state_type, metric_main, metric_sub, raw_data) VALUES (?, ?, ?, ?, ?, ?, ?)`;
+        const params = [toStr(liveId), toStr(liverId), now, type, main, sub, jsonOrNull(data)];
+        await run(this.db, sql, params);
+        return;
+      }
     }
+
     const sql = `INSERT INTO live_states (live_id, liver_id, report_time, state_type, raw_data) VALUES (?, ?, ?, ?, ?)`;
     const params = [toStr(liveId), toStr(liverId), Date.now(), type, jsonOrNull(data)];
     await run(this.db, sql, params);

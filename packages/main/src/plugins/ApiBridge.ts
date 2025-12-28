@@ -4,9 +4,11 @@ import { DatabaseManager } from '../persistence/DatabaseManager';
 import { ConfigManager } from '../config/ConfigManager';
 import type { NormalizedEvent, NormalizedEventType } from '../types';
 import { TokenManager } from '../server/TokenManager';
+import { DataManager, type IDataManager } from '../persistence/DataManager';
 import { pluginLifecycleManager } from './PluginLifecycle';
 import { rateLimitManager, RateLimitManager } from './PluginRateLimitManager';
 import { EventFilter, DEFAULT_FILTERS, applyFilters, getEventQualityScore } from '../events/normalize';
+import { SseQueueService } from '../server/SseQueueService';
 // Removed ApiRetryManager in favor of direct TokenManager usage
 
 export interface PluginAPI {
@@ -121,6 +123,7 @@ export class ApiBridge implements PluginAPI {
   private onPluginFault: (reason: string) => void;
   private acfunApi: any;
   private tokenManager: TokenManager;
+  private dataManager: IDataManager;
 
   constructor(opts: {
     pluginId: string;
@@ -138,6 +141,7 @@ export class ApiBridge implements PluginAPI {
     this.configManager = opts.configManager;
     this.onPluginFault = opts.onPluginFault;
     this.tokenManager = opts.tokenManager || TokenManager.getInstance();
+    this.dataManager = DataManager.getInstance();
     
     // 使用TokenManager提供的统一API实例
     this.acfunApi = this.tokenManager.getApiInstance();
@@ -386,6 +390,15 @@ export class ApiBridge implements PluginAPI {
     }
   }
 
+  public sendRender(event: string, payload?: any): void {
+    try {
+      const channel = `plugin:${this.pluginId}:overlay`;
+      SseQueueService.getInstance().queueOrPublish(channel, { event: String(event), payload }, { ttlMs: 2 * 60 * 1000, persist: false, meta: { kind: 'mainMessage' } });
+    } catch {}
+  }
+
+  // onMessage 已废除，请使用 onUiMessage 或 onMainMessage
+
   /**
    * 代表插件调用 AcFun API。使用 acfunlive-http-api 进行统一的 API 调用。
    */
@@ -558,6 +571,39 @@ export class ApiBridge implements PluginAPI {
           (err) => (err ? reject(err) : resolve())
         );
       });
+    },
+    read: async (queryText?: string, size?: number): Promise<{ id: number; plugin_id: string; createTime: number; data: any }[]> => {
+      const db = this.databaseManager.getDb();
+      const tableName = `plugin_storage`;
+      const limit = Math.max(0, Number(size ?? 100));
+      const q = (queryText || '').trim();
+      const where: string[] = ['plugin_id = ?'];
+      const params: any[] = [this.pluginId];
+      if (q) { where.push('data LIKE ?'); params.push(`%${q.replace(/%/g, '')}%`); }
+      const sql = `SELECT id, plugin_id, createTime, data FROM ${tableName} WHERE ${where.join(' AND ')} ORDER BY id DESC ${limit > 0 ? 'LIMIT ' + limit : ''}`;
+      const rows: any[] = await new Promise((resolve, reject) => { db.all(sql, params, (err, rs) => (err ? reject(err) : resolve(rs || []))); });
+      return rows.map((r) => ({ id: Number(r.id), plugin_id: String(r.plugin_id), createTime: Number(r.createTime), data: safeJsonParse(r.data) }));
+      function safeJsonParse(text: string): any { try { return JSON.parse(String(text || '{}')); } catch { return {}; } }
+    },
+    size: async (): Promise<number> => {
+      const db = this.databaseManager.getDb();
+      const tableName = `plugin_storage`;
+      const sql = `SELECT COUNT(*) AS c FROM ${tableName} WHERE plugin_id = ?`;
+      const row: any = await new Promise((resolve, reject) => { db.get(sql, [this.pluginId], (err, r) => (err ? reject(err) : resolve(r))); });
+      return Number((row && (row.c || (row['COUNT(*)'] as any))) || 0);
+    },
+    remove: async (ids: number[]): Promise<number> => {
+      const db = this.databaseManager.getDb();
+      const tableName = `plugin_storage`;
+      const list = Array.isArray(ids) ? ids.filter((x) => Number.isFinite(x)).map((x) => Number(x)) : [];
+      if (list.length === 0) return 0;
+      const placeholders = list.map(() => '?').join(',');
+      const sql = `DELETE FROM ${tableName} WHERE plugin_id = ? AND id IN (${placeholders})`;
+      const params = [this.pluginId, ...list];
+      const changes: number = await new Promise((resolve, reject) => {
+        db.run(sql, params, function (this: any, err: any) { if (err) reject(err); else resolve(Number(this?.changes ?? 0)); });
+      });
+      return changes;
     }
   };
 

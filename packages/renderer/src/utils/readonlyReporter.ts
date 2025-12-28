@@ -11,9 +11,10 @@ export type ReadonlySlice = Record<string, any>;
 type Reporter = {
   update: (slice: ReadonlySlice) => void;
   init: (snapshot: ReadonlySlice) => void;
+  setIsMain: (flag: boolean) => void;
 };
 
-function sanitize(obj: any): any {
+const sanitize = (obj: any): any => {
   if (!obj || typeof obj !== 'object') return obj;
   try {
     const cloned = JSON.parse(JSON.stringify(obj));
@@ -35,21 +36,32 @@ function sanitize(obj: any): any {
   } catch {
     return obj;
   }
-}
+};
 
-function isElectronRenderer(): boolean {
+const isElectronRenderer = (): boolean => {
   try {
     const hasPreloadApi = typeof (window as any).electronApi !== 'undefined';
-    const hasElectron = typeof process !== 'undefined' && !!(process as any).versions?.electron;
-    return !!(hasPreloadApi || hasElectron);
+    return !!hasPreloadApi;
   } catch {
     return false;
   }
-}
+};
 
-function createReporter(): Reporter {
+const createReporter = (): Reporter => {
   let pending: ReadonlySlice = {};
   let timer: number | null = null;
+  let isMain = true;
+
+  const parsePluginId = (): string | null => {
+    try {
+      const hash = String(window.location.hash || '');
+      const m = hash.match(/^#\/plugins\/([^\/]+)\/window/);
+      if (m && m[1]) return decodeURIComponent(m[1]);
+      return null;
+    } catch {
+      return null;
+    }
+  };
 
   const mergeSlice = (base: any, patch: any) => {
     for (const k of Object.keys(patch)) {
@@ -61,6 +73,7 @@ function createReporter(): Reporter {
     const payload = sanitize(pending);
     pending = {};
     timer = null;
+    if (!isMain) return;
     try {
       const base = getApiBase();
       const url = new URL('/api/renderer/readonly-store', base).toString();
@@ -77,39 +90,50 @@ function createReporter(): Reporter {
       if (!isElectronRenderer()) return;
       mergeSlice(pending, slice);
       if (timer == null) {
-        // 将增量上报节流调整为500ms（0.5秒一次）
         timer = window.setTimeout(flush, 500);
       }
     },
     init(snapshot: ReadonlySlice) {
       if (!isElectronRenderer()) return;
+      if (!isMain) return;
       const payload = sanitize(snapshot);
       try {
         const base = getApiBase();
         const url = new URL('/api/renderer/readonly-store', base).toString();
+        const hash = String(window.location.hash || '');
+        const pid = parsePluginId();
+        const isPluginLike = !!(pid || /^#\/plugins\/[^/]+\/window/.test(hash));
+        if (isPluginLike) return;
         void fetch(url, {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({ type: 'readonly-store-init', payload })
         });
       } catch {}
+    },
+    setIsMain(flag: boolean) {
+      isMain = flag;
     }
   };
-}
+};
 
 const globalKey = '__readonlyReporter__';
-function ensureSingleton(): Reporter {
+const ensureSingleton = (): Reporter => {
   const w = window as any;
   if (!w[globalKey]) {
     w[globalKey] = createReporter();
   }
   return w[globalKey] as Reporter;
-}
+};
 
-export function reportReadonlyUpdate(slice: ReadonlySlice): void {
+export const reportReadonlyUpdate = (slice: ReadonlySlice): void => {
   ensureSingleton().update(slice);
-}
+};
 
-export function reportReadonlyInit(snapshot: ReadonlySlice): void {
+export const reportReadonlyInit = (snapshot: ReadonlySlice): void => {
   ensureSingleton().init(snapshot);
-}
+};
+
+export const setReadonlyIsMain = (flag: boolean): void => {
+  ensureSingleton().setIsMain(flag);
+};

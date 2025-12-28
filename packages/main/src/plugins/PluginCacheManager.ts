@@ -20,6 +20,8 @@ export interface CacheConfig {
   enableLru: boolean;
   /** 启用压缩 */
   enableCompression: boolean;
+  /** 每插件最大占用 (字节) */
+  maxSizePerPlugin?: number;
 }
 
 export interface CacheItem<T = any> {
@@ -66,12 +68,13 @@ export class PluginCacheManager extends TypedEventEmitter<CacheEvents> {
     super();
     
     this.config = {
-      maxCacheSize: config.maxCacheSize || 128 * 1024 * 1024, // 128MB
-      defaultTtl: config.defaultTtl || 3600000, // 1 hour
-      cleanupInterval: config.cleanupInterval || 300000, // 5 minutes
-      maxItems: config.maxItems || 10000,
+      maxCacheSize: config.maxCacheSize || 48 * 1024 * 1024,
+      defaultTtl: config.defaultTtl || 15 * 60 * 1000,
+      cleanupInterval: config.cleanupInterval || 60 * 1000,
+      maxItems: config.maxItems || 4000,
       enableLru: config.enableLru !== false,
-      enableCompression: config.enableCompression || false,
+      enableCompression: config.enableCompression !== false,
+      maxSizePerPlugin: typeof config.maxSizePerPlugin === 'number' ? config.maxSizePerPlugin : 12 * 1024 * 1024,
     };
 
     this.stats = {
@@ -112,8 +115,8 @@ export class PluginCacheManager extends TypedEventEmitter<CacheEvents> {
       let finalValue = serialized;
       let compressed = false;
       
-      // 压缩处理
-      if (options.compress || this.config.enableCompression) {
+      // 压缩处理（大对象或启用压缩）
+      if (options.compress || this.config.enableCompression || serialized.length > 8 * 1024) {
         try {
           finalValue = zlib.gzipSync(serialized).toString('base64');
           compressed = true;
@@ -125,9 +128,15 @@ export class PluginCacheManager extends TypedEventEmitter<CacheEvents> {
       const size = Buffer.byteLength(finalValue, 'utf8');
       const checksum = crypto.createHash('md5').update(finalValue).digest('hex');
       
-      // 检查缓存大小限制
+      // 检查总缓存大小限制
       if (this.stats.totalSize + size > this.config.maxCacheSize) {
         this.evictItems(size);
+      }
+
+      // 按插件尺寸配额限制
+      const pid = options.pluginId;
+      if (pid && this.config.maxSizePerPlugin && (this.stats.sizeByPlugin[pid] || 0) + size > this.config.maxSizePerPlugin) {
+        this.evictByPlugin(pid, ((this.stats.sizeByPlugin[pid] || 0) + size) - this.config.maxSizePerPlugin);
       }
       
       // 检查项目数量限制
@@ -397,6 +406,23 @@ export class PluginCacheManager extends TypedEventEmitter<CacheEvents> {
       evictedCount: keysToEvict.length, 
       freedSize 
     });
+  }
+
+  /**
+   * 按插件维度淘汰缓存以满足配额
+   */
+  private evictByPlugin(pluginId: string, requiredReduce: number): void {
+    let freed = 0;
+    const items = Array.from(this.cache.entries())
+      .filter(([, item]) => item.pluginId === pluginId)
+      .sort(([, a], [, b]) => a.lastAccessed - b.lastAccessed);
+    for (const [key, item] of items) {
+      this.delete(key);
+      this.stats.evictionCount++;
+      this.emit('cache-evicted', { key, reason: 'size', pluginId });
+      freed += item.size;
+      if (freed >= requiredReduce) break;
+    }
   }
 
   /**

@@ -95,14 +95,11 @@ export const useRoomStore = defineStore('room', () => {
       error.value = null;
       // 开发环境保护：在纯 Vite 预览中，window.electronApi 可能不存在
       if (!window.electronApi?.room) {
-        console.warn('[room] electronApi.room 未初始化，使用本地存储恢复房间列表');
-        rooms.value = readRoomsFromStorage();
-        isLoading.value = false;
-        return;
+        return
+       
       }
-      
-      // 使用真实的preload API获取房间列表
-      const result = await window.electronApi.room.list();
+       // 使用真实的preload API获取房间列表
+      const result = await window.electronApi?.room.list();
       
       if ('error' in result) {
         throw new Error(result.error);
@@ -117,7 +114,7 @@ export const useRoomStore = defineStore('room', () => {
         try {
           const tasks = missingIds.map(async (id) => {
             try {
-              const detailRes = await window.electronApi.room.details(id);
+              const detailRes = await window.electronApi?.room.details(id);
               if (detailRes && detailRes.success && detailRes.data) {
                 const d = detailRes.data;
                 const mappedStatus = mapToRoomStatus(d.status || 'disconnected');
@@ -174,7 +171,7 @@ export const useRoomStore = defineStore('room', () => {
       try {
         const toConnect = rooms.value.filter(r => r.autoConnect && r.isLive);
         await Promise.allSettled(toConnect.map(async (r) => {
-          try { await window.electronApi.room.connect(r.id); } catch {}
+          try { await window.electronApi?.room.connect(r.id); } catch {}
         }));
       } catch {}
       
@@ -221,7 +218,7 @@ export const useRoomStore = defineStore('room', () => {
     if (rooms.value.length === 0) return;
     // 开发环境保护：在纯 Vite 预览中，window.electronApi 可能不存在
     if (!window.electronApi?.room) {
-      console.warn('[room] electronApi.room 未初始化，跳过状态刷新（开发预览环境）');
+      console.warn('[room] electronApi?.room 未初始化，跳过状态刷新（开发预览环境）');
       return;
     }
     
@@ -229,8 +226,8 @@ export const useRoomStore = defineStore('room', () => {
     isRefreshing.value = true;
     try {
       const prevLiveMap = new Map<string, boolean>(rooms.value.map(r => [r.id, !!r.isLive]));
-      const detailPromises = rooms.value.map(r => window.electronApi.room.details(r.id));
-      const statusPromises = rooms.value.map(r => window.electronApi.room.status(r.id));
+      const detailPromises = rooms.value.map(r => window.electronApi?.room.details(r.id));
+      const statusPromises = rooms.value.map(r => window.electronApi?.room.status(r.id));
       const [detailResults, statusResults] = await Promise.all([
         Promise.allSettled(detailPromises),
         Promise.allSettled(statusPromises)
@@ -364,7 +361,7 @@ export const useRoomStore = defineStore('room', () => {
 
       
       try {
-        const detailRes = await window.electronApi.room.details(roomId);
+        const detailRes = await window.electronApi?.room.details(roomId);
         if (detailRes && detailRes.success && detailRes.data) {
           const d = detailRes.data;
           const mappedStatus = mapToRoomStatus(d.status || newRoom.status);
@@ -388,7 +385,7 @@ export const useRoomStore = defineStore('room', () => {
 
           if (Boolean(d.isLive)) {
             try {
-              const result = await window.electronApi.room.connect(roomId);
+              const result = await window.electronApi?.room.connect(roomId);
               if (!result.success && (result as any).code !== 'already_connected') {
                 console.warn(`connect room failed(${(result as any).code || ''}): ${String((result as any).error || '连接房间失败')}`);
               }
@@ -416,7 +413,7 @@ export const useRoomStore = defineStore('room', () => {
   async function removeRoom(roomId: string) {
     try {
       // 使用真实的preload API断开房间连接
-      const result = await window.electronApi.room.disconnect(roomId);
+      const result = await window.electronApi?.room.disconnect(roomId);
       
       if (!result.success) {
         // 忽略"房间未连接"错误，因为删除时房间可能本身就是断开的
@@ -520,10 +517,13 @@ export const useRoomStore = defineStore('room', () => {
 
   async function setPriority(roomId: string, priority: number) {
     try {
-      const st = await window.electronApi.room.status(roomId);
-      const connected = st && typeof st.status === 'string' ? String(st.status).toLowerCase() === 'connected' : false;
+      const st = await window.electronApi?.room.status(roomId);
+      let connected = false;
+      if (st && 'status' in st && typeof (st as any).status === 'string') {
+        connected = String((st as any).status).toLowerCase() === 'connected';
+      }
       if (connected) {
-        const result = await window.electronApi.room.setPriority(roomId, priority);
+        const result = await window.electronApi?.room.setPriority(roomId, priority);
         if (!result.success) {
           throw new Error(result.error || '设置优先级失败');
         }
@@ -541,7 +541,7 @@ export const useRoomStore = defineStore('room', () => {
   async function setLabel(roomId: string, label: string) {
     try {
       // 使用真实的preload API设置房间标签
-      const result = await window.electronApi.room.setLabel(roomId, label);
+      const result = await window.electronApi?.room.setLabel(roomId, label);
       
       if (!result.success) {
         throw new Error(result.error || '设置标签失败');

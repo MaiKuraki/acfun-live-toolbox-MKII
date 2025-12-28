@@ -4,7 +4,17 @@
 
 import { TypedEventEmitter } from '../utils/TypedEventEmitter';
 import { pluginLogger } from './PluginLogger';
-import * as os from 'os';
+
+const readEnvInt = (key: string, fallback: number): number => {
+  try {
+    const raw = process.env[key];
+    if (raw === undefined) return fallback;
+    const n = Number(raw);
+    return Number.isFinite(n) ? Math.floor(n) : fallback;
+  } catch {
+    return fallback;
+  }
+};
 
 export interface PerformanceConfig {
   /** 监控间隔 (毫秒) */
@@ -111,13 +121,18 @@ export class PluginPerformanceMonitor extends TypedEventEmitter<PerformanceEvent
   private lastCpuUsage: Map<string, NodeJS.CpuUsage> = new Map();
   private pluginStartTimes: Map<string, number> = new Map();
   private lastCleanupLogTime: Map<string, number> = new Map();
+  private maxEntries: number;
 
   constructor(config: Partial<PerformanceConfig> = {}) {
     super();
     
     this.config = {
-      monitorInterval: config.monitorInterval || 5000, // 5 seconds
-      dataRetentionTime: config.dataRetentionTime || 3600000, // 1 hour
+      // Defaults are tuned for lower memory footprint.
+      // You can override via env:
+      // - ACF_PERF_MONITOR_INTERVAL_MS (default 10000)
+      // - ACF_PERF_RETENTION_MS (default 900000)
+      monitorInterval: config.monitorInterval || readEnvInt('ACF_PERF_MONITOR_INTERVAL_MS', 10_000), // 10s
+      dataRetentionTime: config.dataRetentionTime || readEnvInt('ACF_PERF_RETENTION_MS', 15 * 60 * 1000), // 15min
       memoryWarningThreshold: config.memoryWarningThreshold || 100 * 1024 * 1024, // 100MB
       cpuWarningThreshold: config.cpuWarningThreshold || 80, // 80%
       enableDetailedMonitoring: config.enableDetailedMonitoring !== false,
@@ -126,6 +141,7 @@ export class PluginPerformanceMonitor extends TypedEventEmitter<PerformanceEvent
       cleanupLogMinRemoved: typeof config.cleanupLogMinRemoved === 'number' ? config.cleanupLogMinRemoved : 100,
     };
 
+    this.maxEntries = Math.max(1, Math.ceil(this.config.dataRetentionTime / this.config.monitorInterval));
     this.startMonitoring();
     pluginLogger.info('PluginPerformanceMonitor initialized', undefined, { config: this.config });
   }
@@ -302,20 +318,16 @@ export class PluginPerformanceMonitor extends TypedEventEmitter<PerformanceEvent
    * 测量事件循环延迟
    */
   private measureEventLoopDelay(): number {
-    const start = process.hrtime.bigint();
-    setImmediate(() => {
-      const delay = Number(process.hrtime.bigint() - start) / 1000000; // 转换为毫秒
-      return delay;
-    });
-    return 0; // 简化实现，实际应该使用异步测量
+    // Keep overhead near-zero; detailed event-loop delay tracking can be enabled later if needed.
+    return 0;
   }
 
   /**
    * 计算事件循环利用率
    */
   private calculateEventLoopUtilization(): number {
-    // 简化实现，实际应该使用 perf_hooks.performance.eventLoopUtilization()
-    return Math.random() * 100; // 占位符
+    // Keep overhead near-zero; avoid misleading random values.
+    return 0;
   }
 
   /**
@@ -384,10 +396,9 @@ export class PluginPerformanceMonitor extends TypedEventEmitter<PerformanceEvent
     
     history.push(metrics);
     
-    // 限制历史数据大小
-    const maxEntries = Math.ceil(this.config.dataRetentionTime / this.config.monitorInterval);
-    if (history.length > maxEntries) {
-      history.splice(0, history.length - maxEntries);
+    // Ring-buffer-like cap (drop oldest in-place, avoid allocating new arrays)
+    if (history.length > this.maxEntries) {
+      history.splice(0, history.length - this.maxEntries);
     }
   }
 
@@ -465,11 +476,14 @@ export class PluginPerformanceMonitor extends TypedEventEmitter<PerformanceEvent
     const cutoffTime = Date.now() - this.config.dataRetentionTime;
     
     for (const [pluginId, history] of this.metricsHistory) {
-      const validMetrics = history.filter(metrics => metrics.timestamp > cutoffTime);
-      
-      if (validMetrics.length !== history.length) {
-        this.metricsHistory.set(pluginId, validMetrics);
-        const removed = history.length - validMetrics.length;
+      // In-place trimming from the head (avoid creating new arrays)
+      let removed = 0;
+      while (history.length > 0 && history[0].timestamp <= cutoffTime) {
+        history.shift();
+        removed++;
+      }
+
+      if (removed > 0) {
         const now = Date.now();
         const throttleMs = this.config.cleanupLogThrottleMs || 0;
         const minRemoved = this.config.cleanupLogMinRemoved || 0;
@@ -479,7 +493,7 @@ export class PluginPerformanceMonitor extends TypedEventEmitter<PerformanceEvent
           this.lastCleanupLogTime.set(pluginId, now);
           pluginLogger.debug('Cleaned up old metrics', pluginId, {
             removed,
-            remaining: validMetrics.length,
+            remaining: history.length,
           });
         }
       }
@@ -497,7 +511,7 @@ export class PluginPerformanceMonitor extends TypedEventEmitter<PerformanceEvent
     
     const now = Date.now();
     const range = timeRange || {
-      start: now - 3600000, // 默认1小时
+      start: now - this.config.dataRetentionTime, // 默认使用当前保留窗口
       end: now,
     };
     

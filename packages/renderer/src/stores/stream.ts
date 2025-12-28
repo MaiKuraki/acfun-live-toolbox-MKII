@@ -41,7 +41,7 @@ export const useStreamStore = defineStore('stream', () => {
     let r = ''
     let k = ''
     try {
-      const settingsResult = await (window as any).electronApi.http.get('/api/acfun/live/stream-settings')
+      const settingsResult = await (window as any).electronApi?.http.get('/api/acfun/live/stream-settings')
       if (settingsResult?.success && settingsResult.data) {
         const pushList = settingsResult.data.streamPushAddress || []
         const firstPush = Array.isArray(pushList) && pushList.length > 0 ? pushList[0] : ''
@@ -52,9 +52,9 @@ export const useStreamStore = defineStore('stream', () => {
       const accountStore = useAccountStore()
       const userId = accountStore?.userInfo?.userID
       if (userId) {
-        const info = await (window as any).electronApi.http.get('/api/acfun/live/user-info', { userID: userId })
+        const info = await (window as any).electronApi?.http.get('/api/acfun/live/user-info', { userID: userId })
         if (info?.success && info.data?.liveID) {
-          const urlRes = await (window as any).electronApi.http.get('/api/acfun/live/stream-url', { liveId: info.data.liveID })
+          const urlRes = await (window as any).electronApi?.http.get('/api/acfun/live/stream-url', { liveId: info.data.liveID })
           if (urlRes?.success && urlRes.data?.rtmpUrl) {
             const split2 = splitRtmp(urlRes.data.rtmpUrl)
             r = split2.server || r

@@ -165,14 +165,14 @@ function openExternalDocs() {
   const url = new URL('/docs/api/index.html', getApiBase()).toString()
   try {
     if ((window as any).electronApi?.system?.openExternal) {
-      (window as any).electronApi.system.openExternal(url)
+      (window as any).electronApi?.system.openExternal(url)
       return
     }
   } catch {}
   try { window.open(url, '_blank') } catch {}
 }
 
-const indexJsExample = ref(`export function init(ctx) {\n  return { ok: true }\n}\n\nexport function cleanup(ctx) {\n  return { ok: true }\n}\n\nexport function handleMessage({ overlayId, event, payload }) {\n  if (event === 'ping') {\n  }\n  return { ok: true }\n}`)
+const indexJsExample = ref(`export function init(ctx) {\n  return { ok: true }\n}\n\nexport function cleanup(ctx) {\n  return { ok: true }\n}\n\n// handleMessage 已废除，请使用 onMainMessage 或 onUiMessage 订阅消息\n// ctx.api.onMainMessage((payload) => {\n//   // 处理来自 main 的消息\n// })\n// ctx.api.onUiMessage((payload) => {\n//   // 处理来自 ui/window 的消息（仅 overlay）\n// })`)
 
 const sseExample = ref(`const es = new EventSource('${new URL('/sse/renderer/readonly-store', getApiBase()).toString()}')
 es.addEventListener('readonly-store-init', e => {

@@ -96,6 +96,12 @@ const routes = [
     meta: { title: '插件窗口', keepAlive: false, layout: 'window' }
   },
   {
+    path: '/plugins/:pluginId/overlay',
+    name: 'PluginOverlay',
+    component: () => import('./pages/OverlayFramePluginPage.vue'),
+    meta: { title: '插件 Overlay', keepAlive: false, layout: 'window' }
+  },
+  {
     path: '/error',
     component: () => import('./pages/ErrorPage.vue'),
     meta: { title: '错误' }
@@ -117,3 +123,24 @@ const router = createRouter({
 });
 
 export default router;
+
+// 动态插件路由管理（供插件商店与侧边栏使用）
+import type { RouteRecordRaw } from 'vue-router'
+const dynamicPluginRoutes = new Map<string, RouteRecordRaw>()
+
+export function registerPluginRoute(pluginId: string, route: RouteRecordRaw) {
+  dynamicPluginRoutes.set(pluginId, route)
+  router.addRoute('Plugins', route)
+}
+
+export function unregisterPluginRoute(pluginId: string) {
+  const route = dynamicPluginRoutes.get(pluginId)
+  if (route && route.name) {
+    router.removeRoute(route.name as string)
+    dynamicPluginRoutes.delete(pluginId)
+  }
+}
+
+export function getRegisteredPluginRoutes() {
+  return Array.from(dynamicPluginRoutes.values())
+}

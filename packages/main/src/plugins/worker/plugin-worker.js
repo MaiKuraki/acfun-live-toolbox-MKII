@@ -3,28 +3,32 @@ const path = require('path');
 const fs = require('fs');
 const { Window } = require('happy-dom');
 const vm = require('vm');
+const { createMainPluginApi } = require('./api/createMainPluginApi');
 
 let dom = null;
 let windowRef = null;
 let documentRef = null;
 let memoryInterval = null;
 let pluginLoaded = false;
+let apiBase = null;
+let pluginId = null;
+let pluginVersion = null;
 
 // Forward plugin console to main process
 (() => {
   try {
-    const orig = { log: console.log, warn: console.warn, error: console.error, debug: console.debug, info: console.info };
     const send = (level, args) => {
       try {
         const msg = args.map(a => { try { return typeof a === 'string' ? a : JSON.stringify(a); } catch { return String(a); } }).join(' ');
         parentPort.postMessage({ type: 'plugin_log', level: String(level || 'info'), message: msg, pluginId: workerData && workerData.pluginId });
       } catch {}
     };
-    console.log = (...args) => { try { orig.log.apply(console, args); } catch {} send('info', args); };
-    console.info = (...args) => { try { orig.info.apply(console, args); } catch {} send('info', args); };
-    console.warn = (...args) => { try { orig.warn.apply(console, args); } catch {} send('warn', args); };
-    console.error = (...args) => { try { orig.error.apply(console, args); } catch {} send('error', args); };
-    console.debug = (...args) => { try { orig.debug.apply(console, args); } catch {} send('debug', args); };
+    // 只发送到主进程，不调用原始 console（避免重复打印）
+    console.log = (...args) => { send('info', args); };
+    console.info = (...args) => { send('info', args); };
+    console.warn = (...args) => { send('warn', args); };
+    console.error = (...args) => { send('error', args); };
+    console.debug = (...args) => { send('debug', args); };
   } catch (_) {}
 })();
 
@@ -100,7 +104,9 @@ function extractLibExports({ code, filename, windowRef }) {
 
 async function loadPlugin(pluginPath) {
   try {
+    // pluginPath 是主文件的完整路径，pluginDir 是插件根目录
     const pluginDir = path.dirname(workerData && workerData.pluginPath ? workerData.pluginPath : '');
+    pluginId = workerData && workerData.pluginId ? String(workerData.pluginId) : null;
 
     dom = new Window({ url: 'http://localhost:8080', width: 1920, height: 1080 });
     windowRef = dom.window;
@@ -129,38 +135,116 @@ async function loadPlugin(pluginPath) {
         try { const envP = Number(process.env && process.env.ACFRAME_API_PORT || ''); if (Number.isFinite(envP) && envP > 0 && envP <= 65535) return envP; } catch {}
         return undefined;
       })();
-      if (p) {
+    if (p) {
+        apiBase = `http://127.0.0.1:${p}`;
         windowRef.getApiPort = async () => p;
-        try { windowRef.location.href = `http://127.0.0.1:${p}`; } catch {}
+        try { windowRef.location.href = apiBase; } catch {}
       } else {
+        apiBase = null;
         windowRef.getApiPort = async () => { throw new Error('API_PORT_NOT_CONFIGURED'); };
       }
+    try { console.info('[Worker] apiBase resolved', { pluginId, apiBase }); } catch {}
     } catch {}
-    try { windowRef.beforeloaded && windowRef.beforeloaded(); } catch {}
+    
+    // 注入 toolboxApi
+    if (apiBase && pluginId) {
+      try {
+        try { console.info('[Worker] attempting to inject toolboxApi', { pluginId, apiBase, pluginDir }); } catch {}
+        const manifestPath = path.join(pluginDir, 'manifest.json');
+        let version = undefined;
+        try {
+          const manifestRaw = fs.readFileSync(manifestPath, 'utf-8');
+          const manifestJson = JSON.parse(manifestRaw);
+          version = manifestJson.version;
+        } catch {}
+        
+        const toolboxApi = createMainPluginApi(pluginId, version, apiBase);
+        windowRef.toolboxApi = toolboxApi;
+        windowRef.api = toolboxApi; // 兼容别名
+        try { console.info('[Worker] Injected toolboxApi for main process plugin', { pluginId, version }); } catch {}
+      } catch (e) {
+        try { console.warn('[Worker] Failed to inject toolboxApi:', e && e.message ? e.message : String(e)); } catch {}
+        try { console.debug('[Worker] Failed to inject toolboxApi - full error', e); } catch {}
+      }
+    }
+    
+    try { 
+      try { console.info('[Worker] invoking beforeloaded', { pluginId, hasBeforeloaded: typeof windowRef.beforeloaded === 'function' }); } catch {}
+      windowRef.beforeloaded && windowRef.beforeloaded(); 
+    } catch {}
 
     const manifestPath = path.join(pluginDir, 'manifest.json');
     let testMode = false;
-    let mainRel = '';
+    let mainConfig = null;
     let libs = [];
     try {
       const manifestRaw = fs.readFileSync(manifestPath, 'utf-8');
       const manifestJson = JSON.parse(manifestRaw);
       testMode = !!manifestJson.test;
-      mainRel = String(manifestJson.main || '').trim();
-      libs = Array.isArray(manifestJson.libs) ? manifestJson.libs : [];
+      if (manifestJson.main && typeof manifestJson.main === 'object' && 
+          typeof manifestJson.main.dir === 'string' && typeof manifestJson.main.file === 'string') {
+        mainConfig = manifestJson.main;
+        libs = Array.isArray(manifestJson.main.libs) ? manifestJson.main.libs : [];
+      }
     } catch (_e) {}
 
+    if (!mainConfig) {
+      throw new Error('manifest.json 中缺少有效的 main 配置');
+    }
+
     try {
-      const resolveFile = (rel) => {
-        const p1 = path.join(pluginDir, rel);
-        return p1;
+      // 解析主文件路径，避免重复拼接
+      const resolveMainFile = (pluginDir, mainConfig) => {
+        const filePath = mainConfig.file;
+        
+        if (path.isAbsolute(filePath)) {
+          return filePath;
+        }
+        
+        // 如果 dir 为空字符串，直接使用 pluginDir
+        if (!mainConfig.dir || mainConfig.dir.trim() === '') {
+          return path.join(pluginDir, filePath);
+        }
+        
+        const mainDir = path.join(pluginDir, mainConfig.dir);
+        const normalizedDir = path.normalize(mainConfig.dir);
+        const normalizedFile = path.normalize(filePath);
+        if (normalizedFile.startsWith(normalizedDir + path.sep) || normalizedFile === normalizedDir) {
+          return path.join(pluginDir, filePath);
+        }
+        
+        return path.join(mainDir, filePath);
       };
 
+      // 解析库文件路径，避免重复拼接
+      const resolveLibFile = (pluginDir, mainDir, libPath) => {
+        if (path.isAbsolute(libPath)) {
+          return libPath;
+        }
+        
+        // 如果 mainDir 就是 pluginDir（dir 为空），直接使用 pluginDir
+        if (mainDir === pluginDir) {
+          return path.join(pluginDir, libPath);
+        }
+        
+        const normalizedMainDir = path.normalize(mainDir);
+        const normalizedLibPath = path.normalize(libPath);
+        if (normalizedLibPath.startsWith(normalizedMainDir + path.sep) || normalizedLibPath === normalizedMainDir) {
+          return path.join(pluginDir, libPath);
+        }
+        
+        return path.join(mainDir, libPath);
+      };
+
+      // 计算 mainDir，如果 dir 为空则使用 pluginDir
+      const mainDir = (!mainConfig.dir || mainConfig.dir.trim() === '') 
+        ? pluginDir 
+        : path.join(pluginDir, mainConfig.dir);
       const allLibs = Array.isArray(libs) ? libs : [];
       const libRegistry = Object.create(null);
       for (const libRel of allLibs) {
         try {
-          const libPath = resolveFile(String(libRel));
+          const libPath = resolveLibFile(pluginDir, mainDir, String(libRel));
           if (!fs.existsSync(libPath)) { throw new Error(`lib not found: ${libRel}`); }
           const content = fs.readFileSync(libPath, 'utf-8');
           const normalized = String(libRel);
@@ -185,13 +269,13 @@ async function loadPlugin(pluginPath) {
         if (id.startsWith('./')) { const k = id.replace(/^\.\//, ''); if (libRegistry[k]) return libRegistry[k]; }
         const base = path.basename(id, path.extname(id));
         if (libRegistry[base]) return libRegistry[base];
-        throw new Error(`模块 "${id}" 未被允许（不在 manifest.libs 中）`);
+        throw new Error(`模块 "${id}" 未被允许（不在 manifest.main.libs 中）`);
       };
       windowRef.require = pluginRequire;
 
-      const mainPath = path.resolve(pluginPath);
+      const mainPath = resolveMainFile(pluginDir, mainConfig);
       const indexContent = fs.readFileSync(mainPath, 'utf-8');
-      const exportsObj = runModuleInWindow({ code: indexContent, filename: mainRel || path.basename(mainPath), windowRef, requireFn: pluginRequire });
+      const exportsObj = runModuleInWindow({ code: indexContent, filename: mainConfig.file || path.basename(mainPath), windowRef, requireFn: pluginRequire });
       try {
         windowRef.module = { exports: exportsObj };
         windowRef.exports = exportsObj.exports;
@@ -228,9 +312,29 @@ async function loadPlugin(pluginPath) {
       } catch {}
 
       if (typeof windowRef.afterLoaded === 'function') {
-        try { await windowRef.afterLoaded(); } catch (e) {}
+        try { 
+          const api = windowRef.toolboxApi || windowRef.api;
+          try { console.info('[Worker] calling afterLoaded', { pluginId, hasApi: !!api }); } catch {}
+          if (api) {
+            await windowRef.afterLoaded(api);
+          } else {
+            console.warn('[Worker] afterLoaded called but toolboxApi not available', { pluginId, pluginPath });
+          }
+        } catch (e) {
+          console.error('[Worker] afterLoaded hook failed:', e);
+        }
       } else if (typeof windowRef.afterloaded === 'function') {
-        try { await windowRef.afterloaded(); } catch (e) {}
+        try { 
+          const api = windowRef.toolboxApi || windowRef.api;
+          try { console.info('[Worker] calling afterloaded', { pluginId, hasApi: !!api }); } catch {}
+          if (api) {
+            await windowRef.afterloaded(api);
+          } else {
+            console.warn('[Worker] afterloaded called but toolboxApi not available', { pluginId, pluginPath });
+          }
+        } catch (e) {
+          console.error('[Worker] afterloaded hook failed:', e);
+        }
       }
     } catch (e) {}
 
@@ -263,18 +367,6 @@ function stopMemoryMonitor() {
 
 parentPort.on('message', async (message) => {
   try {
-    if (message && typeof message === 'object' && 'id' in message && 'type' in message && 'timestamp' in message && message.type !== 'execute') {
-      let result;
-      try {
-        if (!pluginLoaded) { await loadPlugin(workerData.pluginPath); startMemoryMonitor(); }
-        if (windowRef && typeof windowRef.handleMessage === 'function') { result = await windowRef.handleMessage(message.type, message.payload); } else { result = { ok: true }; }
-      } catch (err) {
-        result = { ok: false, error: err && err.message ? err.message : String(err) };
-      }
-      parentPort.postMessage({ id: message.id, type: message.type, payload: result, timestamp: Date.now(), signature: message.signature, encrypted: false });
-      return;
-    }
-
     if (message && message.type === 'execute') {
       const method = message.method;
       const args = Array.isArray(message.args) ? message.args : [];

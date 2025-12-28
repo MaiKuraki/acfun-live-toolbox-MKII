@@ -51,8 +51,7 @@ export interface MemoryPoolEvents {
 export class MemoryPoolManager extends TypedEventEmitter<MemoryPoolEvents> {
   private config: MemoryPoolConfig;
   private memoryBlocks: Map<string, MemoryBlock> = new Map();
-  private freeBlocks: Map<number, Set<string>> = new Map(); // size -> block IDs
-  private bufferToBlockId: Map<Buffer, string> = new Map(); // buffer -> block ID
+  private freeBlocks: Map<number, Set<string>> = new Map();
   private cleanupTimer?: NodeJS.Timeout;
   private nextBlockId = 1;
   private totalAllocatedBytes = 0;
@@ -63,12 +62,12 @@ export class MemoryPoolManager extends TypedEventEmitter<MemoryPoolEvents> {
     super();
     
     this.config = {
-      maxPoolSize: config.maxPoolSize || 256 * 1024 * 1024, // 256MB
-      defaultBlockSize: config.defaultBlockSize || 64 * 1024, // 64KB
-      minBlockSize: config.minBlockSize || 4 * 1024, // 4KB
-      maxBlockSize: config.maxBlockSize || 16 * 1024 * 1024, // 16MB
-      cleanupInterval: config.cleanupInterval || 60000, // 1 minute
-      memoryThreshold: config.memoryThreshold || 0.8, // 80%
+      maxPoolSize: config.maxPoolSize || 64 * 1024 * 1024,
+      defaultBlockSize: config.defaultBlockSize || 64 * 1024,
+      minBlockSize: config.minBlockSize || 4 * 1024,
+      maxBlockSize: config.maxBlockSize || 4 * 1024 * 1024,
+      cleanupInterval: config.cleanupInterval || 30000,
+      memoryThreshold: config.memoryThreshold || 0.6,
     };
 
     this.startCleanupTimer();
@@ -138,8 +137,6 @@ export class MemoryPoolManager extends TypedEventEmitter<MemoryPoolEvents> {
         size: reusedBlock.size 
       });
       
-      const returnBuffer = reusedBlock.buffer.subarray(0, size);
-      this.bufferToBlockId.set(returnBuffer, reusedBlock.id);
       return reusedBlock.id;
     }
 
@@ -157,7 +154,7 @@ export class MemoryPoolManager extends TypedEventEmitter<MemoryPoolEvents> {
     };
 
     this.memoryBlocks.set(blockId, block);
-    this.bufferToBlockId.set(buffer, blockId);
+    // no per-subarray mapping to avoid extra references
     
     // 更新统计
     this.totalAllocatedBytes += size;
@@ -192,19 +189,21 @@ export class MemoryPoolManager extends TypedEventEmitter<MemoryPoolEvents> {
     // 更新统计
     this.totalFreedBytes += block.size;
 
-    // 从映射中移除相关的buffer
-    for (const [buffer, id] of this.bufferToBlockId.entries()) {
-      if (id === blockId) {
-        this.bufferToBlockId.delete(buffer);
-        break;
-      }
-    }
+    // 无需维护 Buffer 映射
 
-    // 添加到空闲块列表
-    if (!this.freeBlocks.has(block.size)) {
-      this.freeBlocks.set(block.size, new Set());
+    // 决策：若空闲总大小或该尺寸的空闲块过多，则直接删除以释放内存
+    const totalFreeSize = this.calculateFreeSize();
+    const sizeSet = this.freeBlocks.get(block.size) || new Set<string>();
+    const tooManySameSize = sizeSet.size >= 10;
+    const tooMuchFree = totalFreeSize >= 32 * 1024 * 1024;
+    if (tooManySameSize || tooMuchFree) {
+      this.memoryBlocks.delete(blockId);
+    } else {
+      if (!this.freeBlocks.has(block.size)) {
+        this.freeBlocks.set(block.size, new Set());
+      }
+      this.freeBlocks.get(block.size)!.add(blockId);
     }
-    this.freeBlocks.get(block.size)!.add(blockId);
 
     this.emit('memory-freed', { blockId, size: block.size, pluginId });
     
@@ -282,7 +281,7 @@ export class MemoryPoolManager extends TypedEventEmitter<MemoryPoolEvents> {
    */
   public cleanup(): void {
     const now = Date.now();
-    const maxAge = 5 * 60 * 1000; // 5分钟
+    const maxAge = 90 * 1000;
     let freedBlocks = 0;
     let freedSize = 0;
 
@@ -346,6 +345,14 @@ export class MemoryPoolManager extends TypedEventEmitter<MemoryPoolEvents> {
     };
   }
 
+  private calculateFreeSize(): number {
+    let free = 0;
+    for (const block of this.memoryBlocks.values()) {
+      if (!block.inUse) free += block.size;
+    }
+    return free;
+  }
+
   /**
    * 释放插件的所有内存块
    */
@@ -405,7 +412,6 @@ export class MemoryPoolManager extends TypedEventEmitter<MemoryPoolEvents> {
     // 清理所有内存块
     this.memoryBlocks.clear();
     this.freeBlocks.clear();
-    this.bufferToBlockId.clear();
     
     pluginLogger.info('MemoryPoolManager destroyed');
   }

@@ -635,7 +635,7 @@ export class AcfunAdapter extends EventEmitter {
               const userIdIn = event?.userId ?? event?.userInfo?.userID ?? event?.user?.id ?? null;
               const userNameIn = event?.username ?? event?.userInfo?.nickname ?? event?.user?.name ?? null;
               const contentIn = event?.content ?? event?.comment?.content ?? event?.message ?? event?.text ?? null;
-              console.info('[Adapter] callback event type=' + t + ' keys=' + Object.keys(event || {}).join(',') + ' user=' + String(userNameIn || '') + '(' + String(userIdIn || '') + ')' + ' content="' + String(contentIn || '') + '" ts=' + String(tsIn));
+              // console.info('[Adapter] callback event type=' + t + ' keys=' + Object.keys(event || {}).join(',') + ' user=' + String(userNameIn || '') + '(' + String(userIdIn || '') + ')' + ' content="' + String(contentIn || '') + '" ts=' + String(tsIn));
             } catch {}
             this.handleDanmuEvent(event);
           });
@@ -730,10 +730,10 @@ export class AcfunAdapter extends EventEmitter {
     }
 
     try {
-      try {
-        const t = String((event && (event.type || event.action || event.messageType)) || '');
-        console.info('[Adapter] inbound type=' + t + ' keys=' + Object.keys(event || {}).join(','));
-      } catch {}
+      // try {
+      //   const t = String((event && (event.type || event.action || event.messageType)) || '');
+      //   // console.info('[Adapter] inbound type=' + t + ' keys=' + Object.keys(event || {}).join(','));
+      // } catch {}
 
       if (event && event.danmuInfo) {
         this.processDanmuInfo(event.danmuInfo, event);
@@ -1123,9 +1123,9 @@ export class AcfunAdapter extends EventEmitter {
 
       this.safeEmit('event', normalized);
       if (process.env.ACFRAME_DEBUG_LOGS === '1') {
-        try {
-          console.log('[Adapter] unified type=' + String(type) + ' roomId=' + String(normalized.room_id) + ' ts=' + String(normalized.ts) + ' userId=' + String(normalized.user_id ?? '') + ' userName=' + String(normalized.user_name ?? ''));
-        } catch {}
+        // try {
+        //   console.log('[Adapter] unified type=' + String(type) + ' roomId=' + String(normalized.room_id) + ' ts=' + String(normalized.ts) + ' userId=' + String(normalized.user_id ?? '') + ' userName=' + String(normalized.user_name ?? ''));
+        // } catch {}
       }
     } catch (error) {
       if (this.config.debug) {

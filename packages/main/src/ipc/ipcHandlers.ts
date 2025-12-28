@@ -15,6 +15,8 @@ import path from 'path';
 import { pluginLifecycleManager } from '../plugins/PluginLifecycle';
 import { DataManager } from '../persistence/DataManager';
 import PluginPageStatusManager from '../persistence/PluginPageStatusManager';
+import { memoryPoolManager } from '../plugins/MemoryPoolManager';
+import { pluginCacheManager } from '../plugins/PluginCacheManager';
 
 /**
  * Initializes all IPC handlers for the main process.
@@ -116,6 +118,25 @@ export function initializeIpcHandlers(
 
   ipcMain.handle('system.genDiagnosticZip', async () => {
     return diagnosticsService.generateDiagnosticPackage();
+  });
+
+  ipcMain.handle('system.getMemoryStats', async () => {
+    try {
+      const processMem = process.memoryUsage();
+      const pool = memoryPoolManager.getStats();
+      return { success: true, process: processMem, pool };
+    } catch (err: any) {
+      return { success: false, error: err?.message || String(err) };
+    }
+  });
+
+  ipcMain.handle('system.getCacheStats', async () => {
+    try {
+      const cache = pluginCacheManager.getStats();
+      return { success: true, cache };
+    } catch (err: any) {
+      return { success: false, error: err?.message || String(err) };
+    }
   });
 
   // System: 打开文件所在文件夹
@@ -257,6 +278,29 @@ export function initializeIpcHandlers(
         return { success: true, data: fullData };
       }
       return { success: false, error: result?.error || 'fetch_failed' };
+    } catch (err: any) {
+      return { success: false, error: err?.message || String(err) };
+    }
+  });
+
+  // Account: check token availability and expiration
+  ipcMain.handle('account.tokenAvailable', async () => {
+    try {
+      const tokenInfo = await tokenManager.getTokenInfo();
+      if (!tokenInfo) {
+        return { success: true, data: { available: false } };
+      }
+      
+      const isAuthenticated = tokenManager.isAuthenticated();
+      const expiresAt = tokenInfo.expiresAt;
+      
+      return {
+        success: true,
+        data: {
+          available: isAuthenticated,
+          expiresAt: expiresAt || undefined
+        }
+      };
     } catch (err: any) {
       return { success: false, error: err?.message || String(err) };
     }
@@ -613,6 +657,24 @@ export function initializeIpcHandlers(
     }
   });
 
+  // 获取直播列表（支持分类筛选）
+  ipcMain.handle('live.getChannelList', async (_event, options?: {
+    filters?: Array<{ filterType: number; filterId: number }>;
+    count?: number;
+    pcursor?: string;
+  }) => {
+    try {
+      const result = await acfunDanmuModule.getChannelList(options);
+      if (result && result.success === true) {
+        return { success: true, data: result.data };
+      } else {
+        return { success: false, error: result?.error || '获取直播列表失败' };
+      }
+    } catch (err: any) {
+      return { success: false, error: err?.message || String(err) };
+    }
+  });
+
   // TODO: Re-implement handlers for the new architecture
   // - Window management (minimize, maximize, close)
   // - Settings management
@@ -726,111 +788,9 @@ export function initializeIpcHandlers(
     return pluginWindowManager.list();
   });
 
-  // --- Plugin Process Execution ---
-  const pluginToastTicker = new Map<string, NodeJS.Timeout>();
-  const startTicker = (pluginId: string, message: string, options?: any) => {
-    if (pluginToastTicker.has(pluginId)) return;
-    const interval = setInterval(() => {
-      try {
-        const win = windowManager.getMainWindow();
-        win?.webContents.send('renderer-global-popup', { action: 'toast', payload: { message, options } });
-      } catch (e) {}
-    }, 3000);
-    pluginToastTicker.set(pluginId, interval);
-  };
-  const stopTicker = (pluginId: string) => {
-    const h = pluginToastTicker.get(pluginId);
-    if (h) { try { clearInterval(h); } catch {} pluginToastTicker.delete(pluginId); }
-  };
-
-  // 结果缓存（按插件+方法）
-  const _procResultCache = new Map<string, { data: any; ts: number }>();
-  ipcMain.handle('plugin.process.execute', async (_event, pluginId: string, method: string, args?: any[]) => {
+  ipcMain.handle('plugin.window.getMemoryStats', async () => {
     try {
-      try { console.log('[IPC] plugin.process.execute start', { pluginId, method, argsLen: Array.isArray(args) ? args.length : 0 }); } catch {}
-      const pm = (pluginManager as any).processManager as any;
-      if (!pm) return { success: false, error: 'process_manager_not_available' };
-      // 按需启动插件进程
-      try {
-        const info = (pluginManager as any).getPlugin?.(String(pluginId));
-        const proc = pm.getProcessInfo?.(String(pluginId));
-        if (!proc && info && info.manifest && typeof info.manifest.main === 'string' && info.manifest.main.trim().length > 0) {
-          // 直接使用 installPath
-          const mainPath = path.join(info.installPath, info.manifest.main);
-          await pm.startPluginProcess?.(String(pluginId), mainPath);
-        }
-      } catch {}
-      const execArgs = Array.isArray(args) ? args : [];
-      const cacheKey = `${String(pluginId)}:${String(method)}`;
-      // 更稳的退避策略
-      const maxAttempts = 10;
-      let attempt = 0;
-      let lastErr: any = null;
-      try { await new Promise(r => setTimeout(r, 500)); } catch {}
-      let res: any = undefined;
-      while (attempt < maxAttempts) {
-        try {
-          res = await pm.executeInPlugin(String(pluginId), String(method), execArgs);
-          lastErr = null;
-          break;
-        } catch (e: any) {
-          const msg = String(e?.message || e);
-          lastErr = e;
-          if (msg.includes('status: busy')) {
-            const wait = 200 + attempt * 200; // 递增等待
-            await new Promise(r => setTimeout(r, wait));
-            attempt++;
-            continue;
-          }
-          break;
-        }
-      }
-      if (lastErr && !String(lastErr?.message || lastErr).includes('status: busy')) {
-        throw lastErr;
-      }
-      // 缓存结果
-      try { _procResultCache.set(cacheKey, { data: res, ts: Date.now() }); } catch {}
-      // 忙碌耗尽：返回缓存而非抛错
-      if (lastErr && String(lastErr?.message || lastErr).includes('status: busy')) {
-        const cached = _procResultCache.get(cacheKey);
-        try { console.warn('[IPC] plugin.process.execute busy', { pluginId, method, attempts: maxAttempts }); } catch {}
-        return { success: true, data: cached ? cached.data : undefined, stale: true, error: 'busy' };
-      }
-      // 辅助：根据方法名控制ticker
-      try {
-        if (String(method) === 'enableTicker') {
-          const msg = (args && args[0]) || 'Ticker: toast';
-          const opts = (args && args[1]) || { durationMs: 2500 };
-          startTicker(String(pluginId), String(msg), opts);
-        }
-        if (String(method) === 'disableTicker') {
-          stopTicker(String(pluginId));
-        }
-      } catch {}
-      try {
-        const summary = (() => {
-          try {
-            if (method === 'getStatus' && res && typeof res === 'object') {
-              return { connected: !!res.connected, connecting: !!res.connecting, running: !!res.running, lastError: res.lastError || '', lastAttempt: res.lastAttempt || '' };
-            }
-            return undefined;
-          } catch { return undefined; }
-        })();
-        console.log('[IPC] plugin.process.execute done', { pluginId, method, stale: false, summary });
-      } catch {}
-      return { success: true, data: res };
-    } catch (err: any) {
-      try { console.error('[IPC] plugin.process.execute fail', { pluginId, method, error: err?.message || String(err) }); } catch {}
-      return { success: false, error: err?.message || String(err) };
-    }
-  });
-
-  ipcMain.handle('plugin.process.message', async (_event, pluginId: string, type: string, payload?: any) => {
-    try {
-      const pm = (pluginManager as any).processManager as any;
-      if (!pm) return { success: false, error: 'process_manager_not_available' };
-      const res = await pm.sendMessageToPlugin(String(pluginId), String(type), payload, true);
-      return { success: true, data: res };
+      return { success: true, ...await pluginWindowManager.getMemoryStats() };
     } catch (err: any) {
       return { success: false, error: err?.message || String(err) };
     }
@@ -850,11 +810,9 @@ export function initializeIpcHandlers(
     };
 
     (pluginManager as any).on?.('plugin.disabled', ({ id }: any) => {
-      stopTicker(String(id));
       broadcastPluginStatus('disabled', { id });
     });
     (pluginManager as any).on?.('plugin.uninstalled', ({ id }: any) => {
-      stopTicker(String(id));
       broadcastPluginStatus('uninstalled', { id });
     });
     (pluginManager as any).on?.('plugin.enabled', ({ id }: any) => {
@@ -939,7 +897,8 @@ export function initializeIpcHandlers(
         const pm = (pluginManager as any).processManager as any;
         const info = (pluginManager as any).getPlugin?.(String(id));
         const proc = pm?.getProcessInfo?.(String(id));
-        if (!proc && info && info.manifest && typeof info.manifest.main === 'string' && info.manifest.main.trim().length > 0) {
+        if (!proc && info && info.manifest && info.manifest.main && typeof info.manifest.main === 'object' && 
+            typeof info.manifest.main.dir === 'string' && typeof info.manifest.main.file === 'string') {
           const isDev = process.env.NODE_ENV === 'development' || !app.isPackaged;
           const bundledRootCandidates = [
             path.join(process.cwd(), 'buildResources', 'plugins', String(info.id)),
@@ -947,7 +906,32 @@ export function initializeIpcHandlers(
           ];
           const bundledRoot = bundledRootCandidates.find(p => { try { return fs.existsSync(p); } catch { return false; } });
           const preferBundled = !!bundledRoot && isDev && (info.manifest as any)?.test === true;
-          const mainPath = preferBundled ? path.join(bundledRoot!, info.manifest.main) : path.join(info.installPath, info.manifest.main);
+          
+          // 解析主文件路径
+          const resolveMainPath = (pluginDir: string, mainConfig: { dir: string; file: string }): string => {
+            const filePath = mainConfig.file;
+            
+            if (path.isAbsolute(filePath)) {
+              return filePath;
+            }
+            
+            // 如果 dir 为空字符串，直接使用 pluginDir
+            if (!mainConfig.dir || mainConfig.dir.trim() === '') {
+              return path.join(pluginDir, filePath);
+            }
+            
+            const mainDir = path.join(pluginDir, mainConfig.dir);
+            const normalizedDir = path.normalize(mainConfig.dir);
+            const normalizedFile = path.normalize(filePath);
+            if (normalizedFile.startsWith(normalizedDir + path.sep) || normalizedFile === normalizedDir) {
+              return path.join(pluginDir, filePath);
+            }
+            
+            return path.join(mainDir, filePath);
+          };
+          
+          const pluginDir = preferBundled ? bundledRoot! : info.installPath;
+          const mainPath = resolveMainPath(pluginDir, info.manifest.main);
           await pm.startPluginProcess?.(String(id), mainPath);
         }
         try { await pm.executeInPlugin?.(String(id), 'onConfigUpdated', [merged]); } catch {}
@@ -1035,7 +1019,8 @@ export function initializeIpcHandlers(
       const info = (pluginManager as any).getPlugin?.(String(pluginId));
       const proc = pm?.getProcessInfo?.(String(pluginId));
       if (!proc) {
-        if (info && info.manifest && typeof info.manifest.main === 'string' && info.manifest.main.trim().length > 0) {
+        if (info && info.manifest && info.manifest.main && typeof info.manifest.main === 'object' && 
+            typeof info.manifest.main.dir === 'string' && typeof info.manifest.main.file === 'string') {
           const isDev = process.env.NODE_ENV === 'development' || !app.isPackaged;
           const bundledRootCandidates = [
             path.join(process.cwd(), 'buildResources', 'plugins', String(info.id)),
@@ -1043,8 +1028,34 @@ export function initializeIpcHandlers(
           ];
           const bundledRoot = bundledRootCandidates.find(p => { try { return fs.existsSync(p); } catch { return false; } });
           const preferBundled = !!bundledRoot && isDev && (info.manifest as any)?.test === true;
-          const mainPath = preferBundled ? path.join(bundledRoot!, info.manifest.main) : path.join(info.installPath, info.manifest.main);
-          await pm.startPluginProcess?.(String(pluginId), mainPath);
+          
+          // 解析主文件路径
+          const resolveMainPath = (pluginDir: string, mainConfig: { dir: string; file: string }): string => {
+            const filePath = mainConfig.file;
+            
+            if (path.isAbsolute(filePath)) {
+              return filePath;
+            }
+            
+            // 如果 dir 为空字符串，直接使用 pluginDir
+            if (!mainConfig.dir || mainConfig.dir.trim() === '') {
+              return path.join(pluginDir, filePath);
+            }
+            
+            const mainDir = path.join(pluginDir, mainConfig.dir);
+            const normalizedDir = path.normalize(mainConfig.dir);
+            const normalizedFile = path.normalize(filePath);
+            if (normalizedFile.startsWith(normalizedDir + path.sep) || normalizedFile === normalizedDir) {
+              return path.join(pluginDir, filePath);
+            }
+            
+            return path.join(mainDir, filePath);
+          };
+          
+          const pluginDir = preferBundled ? bundledRoot! : info.installPath;
+          const mainPath = resolveMainPath(pluginDir, info.manifest.main);
+          const apiPort = configManager.get<number>('server.port', parseInt(process.env.ACFRAME_API_PORT || '18299'));
+          await pm.startPluginProcess?.(String(pluginId), mainPath, { apiPort });
         }
       }
       const res = await pm.executeInPlugin?.(String(pluginId), String(method), Array.isArray(args) ? args : []);
@@ -1469,6 +1480,15 @@ export function initializeIpcHandlers(
     if (win) {
       win.restore();
     }
+  });
+
+  ipcMain.handle('window.openDevtools', async (event) => {
+    const win = BrowserWindow.fromWebContents(event.sender);
+    if (win) {
+      try { win.webContents.openDevTools({ mode: 'detach' }); } catch {}
+      return { success: true };
+    }
+    return { success: false, error: 'window_not_found' };
   });
 
   // Config: Get all config

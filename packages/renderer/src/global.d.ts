@@ -52,12 +52,18 @@ declare global {
             }
           | { success: false; error: string }
         >;
+        tokenAvailable: () => Promise<{
+          success: boolean;
+          data?: { available: boolean; expiresAt?: number };
+          error?: string;
+        }>;
       };
       window: {
         minimizeWindow: () => Promise<void>;
         closeWindow: () => Promise<void>;
         maximizeWindow: () => Promise<void>;
         restoreWindow: () => Promise<void>;
+        openDevtools: () => Promise<void>;
       };
       system: {
         getConfig: () => Promise<Record<string, any>>;
@@ -190,6 +196,7 @@ declare global {
           close: (pluginId: string) => Promise<{ success: boolean; error?: string }>;
           isOpen: (pluginId: string) => Promise<{ success: boolean; open: boolean; error?: string }>;
           list: () => Promise<{ success: boolean; windows: Array<{ pluginId: string; visible: boolean; focused: boolean }> } | { success: false; error: string }>;
+          getMemoryStats: () => Promise<{ success: boolean; windowCount?: number; totalMemoryMB?: number; windows?: Array<{ pluginId: string; memoryMB: number }>; error?: string }>;
         };
         process: {
           execute: (pluginId: string, method: string, args?: any[]) => Promise<any>;

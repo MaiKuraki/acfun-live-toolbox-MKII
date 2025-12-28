@@ -59,14 +59,35 @@
           .catch(function(){ try { var el = document.getElementById('obsStatus'); if(el) el.textContent = 'OBS 连接状态：未连接（未运行或插件忙）'; } catch(e){} });
       }
       function getApiBaseBridged(){ return requestWithRetry('get-api-base', {}).then(function(resp){ return String((resp&&resp.base)||''); }); }
-      function subscribeReadonly(keys){ return getApiBaseBridged().then(function(base){ var url = new URL('/sse/renderer/readonly-store/subscribe', base); url.searchParams.set('keys', (keys||[]).join(',')); var src = new EventSource(url.toString()); src.addEventListener('readonly-store-init', function(ev){ try { var data = JSON.parse(ev.data||'{}'); console.log('[readonly:init]', data); } catch(e){} }); src.addEventListener('readonly-store-update', function(ev){ try { var data = JSON.parse(ev.data||'{}'); console.log('[readonly:update]', data); } catch(e){} }); src.addEventListener('heartbeat', function(){ }); src.onerror = function(){ try { src.close(); } catch(e){} setTimeout(function(){ subscribeReadonly(keys); }, 3000); }; return src; }); }
-      function fetchSnapshot(keys){ return getApiBaseBridged().then(function(base){ return fetch(new URL('/api/renderer/readonly-store/snapshot', base).toString(), { method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({ keys: keys||[] }) }).then(function(r){ return r.json(); }).then(function(json){ if(json&&json.success){ console.log('[readonly:snapshot]', json.data); } }); }); }
-      function subscribePluginOverlay(){ var props = getProps(); var pid = String((props&&props.pluginId)||''); if(!pid) return Promise.resolve(null); return getApiBaseBridged().then(function(base){ var url = new URL('/sse/plugins/'+encodeURIComponent(pid)+'/overlay', base); var src = new EventSource(url.toString()); src.addEventListener('init', function(ev){ try { console.log('[overlay:init]', ev.data); } catch(e){} }); src.addEventListener('update', function(ev){ try { console.log('[overlay:update]', ev.data); } catch(e){} }); src.addEventListener('message', function(ev){ try { console.log('[overlay:message]', ev.data); } catch(e){} }); src.addEventListener('action', function(ev){ try { console.log('[overlay:action]', ev.data); } catch(e){} }); src.addEventListener('closed', function(ev){ try { console.log('[overlay:closed]', ev.data); } catch(e){} }); src.addEventListener('heartbeat', function(){ }); src.onerror = function(){ try { src.close(); } catch(e){} setTimeout(function(){ subscribePluginOverlay(); }, 3000); }; return src; }); }
+      function subscribePluginOverlay(){
+        var props = getProps();
+        var pid = String((props&&props.pluginId)||'');
+        if(!pid) return Promise.resolve(null);
+        return getApiBaseBridged().then(function(base){
+          var url = new URL('/sse/plugins/'+encodeURIComponent(pid)+'/overlay', base);
+          var src = new EventSource(url.toString());
+          function onEnv(ev){
+            try {
+              var env = JSON.parse(ev.data||'{}');
+              console.log('[overlay:'+String(ev.type||'')+']', env);
+            } catch(e){}
+          }
+          src.addEventListener('init', onEnv);
+          src.addEventListener('update', onEnv);
+          src.addEventListener('message', onEnv);
+          src.addEventListener('action', onEnv);
+          src.addEventListener('closed', onEnv);
+          src.addEventListener('heartbeat', onEnv);
+          src.onerror = function(){
+            try { src.close(); } catch(e){}
+            setTimeout(function(){ subscribePluginOverlay(); }, 3000);
+          };
+          return src;
+        });
+      }
       window.addEventListener('DOMContentLoaded', function(){
         var bus = getBus();
         try { bus && bus.$emit && bus.$emit('ui-ready', { type: 'ui-ready' }); } catch(e){}
-        var defaultKeys = ['account','ui','role','rooms','stream'];
-        fetchSnapshot(defaultKeys).then(function(){ subscribeReadonly(defaultKeys); });
         subscribePluginOverlay();
         try { if(bus && bus.$on){ bus.$on('plugin-init', refresh); bus.$on('plugin-event', function(msg){ try { if(msg && msg.eventType==='lifecycle' && (msg.event==='ready'||msg.event==='config-updated')) refresh(); } catch(e){} }); } } catch(e){}
         refresh();

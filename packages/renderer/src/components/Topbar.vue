@@ -250,13 +250,13 @@ function toggleRoomDrawer() {
 
 function minimizeWindow() {
   if (window.electronApi) {
-    window.electronApi.window.minimizeWindow();
+    window.electronApi?.window.minimizeWindow();
   }
 }
 
 function closeWindow() {
   if (window.electronApi) {
-    window.electronApi.window.closeWindow();
+    window.electronApi?.window.closeWindow();
   }
 }
 
@@ -287,7 +287,8 @@ function formatViewerCount(count: number): string {
 async function enterLiveRoom(room: Room) {
   try {
     const st = await window.electronApi?.room?.status?.(room.id);
-    const s = String(st?.status || '').toLowerCase();
+    let s = '';
+    if (st && 'status' in st && typeof (st as any).status === 'string') s = String((st as any).status).toLowerCase();
     if (s === 'connected' || s === 'open') {
       router.push({ name: 'LiveManage', params: { roomId: room.id } });
       showRoomDrawer.value = false;
@@ -307,7 +308,8 @@ async function enterLiveRoom(room: Room) {
           for (let i = 0; i < 10; i++) {
             await new Promise(r => setTimeout(r, 500));
             const st2 = await window.electronApi?.room?.status?.(room.id);
-            const s2 = String(st2?.status || '').toLowerCase();
+            let s2 = '';
+            if (st2 && 'status' in st2 && typeof (st2 as any).status === 'string') s2 = String((st2 as any).status).toLowerCase();
             if (s2 === 'connected' || s2 === 'open') { connected = true; break; }
           }
           showRoomDrawer.value = false;
@@ -334,7 +336,7 @@ function openLivePage(room: Room) {
   const url = `https://live.acfun.cn/live/${room.id}`;
   try {
     if (window.electronApi?.system?.openExternal) {
-      window.electronApi.system.openExternal(url);
+      window.electronApi?.system.openExternal(url);
     } else {
       window.open(url, '_blank');
     }
@@ -358,7 +360,7 @@ async function openCreatorCenter() {
   const url = 'https://member.acfun.cn/live-data-center';
   try {
     if (window.electronApi?.system?.openExternal) {
-      const res = await window.electronApi.system.openExternal(url);
+      const res = await window.electronApi?.system.openExternal(url);
       if (!res?.success) {
         window.open(url, '_blank');
       }
@@ -374,7 +376,7 @@ async function openFeeds() {
   const url = 'https://www.acfun.cn/member/feeds';
   try {
     if (window.electronApi?.system?.openExternal) {
-      const res = await window.electronApi.system.openExternal(url);
+      const res = await window.electronApi?.system.openExternal(url);
       if (!res?.success) {
         window.open(url, '_blank');
       }

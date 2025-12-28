@@ -1,12 +1,12 @@
 export type HostingPageType = 'ui' | 'window' | 'overlay';
-
+import { useNetworkStore } from '../stores/network'
 interface HostingConfigItem {
-  spa: boolean;
   route: string;
   html: string;
 }
 
 interface HostingConfig {
+  spa: boolean;
   ui: HostingConfigItem | null;
   window: HostingConfigItem | null;
   overlay: HostingConfigItem | null;
@@ -23,7 +23,7 @@ export function getApiBase(): string {
 }
 
 export async function getPluginHostingConfig(pluginId: string): Promise<HostingConfig> {
-  const res = await window.electronApi.hosting.getConfig(pluginId);
+  const res = await window.electronApi?.hosting.getConfig(pluginId);
   if (res && 'success' in res && res.success) {
     return res.data as HostingConfig;
   }
@@ -56,63 +56,37 @@ export async function resolvePrimaryHostingType(pluginId: string): Promise<{
 export function buildPluginPageUrl(
   pluginId: string,
   type: HostingPageType,
-  conf?: Partial<HostingConfigItem>
+  conf: Partial<HostingConfig>
 ): string {
   const base = getApiBase();
-  const scope = `/plugins/${pluginId}/${type}`;
-
+  const scope = `/plugins/${pluginId}`;
+  const url = new URL(scope, base);
   // SPA: serve entry at scope; optionally pass route as query for initial navigation
-  if (conf?.spa) {
-    const url = new URL(scope, base);
-    const route = conf.route || '/';
+  if (conf.spa) {
+    const route = conf[type]?.route || '/';
     if (route && route !== '/') {
-      url.searchParams.append('route', route);
+      url.pathname = url.pathname + (route.startsWith('/') ? route : '/' + route);
     }
     return url.toString();
   }
 
   // Non-SPA: serve specific html entry (defaults to <type>.html)
-  const html = conf?.html || `${type}.html`;
-  const url = new URL(`/plugins/${pluginId}/${html}`, base);
+  const html = conf[type]?.html || `${type}.html`;
+  url.pathname = url.pathname + (html.startsWith('/') ? html : '/' + html);
   return url.toString();
 }
 
-export async function resolveOverlayWujieUrl(pluginId: string): Promise<{
-  url: string;
-  name: string;
-  props: Record<string, any>;
-}> {
-  const hosting = await getPluginHostingConfig(pluginId);
-  const conf = hosting.overlay || undefined;
-  const url = buildPluginPageUrl(pluginId, 'overlay', conf || {});
-  return {
-    url,
-    name: `overlay-${pluginId}`,
-    props: { pluginId },
-  };
-}
 
-/**
- * Build external wrapper base URL for overlay.
- * The server will resolve manifest settings (spa/route/html) internally.
- */
-export function buildOverlayWrapperBase(pluginId: string): string {
-  const base = getApiBase();
-  const url = new URL('/overlay-wrapper', base);
-  url.searchParams.set('plugin', pluginId);
-  url.searchParams.set('type', 'overlay');
-  return url.toString();
-}
+
 
 /**
  * Build external wrapper URL with overlayId.
  */
-export function buildOverlayWrapperUrl(pluginId: string, overlayId: string): string {
-  const base = getApiBase();
-  const url = new URL('/overlay-wrapper', base);
-  url.searchParams.set('plugin', pluginId);
-  url.searchParams.set('type', 'overlay');
-  url.searchParams.set('overlayId', overlayId);
-  return url.toString();
+
+export function buildOverlayFrameUrl(pluginId: string): string {
+  if (import.meta.env.DEV) {
+    return `${window.location.host}/#/plugins/${pluginId}/overlay?apiPort=${getApiPort()}`;
+  }
+  return `${getApiBase()}/#/plugins/${pluginId}/overlay?apiPort=${getApiPort()}`;
 }
-import { useNetworkStore } from '../stores/network'
+

@@ -6,9 +6,9 @@ import './style.css';
 import App from './App.vue';
 import router from './router';
 import { reportReadonlyUpdate } from './utils/readonlyReporter'
-import { useNetworkStore } from './stores/network'
 import { Icon as TIcon } from 'tdesign-icons-vue-next';
 import GlobalPopup from './services/globalPopup';
+import { usePluginStore } from './stores/plugin';
 
 const app = createApp(App);
 const pinia = createPinia();
@@ -20,57 +20,69 @@ app.component('t-icon', TIcon);
 app.mount('#app');
 
 try {
-  (async () => {
-    try {
-      const ns = useNetworkStore()
-      await ns.init()
-    } catch {}
-  })();
-  const hash = String(window.location.hash || '');
-  window.electronApi.on('renderer-global-popup', (msg: any) => {
+  window.electronApi?.on('renderer-global-popup', (msg: any) => {
     try {
       const { action, payload, requestId } = msg || {};
-      try { console.log('[MainRenderer] global-popup', { action, requestId, payload }); } catch {}
-      if (action === 'toast') GlobalPopup.toast(String(payload?.message || ''), payload?.options);
-      else if (action === 'alert') GlobalPopup.alert(String(payload?.title || ''), String(payload?.message || ''), payload?.options);
-      else if (action === 'confirm') {
-        (async () => {
-          const ok = await GlobalPopup.confirm(String(payload?.title || ''), String(payload?.message || ''), payload?.options);
-          try { console.log('[MainRenderer] confirm result', { requestId, ok }); } catch {}
-          try { window.electronApi.popup.respondConfirm(String(requestId || ''), !!ok); } catch {}
-        })();
+      console.log('[MainRenderer] global-popup', { action, requestId, payload });
+      switch (action) {
+        case 'toast':
+          GlobalPopup.toast(`${payload?.message}`, payload?.options);
+          break;
+        case 'alert':
+          GlobalPopup.alert(`${payload?.title}`, `${payload?.message}`, payload?.options);
+          break;
+        case 'close':
+          GlobalPopup.close(`${payload?.id}`);
+          break;
+        case 'confirm':
+          (async () => {
+            const ok = await GlobalPopup.confirm(`${payload?.title}`, `${payload?.message}`, payload?.options);
+            console.log('[MainRenderer] confirm result', { requestId, ok });
+            window.electronApi?.popup.respondConfirm(`${requestId}`, !!ok);
+          })();
+          break;
       }
-    } catch {}
+    } catch { }
   });
-
-} catch {}
-
-try {
-  const to = router.currentRoute.value as any;
-  const path = String(to?.fullPath || window.location.hash || '');
-  const name = String(to?.name || '');
-  const title = String((to?.meta as any)?.title || document.title.replace(/\s*-\s*ACLiveFrame$/, '') || '');
-  reportReadonlyUpdate({ ui: { routePath: path, pageName: name, pageTitle: title } });
-} catch {}
+} catch { }
 
 try {
-  router.isReady().then(() => {
-    const rt = router.currentRoute.value as any;
-    const path = String(rt?.fullPath || window.location.hash || '');
-    const name = String(rt?.name || '');
-    const title = String((rt?.meta as any)?.title || document.title.replace(/\s*-\s*ACLiveFrame$/, '') || '');
-    reportReadonlyUpdate({ ui: { routePath: path, pageName: name, pageTitle: title } });
-  });
-} catch {}
-
-try {
-  window.addEventListener('hashchange', () => {
+  window.electronApi?.on('renderer-global-play-sound', (msg: any) => {
     try {
-      const rt = router.currentRoute.value as any;
-      const path = String(rt?.fullPath || window.location.hash || '');
-      const name = String(rt?.name || '');
-      const title = String((rt?.meta as any)?.title || document.title.replace(/\s*-\s*ACLiveFrame$/, '') || '');
-      reportReadonlyUpdate({ ui: { routePath: path, pageName: name, pageTitle: title } });
-    } catch {}
+      const { src, options } = msg || {};
+      console.log('[MainRenderer] play-sound', { src, options });
+      if (!src) return;
+
+      const audio = new Audio(src);
+      if (options?.volume !== undefined) {
+        audio.volume = Math.max(0, Math.min(1, options.volume));
+      }
+      if (options?.loop) {
+        audio.loop = true;
+      }
+
+      audio.play().catch((error: any) => {
+        console.error('[MainRenderer] Audio play failed:', error);
+      });
+    } catch (error: any) {
+      console.error('[MainRenderer] Audio setup failed:', error);
+    }
   });
-} catch {}
+} catch { }
+
+
+const reportRouteInfo = () => {
+  const rt = router.currentRoute.value as any;
+  const path = String(rt?.fullPath || window.location.hash || '');
+  const name = String(rt?.name || '');
+  const title = String((rt?.meta as any)?.title || document.title.replace(/\s*-\s*ACLiveFrame$/, '') || '');
+  reportReadonlyUpdate({ ui: { routePath: path, pageName: name, pageTitle: title } });
+};
+
+
+router.isReady().then(async () => {
+  reportRouteInfo();
+  // await useNetworkStore().init()
+  await usePluginStore().loadPlugins();
+});
+window.addEventListener('hashchange', reportRouteInfo);

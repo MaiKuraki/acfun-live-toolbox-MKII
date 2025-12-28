@@ -235,9 +235,9 @@ export class RoomManager extends EventEmitter {
         ts: event.ts || Date.now()
       });
 
-      try {
-        console.info('[Room] unified type=' + String(enriched.event_type) + ' room=' + String(roomId) + ' user=' + String(enriched.user_name || '') + '(' + String(enriched.user_id || '') + ')' + ' content="' + String(enriched.content || '') + '" ts=' + String(enriched.ts));
-      } catch {}
+      // try {
+      //   // console.info('[Room] unified type=' + String(enriched.event_type) + ' room=' + String(roomId) + ' user=' + String(enriched.user_name || '') + '(' + String(enriched.user_id || '') + ')' + ' content="' + String(enriched.content || '') + '" ts=' + String(enriched.ts));
+      // } catch {}
 
       if (enriched.event_type === 'end') {
         roomInfo.liveId = undefined;

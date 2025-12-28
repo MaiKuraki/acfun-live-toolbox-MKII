@@ -1,35 +1,12 @@
 <template>
   <div class="grid-cell">
-    <t-card hover-shadow title="欢迎">
+    <t-card hover-shadow title="公告栏">
       <div v-if="home.loading.A">
         <t-skeleton :row-col="[[{ width: '100%' }],[{ width: '100%' }]]" />
       </div>
       <t-alert v-else-if="home.error.A" theme="error" :message="home.error.A" closeBtn @close="home.retryCard('A')"></t-alert>
       <div v-else class="cell-body">
-        <p class="welcome-tip">{{ welcomeText }}</p>
-        <div class="guide-steps">
-          <div class="step-item" role="link" tabindex="0" @click="goStep(1)" @keypress.enter="goStep(1)">
-            <div class="step-number">1</div>
-            <div class="step-content">
-              <div class="step-title">登录或连接房间</div>
-              <div class="step-desc">使用二维码登录账号，或直接连接直播房间（只读模式）</div>
-            </div>
-          </div>
-          <div class="step-item" role="link" tabindex="0" @click="goStep(2)" @keypress.enter="goStep(2)">
-            <div class="step-number">2</div>
-            <div class="step-content">
-              <div class="step-title">安装/启用所需插件</div>
-              <div class="step-desc">在插件管理中安装弹幕弹窗、礼物提醒等功能插件</div>
-            </div>
-          </div>
-          <div class="step-item" role="link" tabindex="0" @click="goStep(3)" @keypress.enter="goStep(3)">
-            <div class="step-number">3</div>
-            <div class="step-content">
-              <div class="step-title">观察指标与日志</div>
-              <div class="step-desc">在系统/控制台中查看实时数据和运行状态</div>
-            </div>
-          </div>
-        </div>
+        <div class="announcement" v-html="announcementText"></div>
       </div>
     </t-card>
   </div>
@@ -38,31 +15,33 @@
 
 <script setup lang="ts">
 import { useHomeStore } from '../../stores/home';
-import { useRouter } from 'vue-router';
 import { computed } from 'vue';
 
 const home = useHomeStore();
-const router = useRouter();
 
-const welcomeText = computed(() => '欢迎，主播！按下按钮开始直播相关功能。');
-
-const goStep = (n: number) => {
-  if (n === 1) router.push('/live/room');
-  else if (n === 2) router.push('/plugins/management');
-  else router.push('/system/console');
-};
+const announcementText = computed(() => `
+<b>欢迎使用 ACLiveFrame - 专为 AcFun 打造的开源直播工具框架！</b><br>🎯 核心功能<br>
+提供实时弹幕捕获、礼物统计、观众互动管理等专业直播工具，支持多房间并发监听和智能数据分析。<br>
+🔌 开放生态<br>
+基于模块化插件系统，可开发弹幕弹窗、礼物提醒等自定义功能插件<br>
+🚀 快速开始<br>
+1. 扫码登录 AcFun 账号<br>
+2. 安装所需功能插件<br>
+3. 开始直播！
+`.replace(/\n/g, ''));
 </script>
 
 <style scoped>
 .cell-body { flex: 1; }
-.welcome-tip { margin-bottom: 12px; color: var(--td-text-color-secondary); font-size: 14px; }
-/* 步骤指南样式 */
-.guide-steps { display: flex; flex-direction: column; gap: 8px; margin-bottom: 12px; }
-.step-item { display: flex; align-items: flex-start; gap: 8px; padding: 8px; background: var(--td-bg-color-container-hover); border-radius: 6px; cursor: pointer; transition: transform 0.12s ease, background-color 0.12s ease, box-shadow 0.12s ease; }
-.step-item:hover { background: var(--td-bg-color-container-active); box-shadow: var(--td-shadow-2); transform: translateY(-1px); }
-.step-item:focus { outline: none; box-shadow: 0 0 0 2px var(--td-brand-color-focus, var(--td-brand-color)); }
-.step-number { width: 20px; height: 20px; border-radius: 50%; background: var(--td-brand-color); color: #fff; display: flex; align-items: center; justify-content: center; font-size: 12px; font-weight: 600; flex-shrink: 0; }
-.step-content { flex: 1; }
-.step-title { font-weight: 500; margin-bottom: 2px; color: var(--td-text-color-primary); }
-.step-desc { font-size: 12px; color: var(--td-text-color-secondary); line-height: 1.4; }
+.announcement {
+  margin-bottom: 12px;
+  color: var(--td-text-color-primary);
+  font-size: 14px;
+  line-height: 1.6;
+  max-height: 400px;
+  overflow-y: auto;
+}
+.announcement br {
+  margin-bottom: 8px;
+}
 </style>

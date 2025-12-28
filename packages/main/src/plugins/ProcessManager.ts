@@ -3,6 +3,7 @@ import { WorkerPoolManager, WorkerPoolConfig } from './WorkerPoolManager';
 import { SecureCommunicationChannel } from './SecureCommunicationChannel';
 import { pluginLogger } from './PluginLogger';
 import { pluginErrorHandler, ErrorType } from './PluginErrorHandler';
+import { SseQueueService } from '../server/SseQueueService';
 import * as path from 'path';
 
 export interface ProcessManagerConfig {
@@ -11,6 +12,10 @@ export interface ProcessManagerConfig {
   enableIsolation: boolean;
   maxPluginInstances: number;
   processRecoveryEnabled: boolean;
+  /** 插件运行策略：eager=常驻；adaptive=允许空闲退出并按需拉起 */
+  runtimeMode: 'eager' | 'adaptive';
+  /** adaptive 模式下：当收到调用且进程不存在时自动启动 */
+  autoRestartOnDemand: boolean;
 }
 
 export interface PluginProcessInfo {
@@ -40,6 +45,8 @@ export class ProcessManager extends TypedEventEmitter<ProcessManagerEvents> {
   private processes: Map<string, PluginProcessInfo> = new Map();
   private recoveryAttempts: Map<string, number> = new Map();
   private maxRecoveryAttempts = 3;
+  private templates: Map<string, { pluginPath: string; apiPort?: number; manifest?: any }> = new Map();
+  private startLocks: Map<string, Promise<PluginProcessInfo>> = new Map();
 
   constructor(config: Partial<ProcessManagerConfig> = {}) {
     super();
@@ -50,11 +57,13 @@ export class ProcessManager extends TypedEventEmitter<ProcessManagerEvents> {
       enableIsolation: config.enableIsolation !== false,
       maxPluginInstances: config.maxPluginInstances || 50,
       processRecoveryEnabled: config.processRecoveryEnabled !== false,
+      runtimeMode: (config.runtimeMode === 'adaptive' ? 'adaptive' : 'eager'),
+      autoRestartOnDemand: config.autoRestartOnDemand === true,
     };
 
     this.workerPool = new WorkerPoolManager(this.config.workerPool);
     this.communicationChannel = new SecureCommunicationChannel({
-      enableEncryption: this.config.enableSandboxing,
+      enableEncryption: false, // 禁用加密，使用明文传输以便调试
       enableSigning: true,
     });
 
@@ -83,6 +92,35 @@ export class ProcessManager extends TypedEventEmitter<ProcessManagerEvents> {
     });
   }
 
+  private async ensureRunning(pluginId: string): Promise<PluginProcessInfo> {
+    const existing = this.processes.get(pluginId);
+    if (existing) return existing;
+
+    if (this.config.runtimeMode !== 'adaptive' || !this.config.autoRestartOnDemand) {
+      throw new Error(`Plugin process ${pluginId} not found`);
+    }
+
+    const tmpl = this.templates.get(pluginId);
+    if (!tmpl || !tmpl.pluginPath) {
+      throw new Error(`Plugin process ${pluginId} not found (no template for on-demand restart)`);
+    }
+
+    const locked = this.startLocks.get(pluginId);
+    if (locked) return locked;
+
+    const startPromise = this.startPluginProcess(
+      pluginId,
+      tmpl.pluginPath,
+      { apiPort: tmpl.apiPort },
+      tmpl.manifest
+    ).finally(() => {
+      try { this.startLocks.delete(pluginId); } catch {}
+    });
+
+    this.startLocks.set(pluginId, startPromise);
+    return startPromise;
+  }
+
   public async startPluginProcess(
     pluginId: string, 
     pluginPath: string,
@@ -98,6 +136,8 @@ export class ProcessManager extends TypedEventEmitter<ProcessManagerEvents> {
     }
 
     try {
+      // Store template for adaptive on-demand restarts (best-effort).
+      try { this.templates.set(pluginId, { pluginPath, apiPort: options?.apiPort, manifest }); } catch {}
       const sandboxConfig = this.buildSandboxConfig(pluginId, manifest, options?.apiPort);
       const workerId = await this.workerPool.createWorker(pluginId, pluginPath, sandboxConfig);
       const channelId = `${pluginId}-${workerId}`;
@@ -144,7 +184,7 @@ export class ProcessManager extends TypedEventEmitter<ProcessManagerEvents> {
       path.resolve((process as any).resourcesPath || process.cwd(), 'app.asar'),
       path.resolve((process as any).resourcesPath || process.cwd(), 'app'),
     ];
-    const libs = Array.isArray((manifest as any)?.libs) ? (manifest as any).libs : [];
+    const libs = manifest?.main?.libs && Array.isArray(manifest.main.libs) ? manifest.main.libs : [];
     return {
       console: 'redirect',
       require: {
@@ -174,7 +214,6 @@ export class ProcessManager extends TypedEventEmitter<ProcessManagerEvents> {
       } catch (_e) {}
 
       try {
-        const { SseQueueService } = require('../server/SseQueueService');
         const channel = `plugin:${pluginId}:overlay`;
         SseQueueService.getInstance().queueOrPublish(channel, { event: 'plugin-before-unloaded', payload: { ts: Date.now() } }, { ttlMs: 2 * 60 * 1000, persist: true, meta: { kind: 'lifecycle' } });
       } catch {}
@@ -212,10 +251,7 @@ export class ProcessManager extends TypedEventEmitter<ProcessManagerEvents> {
     timeout?: number,
     options?: { optional?: boolean }
   ): Promise<any> {
-    const processInfo = this.processes.get(pluginId);
-    if (!processInfo) {
-      throw new Error(`Plugin process ${pluginId} not found`);
-    }
+    const processInfo = await this.ensureRunning(pluginId);
 
     if (processInfo.status !== 'running') {
       const allowDuringStarting = processInfo.status === 'starting' && method === 'init';
@@ -289,36 +325,16 @@ export class ProcessManager extends TypedEventEmitter<ProcessManagerEvents> {
     throw errObj;
   }
 
-  public async sendMessageToPlugin(
-    pluginId: string, 
-    type: string, 
-    data: any,
-    expectResponse: boolean = false
-  ): Promise<any> {
-    const processInfo = this.processes.get(pluginId);
-    if (!processInfo) {
-      throw new Error(`Plugin process ${pluginId} not found`);
-    }
-
-    try {
-      const result = await this.communicationChannel.sendMessage(
-        processInfo.channelId,
-        type,
-        data,
-        expectResponse
-      );
-
-      processInfo.lastActivity = Date.now();
-      return result;
-    } catch (error: any) {
-      pluginLogger.error('Failed to send message to plugin', pluginId, error instanceof Error ? error : new Error(String(error)), { type });
-      throw error;
-    }
-  }
-
   private handleWorkerTermination(pluginId: string, reason: string): void {
     const processInfo = this.processes.get(pluginId);
     if (!processInfo) return;
+
+    // adaptive：允许空闲 worker 退出，等待下一次调用再拉起
+    if (this.config.runtimeMode === 'adaptive' && reason === 'idle_timeout') {
+      this.processes.delete(pluginId);
+      this.emit('process.stopped', { pluginId, reason });
+      return;
+    }
 
     if (reason !== 'manual' && this.config.processRecoveryEnabled) {
       this.attemptProcessRecovery(pluginId, reason);
@@ -372,7 +388,11 @@ export class ProcessManager extends TypedEventEmitter<ProcessManagerEvents> {
       await new Promise(resolve => setTimeout(resolve, 1000 * (attempts + 1)));
 
       if (pluginPath) {
-        await this.startPluginProcess(pluginId, pluginPath);
+        // Try to reuse stored template (which may contain apiPort and manifest) when restarting
+        const tpl = this.templates.get(pluginId);
+        const tplApiPort = tpl && typeof tpl.apiPort !== 'undefined' ? tpl.apiPort : undefined;
+        const tplManifest = tpl && tpl.manifest ? tpl.manifest : undefined;
+        await this.startPluginProcess(pluginId, pluginPath, { apiPort: tplApiPort }, tplManifest);
         this.emit('process.recovered', { pluginId, attempt: attempts + 1 });
         pluginLogger.info('Process recovery successful', pluginId, { attempt: attempts + 1 });
       } else {

@@ -9,7 +9,6 @@
         <div class="log-title-section">
           <t-icon name="root-list" style="font-size: 16px;" />
           <span class="title">实时日志</span>
-          <t-tag v-if="!autoScroll" theme="warning" size="small">已暂停</t-tag>
         </div>
         <div class="filters">
           <t-checkbox v-model="debugMode">Debug</t-checkbox>
@@ -39,6 +38,16 @@
               <t-icon name="download" />
             </template>
             导出日志
+          </t-button>
+          <t-button 
+            theme="default" 
+            variant="outline"
+            @click="openDevtools"
+            class="export-btn"
+          >
+            <template #icon>
+              <t-icon name="code" />
+            </template>
           </t-button>
         </div>
       </div>
@@ -125,7 +134,6 @@ const levelFilter = ref<string>('')
 const textFilter = ref('')
 const autoScroll = ref(true)
 const logListRef = ref<HTMLDivElement | null>(null)
-let resumeTimer: number | null = null
 const levelOptions = [
   { label: '全部', value: '' },
   { label: '错误', value: 'error' },
@@ -296,15 +304,10 @@ const handleScroll = () => {
     scrollTop.value = el.scrollTop
     containerHeight.value = el.clientHeight
     updateVisibleLogs()
+    const threshold = 8
+    const atBottom = (el.scrollTop + el.clientHeight) >= (el.scrollHeight - threshold)
+    autoScroll.value = atBottom
   }
-  
-  // Pause auto-scroll when user scrolls
-  autoScroll.value = false
-  if (resumeTimer) clearTimeout(resumeTimer)
-  resumeTimer = window.setTimeout(() => { 
-    autoScroll.value = true
-    scrollToBottom() 
-  }, 10000)
 }
 
 
@@ -313,10 +316,16 @@ const exportLogs = async () => {
   try {
     const data = filteredLogs.value
     const suggested = `logs-${Date.now()}.json`
-    const save = await window.electronApi.dialog.showSaveDialog({ title: '保存日志', defaultPath: suggested })
+    const save = await window.electronApi?.dialog.showSaveDialog({ title: '保存日志', defaultPath: suggested })
     const filePath = (save as any)?.filePath || (save as any)?.path
     if (!filePath) return
-    await window.electronApi.fs.writeFile(String(filePath), JSON.stringify(data, null, 2))
+    await window.electronApi?.fs.writeFile(String(filePath), JSON.stringify(data, null, 2))
+  } catch {}
+}
+
+const openDevtools = async () => {
+  try {
+    await window.electronApi?.window.openDevtools()
   } catch {}
 }
 
@@ -419,7 +428,6 @@ onUnmounted(() => {
   try { const es: EventSource = (window as any)._consoleLogES; es && es.close && es.close() } catch {}
   try { const handler: () => void = (window as any)._consoleResizeHandler; if (handler) window.removeEventListener('resize', handler) } catch {}
   if (updateTimer) clearTimeout(updateTimer)
-  if (resumeTimer) clearTimeout(resumeTimer)
 })
 </script>
 

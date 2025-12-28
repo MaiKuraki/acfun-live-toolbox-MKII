@@ -186,8 +186,8 @@ async function generateQrCode() {
   if (qrCountdownTimer) { clearInterval(qrCountdownTimer); qrCountdownTimer = null; }
   if (qrSession.value.pollInterval) { clearInterval(qrSession.value.pollInterval); qrSession.value.pollInterval = null; }
   try {
-    try { await window.electronApi.login.qrCancel(); } catch {}
-    const result = await window.electronApi.login.qrStart();
+    try { await window.electronApi?.login.qrCancel(); } catch {}
+    const result = await window.electronApi?.login.qrStart();
     if ('error' in result) throw new Error(result.error);
     if ('qrCodeDataUrl' in result) {
       qrSession.value.qrDataUrl = result.qrCodeDataUrl;
@@ -202,11 +202,11 @@ async function generateQrCode() {
   } catch (error) {
     console.error('生成二维码失败:', error);
     qrSession.value.status = 'error';
-    try { window.electronApi.popup.toast(`二维码生成失败: ${String((error as any)?.message || error)}`); } catch {}
+    try { window.electronApi?.popup.toast(`二维码生成失败: ${String((error as any)?.message || error)}`); } catch {}
     // 轻量自动重试一次
     try {
       await new Promise(r => setTimeout(r, 1000));
-      const retry = await window.electronApi.login.qrStart();
+      const retry = await window.electronApi?.login.qrStart();
       if ('qrCodeDataUrl' in retry) {
         qrSession.value.qrDataUrl = retry.qrCodeDataUrl;
         qrSession.value.status = 'waiting';
@@ -226,14 +226,14 @@ const startQrPolling = () => {
   const poll = async () => {
     if (qrSession.value.status !== 'waiting' && qrSession.value.status !== 'scanned') { clearInterval(pollInterval); return; }
     try {
-      const result = await window.electronApi.login.qrCheck();
+      const result = await window.electronApi?.login.qrCheck();
       retryCount = 0;
       if (result.success && result.tokenInfo) {
         qrSession.value.status = 'success';
         if (qrCountdownTimer) { clearInterval(qrCountdownTimer); qrCountdownTimer = null; }
         if (qrSession.value.pollInterval) { clearInterval(qrSession.value.pollInterval); qrSession.value.pollInterval = null; }
         try {
-          const finalize = await window.electronApi.login.qrFinalize();
+          const finalize = await window.electronApi?.login.qrFinalize();
           const info = finalize.success && finalize.tokenInfo ? finalize.tokenInfo : result.tokenInfo;
           await accountStore.handleLoginSuccess(info);
         } catch (e) {
@@ -306,7 +306,7 @@ const startQrCountdown = () => {
 const refreshQrCode = () => { generateQrCode(); };
 
 const cancelQrLogin = async () => {
-  try { await window.electronApi.login.qrCancel(); } catch {}
+  try { await window.electronApi?.login.qrCancel(); } catch {}
   qrDialogVisible.value = false;
   qrSession.value.status = 'idle';
   if (qrCountdownTimer) { clearInterval(qrCountdownTimer); qrCountdownTimer = null; }
@@ -324,7 +324,7 @@ const openUserSpace = async () => {
   const url = `https://www.acfun.cn/u/${id}`;
   try {
     if (window.electronApi?.system?.openExternal) {
-      const res = await window.electronApi.system.openExternal(url);
+      const res = await window.electronApi?.system.openExternal(url);
       if (!res?.success) {
         window.open(url, '_blank');
       }

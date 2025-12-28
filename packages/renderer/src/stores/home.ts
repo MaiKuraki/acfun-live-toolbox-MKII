@@ -21,7 +21,7 @@ export const useHomeStore = defineStore('home', () => {
     loading.value.B = true; error.value.B = null;
     try {
       if (window.electronApi?.account?.getUserInfo) {
-        const u = await window.electronApi.account.getUserInfo();
+        const u = await window.electronApi?.account.getUserInfo();
         userInfo.value = u;
       } else {
         throw new Error('IPC account.getUserInfo not available');

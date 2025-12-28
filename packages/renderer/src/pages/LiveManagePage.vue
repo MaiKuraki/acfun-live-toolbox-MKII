@@ -31,7 +31,7 @@
         </t-select>
       <!-- 中部：核心操作 -->
       <div class="control-section">
-        <t-row :gutter="12" v-if="isMyRoom">
+        <t-row :gutter="12" v-if="isMyRoom && liveStatus === 'live'">
           <t-col :span="6">
             <t-button 
               block 
@@ -482,7 +482,7 @@ async function openLiveRoomPlugin(pluginId: string) {
       return;
     }
     if (primary.type === 'window') {
-      await window.electronApi.plugin.window.open(pluginId);
+      await window.electronApi?.plugin.window.open(pluginId);
       return;
     }
   } catch {}
@@ -501,7 +501,7 @@ function formatNumber(num: number) {
 async function toggleLive() {
   try {
     if (liveStatus.value === 'live') {
-      const resp: any = await window.electronApi.popup.confirm(
+      const resp: any = await window.electronApi?.popup.confirm(
         '确定结束直播？',
         '结束直播后将生成本场数据报告。',
         { confirmBtn: { content: '确认结束', theme: 'danger' }, cancelBtn: { content: '取消' }, contextId: 'live-stop-confirm' }
@@ -583,7 +583,7 @@ function openEditDialog() {
 }
 
 async function confirmEditInfo() {
-  const resp: any = await window.electronApi.popup.confirm(
+  const resp: any = await window.electronApi?.popup.confirm(
     '确认修改信息？',
     '将当前标题和封面应用到房间信息，是否确认？',
     { confirmBtn: { content: '确认', theme: 'primary' }, cancelBtn: { content: '取消' }, contextId: 'live-edit-confirm' }
@@ -744,7 +744,7 @@ async function openUserPage() {
     if (!uid) return;
     const url = `https://www.acfun.cn/u/${uid}`;
     if ((window as any).electronApi?.system?.openExternal) {
-      await (window as any).electronApi.system.openExternal(url);
+      await (window as any).electronApi?.system.openExternal(url);
     } else {
       window.open(url, '_blank');
     }

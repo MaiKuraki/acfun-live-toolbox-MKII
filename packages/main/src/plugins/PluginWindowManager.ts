@@ -1,4 +1,4 @@
-import { BrowserWindow } from 'electron';
+import { BrowserWindow, session } from 'electron';
 import path from 'path';
 import { getLogManager } from '../logging/LogManager';
 import { ConfigManager } from '../config/ConfigManager';
@@ -9,14 +9,39 @@ const VITE_DEV_SERVER_URL = process.env['VITE_DEV_SERVER_URL'];
 /**
  * Manages single-instance plugin windows. Each pluginId maps to one BrowserWindow.
  * Windows load the renderer with hash `#/plugins/:pluginId/window`.
+ * 
+ * Memory optimization: Uses shared session partition to reduce memory footprint.
  */
 export class PluginWindowManager {
   private windows: Map<string, BrowserWindow> = new Map();
+  private windowActivity: Map<string, number> = new Map(); // Track last activity time (for statistics only)
   private configManager?: ConfigManager;
   private pluginManager?: PluginManager;
+  private sharedSession: session.Session;
 
   constructor(configManager?: ConfigManager) {
     this.configManager = configManager;
+    // Create a shared session partition for all plugin windows to reduce memory usage
+    // This allows multiple windows to share the same renderer process when possible
+    this.sharedSession = session.fromPartition('persist:plugin-windows-shared', { cache: true });
+    // Register CSP header remover once on the shared session to avoid registering
+    // the same handler for each window (which could accumulate and cause overhead).
+    try {
+      this.sharedSession.webRequest.onHeadersReceived((details, callback) => {
+        try {
+          const headers = { ...details.responseHeaders } as Record<string, string | string[]>;
+          for (const key of Object.keys(headers)) {
+            const lower = key.toLowerCase();
+            if (lower === 'content-security-policy' || lower === 'x-content-security-policy' || lower === 'x-webkit-csp') {
+              delete headers[key];
+            }
+          }
+          callback({ responseHeaders: headers });
+        } catch {
+          try { callback({ responseHeaders: details.responseHeaders }); } catch {}
+        }
+      });
+    } catch {}
   }
 
   public setPluginManager(pluginManager: PluginManager): void {
@@ -63,6 +88,7 @@ export class PluginWindowManager {
         }
       }
 
+      // Memory optimization: Use shared session partition and optimized webPreferences
       const win = new BrowserWindow({
         show: false,
         width,
@@ -77,28 +103,47 @@ export class PluginWindowManager {
           nodeIntegration: false,
           contextIsolation: true,
           sandbox: false,
-          preload: path.join(__dirname, '../../preload/dist/exposed.mjs')
+          preload: path.join(__dirname, '../../preload/dist/exposed.mjs'),
+          // Memory optimization options
+          partition: 'persist:plugin-windows-shared', // Share session across plugin windows
+          backgroundThrottling: true, // Throttle background tabs/windows
+          enableWebSQL: false, // Disable deprecated WebSQL
+          v8CacheOptions: 'code', // Optimize V8 code caching
+          // Disable unnecessary features to reduce memory
+          spellcheck: false,
+          enableBlinkFeatures: undefined,
+          disableBlinkFeatures: 'Auxclick', // Disable auxclick to reduce event overhead
         }
       });
 
-      // Remove CSP headers similar to main window
-      win.webContents.session.webRequest.onHeadersReceived((details, callback) => {
-        const headers = { ...details.responseHeaders } as Record<string, string | string[]>;
-        for (const key of Object.keys(headers)) {
-          const lower = key.toLowerCase();
-          if (lower === 'content-security-policy' || lower === 'x-content-security-policy' || lower === 'x-webkit-csp') {
-            delete headers[key];
-          }
-        }
-        callback({ responseHeaders: headers });
-      });
+      // CSP header handling moved to shared session registration in constructor.
+
+      // Track window activity
+      const updateActivity = () => {
+        this.windowActivity.set(pluginId, Date.now());
+      };
 
       win.once('ready-to-show', () => {
         try { win.show(); } catch {}
+        updateActivity();
+        try {
+          for (const a of process.argv) {
+            if (String(a).trim() === '--debug') {
+              try { win.webContents.openDevTools({ mode: 'detach' }); } catch {}
+              return;
+            }
+          }
+        } catch {}
         if (VITE_DEV_SERVER_URL) {
           try { win.webContents.openDevTools({ mode: 'detach' }); } catch {}
         }
       });
+
+      // Track various user interactions to update activity
+      win.on('focus', updateActivity);
+      win.on('show', updateActivity);
+      win.webContents.on('did-navigate', updateActivity);
+      win.webContents.on('did-navigate-in-page', updateActivity);
 
       // Load renderer with route
       const hashRoute = `#/plugins/${encodeURIComponent(pluginId)}/window`;
@@ -120,6 +165,7 @@ export class PluginWindowManager {
 
       win.on('closed', () => {
         this.windows.delete(pluginId);
+        this.windowActivity.delete(pluginId);
       });
 
       try {
@@ -185,6 +231,67 @@ export class PluginWindowManager {
   public send(pluginId: string, channel: string, payload?: any): boolean {
     const win = this.windows.get(pluginId);
     if (!win || win.isDestroyed()) return false;
-    try { win.webContents.send(channel, payload); return true; } catch { return false; }
+    try { 
+      win.webContents.send(channel, payload);
+      this.windowActivity.set(pluginId, Date.now()); // Update activity on send
+      return true; 
+    } catch { return false; }
+  }
+
+  /**
+   * Get memory usage statistics for all plugin windows
+   */
+  public async getMemoryStats(): Promise<{ 
+    windowCount: number; 
+    totalMemoryMB: number; 
+    windows: Array<{ pluginId: string; memoryMB: number }> 
+  }> {
+    const windows: Array<{ pluginId: string; memoryMB: number }> = [];
+    let totalMemory = 0;
+
+    for (const [pluginId, win] of this.windows.entries()) {
+      if (win && !win.isDestroyed()) {
+        try {
+          // getProcessMemoryInfo is async in newer Electron versions
+          const getMemoryInfo = (win.webContents as any).getProcessMemoryInfo;
+          if (typeof getMemoryInfo === 'function') {
+            const memoryInfo = await getMemoryInfo();
+            if (memoryInfo) {
+              // Memory info structure varies by Electron version
+              const privateBytes = memoryInfo.privateBytes || memoryInfo.private || 0;
+              const memoryMB = privateBytes / 1024 / 1024;
+              windows.push({ pluginId, memoryMB });
+              totalMemory += memoryMB;
+            }
+          }
+        } catch {
+          // Ignore errors - memory info may not be available
+        }
+      }
+    }
+
+    return {
+      windowCount: windows.length,
+      totalMemoryMB: totalMemory,
+      windows
+    };
+  }
+
+  /**
+   * Cleanup: Close all windows and clear resources
+   */
+  public destroy(): void {
+    for (const [pluginId, win] of this.windows.entries()) {
+      try {
+        if (win && !win.isDestroyed()) {
+          win.close();
+        }
+      } catch {
+        // Ignore errors
+      }
+    }
+
+    this.windows.clear();
+    this.windowActivity.clear();
   }
 }

@@ -280,8 +280,14 @@ export class AcfunApiProxy {
           if (method === 'POST') {
              const { roomId } = req.body;
              if (!roomId) return { success: false, error: 'roomId is required', code: 400 };
-             const success = await this.roomManager.addRoom(String(roomId));
-             return { success, code: success ? 200 : 400, error: success ? undefined : 'Failed to add room' };
+             const roomIdStr = String(roomId);
+             // 提前检查，给出更具体的错误提示
+             if (this.roomManager.getRoomInfo(roomIdStr)) {
+               return { success: false, error: `房间 ${roomIdStr} 已在管理列表中`, code: 400 };
+             }
+
+             const success = await this.roomManager.addRoom(roomIdStr);
+             return { success, code: success ? 200 : 400, error: success ? undefined : `Failed to add room ${roomIdStr}` };
           }
           break;
 
@@ -289,8 +295,14 @@ export class AcfunApiProxy {
           if (method === 'POST') {
              const { roomId } = req.body;
              if (!roomId) return { success: false, error: 'roomId is required', code: 400 };
-             const success = await this.roomManager.removeRoom(String(roomId));
-             return { success, code: success ? 200 : 400, error: success ? undefined : 'Failed to remove room' };
+             const roomIdStr = String(roomId);
+             // 提前检查，给出更具体的错误提示
+             if (!this.roomManager.getRoomInfo(roomIdStr)) {
+               return { success: false, error: `未找到房间 ${roomIdStr}，无法移除`, code: 404 };
+             }
+
+             const success = await this.roomManager.removeRoom(roomIdStr);
+             return { success, code: success ? 200 : 400, error: success ? undefined : `Failed to remove room ${roomIdStr}` };
           }
           break;
       }
@@ -1016,7 +1028,10 @@ export class AcfunApiProxy {
               subCategoryID
             );
             if (result && result.success) {
-              this.broadcast('room', 'live-start', { title, streamName, ts: Date.now(), liveId: (result.data as any)?.liveID });
+              const liveId = (result.data as any)?.liveID || '';
+              this.broadcast('room', 'live-start', { title, streamName, ts: Date.now(), liveId });
+              // Also publish renderer event for live start
+              this.broadcast('renderer', 'live-start', { liveId, roomId: '' }); // roomId is not available here
             }
             return {
               success: result.success,
@@ -1041,6 +1056,8 @@ export class AcfunApiProxy {
             const result = await this.acfunApi.live.stopLiveStream(liveId);
             if (result && result.success) {
               this.broadcast('room', 'live-stop', { liveId, ts: Date.now() });
+              // Also publish renderer event for live stop
+              this.broadcast('renderer', 'live-stop', { liveId, roomId: '' }); // roomId is not available here
             }
             return {
               success: result.success,
@@ -1213,6 +1230,62 @@ export class AcfunApiProxy {
               error: result.error,
               code: result.success ? 200 : 400
             };
+          }
+          break;
+
+        case 'channel-list':
+          if (method === 'GET') {
+            try {
+              // 解析查询参数
+              const filtersParam = req.query.filters as string;
+              let filters: Array<{ filterType: number; filterId: number }> | undefined;
+              
+              if (filtersParam) {
+                try {
+                  filters = JSON.parse(filtersParam);
+                  if (!Array.isArray(filters)) {
+                    filters = undefined;
+                  }
+                } catch {
+                  // 如果解析失败，忽略 filters 参数
+                  filters = undefined;
+                }
+              }
+
+              const count = req.query.count ? parseInt(req.query.count as string) : undefined;
+              const pcursor = req.query.pcursor as string | undefined;
+
+              const options: {
+                filters?: Array<{ filterType: number; filterId: number }>;
+                count?: number;
+                pcursor?: string;
+              } = {};
+
+              if (filters) {
+                options.filters = filters;
+              }
+              if (count && !Number.isNaN(count)) {
+                options.count = count;
+              }
+              if (pcursor) {
+                options.pcursor = pcursor;
+              }
+
+              const result = await this.acfunApi.live.getChannelList(options);
+              return {
+                success: result.success,
+                data: result.data,
+                error: result.error,
+                code: result.success ? 200 : 400
+              };
+            } catch (error: any) {
+              console.error('[AcfunApiProxy] Channel list error:', error);
+              return {
+                success: false,
+                error: error.message || 'Failed to get channel list',
+                code: 400
+              };
+            }
           }
           break;
 

@@ -24,7 +24,7 @@
         <!-- 直播功能 -->
         <t-submenu
           value="live"
-          title="直播功能"
+          title="直播"
         >
           <template #icon>
             <t-icon name="video" />
@@ -72,7 +72,7 @@
         <!-- 插件管理 -->
         <t-submenu
           value="plugins"
-          title="插件管理"
+          title="插件"
         >
           <template #icon>
             <t-icon name="app" />
@@ -116,7 +116,7 @@
         <!-- 系统功能 -->
         <t-submenu
           value="system"
-          title="系统功能"
+          title="系统"
         >
           <template #icon>
             <t-icon name="tools" />
@@ -141,7 +141,7 @@
           </t-menu-item>
           <t-menu-item
             value="system-develop"
-            @click="navigateTo('/system/develop')"
+            @click="showDevelopmentPopup"
           >
             <template #icon>
               <t-icon name="bug" />
@@ -166,6 +166,7 @@ import { reportReadonlyUpdate } from '../utils/readonlyReporter'
 import { getApiBase } from '../utils/hosting'
 import { useAccountStore } from '../stores/account'
 import { useRoomStore } from '../stores/room'
+import { GlobalPopup } from '../services/globalPopup';
 
 interface DynamicPlugin {
   id: string;
@@ -270,6 +271,10 @@ async function navigateTo(path: string) {
   } catch {}
 }
 
+function showDevelopmentPopup() {
+  GlobalPopup.alert('开发中，敬请期待');
+}
+
 async function navigateToLiveCreate() {
   try {
     const base = getApiBase();
@@ -279,7 +284,7 @@ async function navigateToLiveCreate() {
     const authed = ok && !!(res.data && res.data.authenticated);
     if (!authed) {
       try {
-        const resp: any = await window.electronApi.popup.confirm('提示', '要直播请先登录', { confirmBtn: '去登录', cancelBtn: '关闭' });
+        const resp: any = await window.electronApi?.popup.confirm('提示', '要直播请先登录', { confirmBtn: '去登录', cancelBtn: '关闭' });
         const go = resp?.result === true || resp === true;
         if (go) {
           try { await router.push({ path: '/home', query: { qrLogin: '1', t: Date.now() } }); } catch {}
@@ -342,7 +347,7 @@ async function openPlugin(plugin: DynamicPlugin) {
     }
     if (primary.type === 'window') {
       // 打开插件独立窗口（单实例），无需切换主窗口路由
-      await window.electronApi.plugin.window.open(plugin.id);
+      await window.electronApi?.plugin.window.open(plugin.id);
       return;
     }
   } catch (err) {
