@@ -389,7 +389,14 @@ async function testLoad() {
 
 async function saveConfig() {
   try {
-    const payload = { ...config.value, pluginId: derivedPluginId.value } as any;
+    // Only include DevConfig properties to avoid non-serializable data
+    const payload = {
+      projectUrl: config.value.projectUrl,
+      ...(showNodePath.value && { nodePath: config.value.nodePath }),
+      manifestPath: config.value.manifestPath,
+      hotReload: config.value.hotReload,
+      pluginId: derivedPluginId.value
+    };
     await window.electronApi?.plugin.saveDevConfig(payload);
     addLog('info', '配置已保存');
   } catch (error) {

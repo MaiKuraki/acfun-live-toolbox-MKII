@@ -581,24 +581,12 @@ async function getStreamInfo() {
     try {
       const userId = accountStore?.userInfo?.userID;
       if (userId) {
-        {
-          const base = getApiBase();
-          const url = new URL('/api/acfun/live/user-info', base);
-          url.searchParams.set('userID', String(userId));
-          console.log('[LiveCreate][REQ]', 'GET', url.toString());
-        }
         const urlInfo = new URL('/api/acfun/live/user-info', getApiBase());
         urlInfo.searchParams.set('userID', String(userId));
         const resInfo = await fetch(urlInfo.toString(), { method: 'GET' });
         const info = await resInfo.json();
         console.log('[LiveCreate][RESP] user-info:', info);
         if (info.success && info.data?.liveID) {
-          {
-            const base = getApiBase();
-            const url = new URL('/api/acfun/live/stream-url', base);
-            url.searchParams.set('liveId', info.data.liveID);
-            console.log('[LiveCreate][REQ]', 'GET', url.toString());
-          }
           const urlStream = new URL('/api/acfun/live/stream-url', getApiBase());
           urlStream.searchParams.set('liveId', String(info.data.liveID));
           const resStream = await fetch(urlStream.toString(), { method: 'GET' });

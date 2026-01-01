@@ -184,15 +184,14 @@ export class ProcessManager extends TypedEventEmitter<ProcessManagerEvents> {
       path.resolve((process as any).resourcesPath || process.cwd(), 'app.asar'),
       path.resolve((process as any).resourcesPath || process.cwd(), 'app'),
     ];
-    const libs = manifest?.main?.libs && Array.isArray(manifest.main.libs) ? manifest.main.libs : [];
-    return {
+   return {
+      ...manifest?.main||{},
       console: 'redirect',
       require: {
         external: true,
         builtin: ['path','fs','child_process','crypto','os','events','http','https'],
         root: roots,
       },
-      libs,
       sandbox: {
         pluginId,
         apiPort

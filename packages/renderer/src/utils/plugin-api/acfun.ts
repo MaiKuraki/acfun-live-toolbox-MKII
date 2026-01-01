@@ -3,7 +3,10 @@ import type { RequestFn } from "./types";
 export function createAcfunApi(request: RequestFn) {
   return {
     user: {
-      getUserInfo: (userId: string) => request(`/api/acfun/user/info?userId=${encodeURIComponent(userId)}`),
+      getUserInfo: (userId?: string) => {
+        const url = userId ? `/api/acfun/user/info?userId=${encodeURIComponent(userId)}` : '/api/acfun/user/info';
+        return request(url);
+      },
     },
     danmu: {
       getLiveRoomInfo: (liverUID: string) =>
@@ -43,6 +46,8 @@ export function createAcfunApi(request: RequestFn) {
     },
   };
 }
+
+
 
 
 

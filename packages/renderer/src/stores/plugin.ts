@@ -400,9 +400,13 @@ export const usePluginStore = defineStore('plugin', () => {
       if (!plugin) return;
 
       // 使用真实的preload API启用/停用插件
+      console.log(`[DEBUG] Calling ${enabled ? 'enable' : 'disable'} for plugin ${pluginId}`);
       const result = enabled
         ? await window.electronApi?.plugin.enable(pluginId)
         : await window.electronApi?.plugin.disable(pluginId);
+
+      console.log(`[DEBUG] Result for ${enabled ? 'enable' : 'disable'} ${pluginId}:`, result);
+      console.log(`[DEBUG] Plugin state before update:`, { enabled: plugin.enabled, status: plugin.status });
 
       if (!result.success) {
         throw new Error(result.error || `${enabled ? '启用' : '停用'}插件失败`);
@@ -412,6 +416,7 @@ export const usePluginStore = defineStore('plugin', () => {
       plugin.enabled = enabled;
       plugin.status = enabled ? 'active' : 'inactive';
       plugin.lastUpdate = new Date();
+      console.log(`[DEBUG] Plugin state after update:`, { enabled: plugin.enabled, status: plugin.status });
 
       // 处理路由注册/注销
       if (enabled && plugin.routes) {
@@ -545,8 +550,10 @@ export const usePluginStore = defineStore('plugin', () => {
   // 监听插件状态变更事件（热重载、远程控制等触发）
   if (window.electronApi?.on) {
     window.electronApi?.on('plugin-status-changed', (payload: any) => {
+      console.log(`[DEBUG] Received plugin-status-changed event:`, payload);
       // Add a small delay to ensure main process state is fully consistent
       setTimeout(() => {
+        console.log(`[DEBUG] Calling refreshPluginStatus after plugin-status-changed`);
         refreshPluginStatus();
       }, 100);
     });

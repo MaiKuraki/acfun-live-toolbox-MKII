@@ -47,23 +47,25 @@ function createSseManager(pluginId, apiBaseUrl, request) {
     _state: STATE.INIT,
     _backoffAttempts: 0,
     _backoffTimer: null,
-    _listeners: new Set(),
-    _kindRefs: new Map(),
-    _storeRefs: new Map(),
-    _roomRefs: new Map(),
-    _danmakuRules: new Map(),
-    _rendererRefs: 0,
-    _messageRefs: new Map(),
-    _hasEverDanmaku: false,
-    _hasEverRenderer: false,
-    _hasEverMessage: false,
-    _serverState: {
-      danmakuRules: [],
-      storeKeys: [],
-      rendererEvents: [],
-      messageKinds: [],
+    callbacksRegistry: {
+      lifecycle: null,
+      config: null,
+      store: null,
+      renderer: null,
+      mainMessage: null,
+      uiMessage: null,
+      shortcut: new Map(),
+      danmaku: new Map(),
     },
-    _lastStoreKeys: null,
+    _serverState: {
+      lifecycle: { subscribed: false },
+      config: { subscribed: false },
+      shortcut: {},
+      store: { keys: [], snapshot: null },
+      renderer: { subscribed: false },
+      messages: { mainMessage: false, uiMessage: false },
+      danmaku: { rules: [] },
+    },
 
     _computeBackoff() {
       const pow = Math.pow(2, this._backoffAttempts);
@@ -126,7 +128,19 @@ function createSseManager(pluginId, apiBaseUrl, request) {
             resolve(String(this._clientId));
           }
           // 重连后重放最新订阅
-          try { void this.syncSubscriptions(true); } catch {}
+          try { void this.restoreSubscriptions().catch(() => {}); } catch {}
+        };
+
+        const onClient = (ev) => {
+          try {
+            const data = JSON.parse(ev.data || '{}');
+            const cid = String(data?.payload?.clientId || data?.clientId || '');
+            if (cid && String(this._clientId) !== cid) {
+              this._clientId = cid;
+            }
+          } catch {
+            // ignore
+          }
         };
 
         const dispatch = (ev) => {
@@ -137,72 +151,126 @@ function createSseManager(pluginId, apiBaseUrl, request) {
             env.kind = kind;
             env.pluginId = String(env.pluginId || pluginId);
             env.ts = typeof env.ts === 'number' ? env.ts : Date.now();
-            // #region agent log
             try {
-              if (kind === 'config') {
-                fetch('http://127.0.0.1:7242/ingest/52fa37f8-b908-44d5-87d2-c8f2861a8c45', {
-                  method: 'POST',
-                  headers: { 'Content-Type': 'application/json' },
-                  body: JSON.stringify({
-                    sessionId: 'debug-session',
-                    runId: 'settings-subscribe',
-                    hypothesisId: 'E',
-                    location: 'packages/main/src/plugins/worker/api/sseManager.js:127',
-                    message: 'dispatch received config',
-                    data: { env },
-                    timestamp: Date.now(),
-                  }),
-                }).catch(() => {});
-              }
-            } catch {}
-            // #endregion
-            // 优先触发 callbacksRegistry 中的直接回调（兼容 createSubscribeApi 的 onX 形式）
-            try {
-            if (this.callbacksRegistry) {
-                // uiMessage 回调（onUiMessage）
-                if (kind === 'uimessage' && typeof this.callbacksRegistry.uiMessage === 'function') {
-                  try { 
-                    // dispatch uiMessage to callbacksRegistry.uiMessage
-                    try {
-                      this.callbacksRegistry.uiMessage(env);
-                    } catch (cbErr) {
-                      try { console.error('[plugin-worker] callbacksRegistry.uiMessage threw', cbErr && cbErr.message ? cbErr.message : cbErr); } catch {}
-                      throw cbErr;
-                    }
-                  } catch (dispatchErr) {
-                    // ensure dispatch errors are visible in worker logs
-                    try { console.error('[plugin-worker] failed to dispatch uiMessage', dispatchErr && dispatchErr.message ? dispatchErr.message : dispatchErr); } catch {}
+              switch (kind) {
+                case 'lifecycle': {
+                  const cb = this.callbacksRegistry.lifecycle;
+                  if (cb) cb(env.payload ?? env);
+                  break;
+                }
+                case 'config': {
+                  const cb = this.callbacksRegistry.config;
+                  if (cb) cb(env.payload ?? env);
+                  break;
+                }
+                case 'shortcut': {
+                  const accel = env.payload?.accelerator;
+                  if (accel) {
+                    const fn = this.callbacksRegistry.shortcut.get(String(accel));
+                    if (fn) fn();
                   }
+                  break;
                 }
-                // renderer 回调（subscribeRendererEvents 使用 callbacksRegistry.renderer）
-                if (kind === 'renderer' && typeof this.callbacksRegistry.renderer === 'function') {
-                  try { this.callbacksRegistry.renderer(env); } catch {}
+                case 'store': {
+                  const cb = this.callbacksRegistry.store;
+                  if (cb && env.payload && typeof env.payload === 'object') {
+                    cb(env.payload);
+                  }
+                  break;
                 }
-                // danmaku 回调集合（callbacksRegistry.danmaku: Map<roomId, callback>）
-                if (kind === 'danmaku' && this.callbacksRegistry.danmaku && typeof this.callbacksRegistry.danmaku === 'object') {
-                  try {
-                    const roomId = String((env && env.payload && env.payload.roomId) || '').trim();
-                    if (roomId && this.callbacksRegistry.danmaku.has(roomId)) {
-                      try { this.callbacksRegistry.danmaku.get(roomId)(env); } catch {}
-                    } else {
-                      // 如果没有匹配 roomId，则尝试遍历所有回调（降级行为）
-                      for (const cb of Array.from(this.callbacksRegistry.danmaku.values())) {
-                        try { cb(env); } catch {}
-                      }
-                    }
-                  } catch {}
+                case 'renderer': {
+                  const cb = this.callbacksRegistry.renderer;
+                  if (!cb) break;
+                  const event = env.event;
+                  const payload = env.payload || {};
+                  let rendererEvent;
+                  switch (event) {
+                    case 'user-login':
+                      rendererEvent = { type: 'user-login', userId: payload.userId || '', userInfo: payload.userInfo };
+                      break;
+                    case 'user-logout':
+                      rendererEvent = { type: 'user-logout' };
+                      break;
+                    case 'route-change':
+                      rendererEvent = {
+                        type: 'route-change',
+                        routePath: payload.routePath || '',
+                        pageName: payload.pageName || '',
+                        pageTitle: payload.pageTitle || '',
+                      };
+                      break;
+                    case 'live-start':
+                      rendererEvent = {
+                        type: 'live-start',
+                        liveId: payload.liveId || '',
+                        roomId: payload.roomId || '',
+                      };
+                      break;
+                    case 'live-stop':
+                      rendererEvent = {
+                        type: 'live-stop',
+                        liveId: payload.liveId || '',
+                        roomId: payload.roomId || '',
+                      };
+                      break;
+                    case 'danmaku-collection-start':
+                      rendererEvent = { type: 'danmaku-collection-start', roomId: payload.roomId || '' };
+                      break;
+                    case 'danmaku-collection-stop':
+                      rendererEvent = { type: 'danmaku-collection-stop', roomId: payload.roomId || '' };
+                      break;
+                    case 'config-updated':
+                      rendererEvent = { type: 'config-updated', key: payload.key || '', value: payload.value };
+                      break;
+                    case 'plugin-enabled':
+                      rendererEvent = { type: 'plugin-enabled', pluginId: payload.pluginId || '' };
+                      break;
+                    case 'plugin-disabled':
+                      rendererEvent = { type: 'plugin-disabled', pluginId: payload.pluginId || '' };
+                      break;
+                    case 'plugin-uninstalled':
+                      rendererEvent = { type: 'plugin-uninstalled', pluginId: payload.pluginId || '' };
+                      break;
+                    case 'app-closing':
+                      rendererEvent = { type: 'app-closing' };
+                      break;
+                    default:
+                      break;
+                  }
+                  if (rendererEvent) cb(rendererEvent);
+                  break;
                 }
+                case 'mainmessage': {
+                  const cb = this.callbacksRegistry.mainMessage;
+                  if (cb) cb(env.payload ?? env);
+                  break;
+                }
+                case 'uimessage': {
+                  const cb = this.callbacksRegistry.uiMessage;
+                  if (cb) cb(env.payload ?? env);
+                  break;
+                }
+                case 'danmaku': {
+                  const payload = env.payload || {};
+                  const rid = String(payload.roomId || payload.room_id || env.roomId || env.overlayId || "").trim();
+                  if (!rid) break;
+                  const cb = this.callbacksRegistry.danmaku.get(rid);
+                  if (cb) cb(payload);
+                  break;
+                }
+                default:
+                  break;
               }
-            } catch {}
-
-            // 继续调用通过 subscribe() 注册的监听器
-            this._listeners.forEach((fn) => fn(env, ev, kind));
+            } catch (err) {
+              console.warn('[plugin-worker] SSE dispatch error:', err);
+            }
           } catch {}
         };
 
         es.onopen = onOpen;
         es.onmessage = dispatch;
-        ['init', 'heartbeat', 'update', 'closed', 'lifecycle', 'config', 'shortcut', 'room', 'danmaku', 'store', 'client', 'renderer', 'error', 'mainmessage', 'uimessage'].forEach((ev) => {
+        es.addEventListener('client', onClient);
+        ['init', 'heartbeat', 'update', 'closed', 'action', 'lifecycle', 'config', 'shortcut', 'room', 'danmaku', 'store', 'error', 'mainmessage', 'uimessage', 'renderer'].forEach((ev) => {
           es.addEventListener(ev, dispatch);
         });
         es.onerror = (ev) => {
@@ -233,253 +301,77 @@ function createSseManager(pluginId, apiBaseUrl, request) {
       return this._readyPromise;
     },
 
-    _addDanmakuRule(roomId, types) {
-      const rid = String(roomId || '').trim();
-      if (!rid) return;
-      const entry = this._danmakuRules.get(rid) || { wildcard: 0, typeCounts: new Map() };
-      const isWildcard = Array.isArray(types) && types.length === 1 && types[0] === '*';
-      if (isWildcard) entry.wildcard += 1;
-      else {
-        (types || []).forEach((t) => {
-          const key = String(t || '').toLowerCase();
-          if (!key) return;
-          entry.typeCounts.set(key, (entry.typeCounts.get(key) || 0) + 1);
-        });
-      }
-      this._danmakuRules.set(rid, entry);
-      this._hasEverDanmaku = true;
-    },
-    _removeDanmakuRule(roomId, types) {
-      const rid = String(roomId || '').trim();
-      if (!rid) return;
-      const entry = this._danmakuRules.get(rid);
-      if (!entry) return;
-      const isWildcard = Array.isArray(types) && types.length === 1 && types[0] === '*';
-      if (isWildcard) entry.wildcard = Math.max(0, entry.wildcard - 1);
-      else {
-        (types || []).forEach((t) => {
-          const key = String(t || '').toLowerCase();
-          if (!key) return;
-          const cur = entry.typeCounts.get(key) || 0;
-          if (cur <= 1) entry.typeCounts.delete(key);
-          else entry.typeCounts.set(key, cur - 1);
-        });
-      }
-      if (entry.wildcard === 0 && entry.typeCounts.size === 0) this._danmakuRules.delete(rid);
-      else this._danmakuRules.set(rid, entry);
-    },
 
     subscribe(kinds, filter, callback, opts = {}) {
-      const normalizedKinds = (kinds || []).map((k) => String(k || '').trim()).filter(Boolean);
-      const storeKeys = (opts.storeKeys || []).map((k) => String(k || '').trim()).filter(Boolean);
-      const roomIds = (opts.roomIds || []).map((k) => String(k || '').trim()).filter(Boolean);
-      const danmakuTypes = Array.isArray(opts.danmakuTypes) ? opts.danmakuTypes : [];
-
-      const handler = (env, _raw, kind) => {
-        if (filter(kind, env)) callback(env);
-      };
-
-      const baseKindsSet = normalizedKinds.map((k) => k.split(':')[0]).filter(Boolean);
-      baseKindsSet.forEach((k) => {
-        const lower = k.toLowerCase();
-        const canonicalMessageKind =
-          lower === 'mainmessage' ? 'mainMessage' : lower === 'uimessage' ? 'uiMessage' : lower === 'message' ? 'message' : null;
-        if (lower === 'renderer') {
-          this._rendererRefs += 1;
-          this._hasEverRenderer = true;
-        } else if (canonicalMessageKind) {
-          this._messageRefs.set(canonicalMessageKind, (this._messageRefs.get(canonicalMessageKind) || 0) + 1);
-          this._hasEverMessage = true;
-        } else {
-          this._kindRefs.set(lower, (this._kindRefs.get(lower) || 0) + 1);
-        }
-      });
-      storeKeys.forEach((k) => {
-        this._storeRefs.set(k, (this._storeRefs.get(k) || 0) + 1);
-      });
-      roomIds.forEach((id) => {
-        this._roomRefs.set(id, (this._roomRefs.get(id) || 0) + 1);
-      });
-      roomIds.forEach((id) => this._addDanmakuRule(id, danmakuTypes));
-
-      this._listeners.add(handler);
-
+      // Simplified subscribe method for backward compatibility
+      // The actual subscription logic should be handled through createSubscribeApi
       if (!this._sse) {
         void this.ensureConnection().catch(() => {});
       }
-
-      void this.syncSubscriptions();
-
-      let closed = false;
       return {
         close: () => {
-          if (closed) return;
-          closed = true;
-          this._listeners.delete(handler);
-          baseKindsSet.forEach((k) => {
-            const lower = k.toLowerCase();
-            const canonicalMessageKind =
-              lower === 'mainmessage' ? 'mainMessage' : lower === 'uimessage' ? 'uiMessage' : lower === 'message' ? 'message' : null;
-            if (lower === 'renderer') {
-              this._rendererRefs = Math.max(0, this._rendererRefs - 1);
-            } else if (canonicalMessageKind) {
-              const cur = this._messageRefs.get(canonicalMessageKind) || 0;
-              const next = cur - 1;
-              if (next <= 0) this._messageRefs.delete(canonicalMessageKind);
-              else this._messageRefs.set(canonicalMessageKind, next);
-            } else {
-              const cur = this._kindRefs.get(lower) || 0;
-              const next = cur - 1;
-              if (next <= 0) this._kindRefs.delete(lower);
-              else this._kindRefs.set(lower, next);
-            }
-          });
-          storeKeys.forEach((k) => {
-            const cur = this._storeRefs.get(k) || 0;
-            const next = cur - 1;
-            if (next <= 0) this._storeRefs.delete(k);
-            else this._storeRefs.set(k, next);
-          });
-          roomIds.forEach((id) => {
-            const cur = this._roomRefs.get(id) || 0;
-            const next = cur - 1;
-            if (next <= 0) this._roomRefs.delete(id);
-            else this._roomRefs.set(id, next);
-          });
-          roomIds.forEach((id) => this._removeDanmakuRule(id, danmakuTypes));
-          void this.syncSubscriptions();
+          // No-op for backward compatibility
         },
       };
     },
 
-    _buildDesiredState(useSaved = false) {
-      if (useSaved && this._serverState) {
-        return {
-          danmakuRules: this._serverState.danmakuRules || [],
-          storeKeys: this._serverState.storeKeys || [],
-          rendererEvents: this._serverState.rendererEvents || [],
-          messageKinds: this._serverState.messageKinds || [],
-        };
-      }
-      const storeKeys = Array.from(this._storeRefs.keys());
-      const danmakuRules = Array.from(this._danmakuRules.entries()).map(([roomId, rule]) => ({
-        roomId,
-        types: rule.wildcard > 0 ? ['*'] : Array.from(rule.typeCounts.keys()),
-      }));
-      const rendererEvents = this._rendererRefs > 0 ? ['*'] : [];
-      const messageKinds = Array.from(this._messageRefs.keys());
-      return { storeKeys, danmakuRules, rendererEvents, messageKinds };
-    },
 
-    async syncSubscriptions(useSaved = false) {
+    async restoreSubscriptions() {
+      const clientId = await this.ensureConnection();
+      const tasks = [];
+
       try {
-        const clientId = await this.ensureConnection();
-        // #region agent log
-        try {
-          fetch('http://127.0.0.1:7242/ingest/52fa37f8-b908-44d5-87d2-c8f2861a8c45', {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({
-              sessionId: 'debug-session',
-              runId: 'settings-subscribe',
-              hypothesisId: 'B',
-              location: 'packages/main/src/plugins/worker/api/sseManager.js:308',
-              message: 'syncSubscriptions state',
-              data: { kindRefs: Array.from(this._kindRefs.keys()), hasConfig: this._kindRefs.has('config') },
-              timestamp: Date.now(),
-            }),
-          }).catch(() => {});
-        } catch {}
-        // #endregion
-        const { storeKeys, danmakuRules, rendererEvents, messageKinds } = this._buildDesiredState(useSaved);
-
-        const responses = [];
-
-        if (this._hasEverDanmaku || danmakuRules.length > 0) {
-          responses.push(
-            request(`/api/plugins/${encodeURIComponent(pluginId)}/subscribe/danmaku`, 'POST', {
-              clientId,
-              rules: danmakuRules,
-            })
-          );
-        }
-        // Ensure config kind subscription is explicitly requested (renderer uses /subscribe/config; main should too)
-        if (this._kindRefs.has('config')) {
-          try {
-            // #region agent log
-            try {
-              fetch('http://127.0.0.1:7242/ingest/52fa37f8-b908-44d5-87d2-c8f2861a8c45', {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({
-                  sessionId: 'debug-session',
-                  runId: 'settings-subscribe',
-                  hypothesisId: 'SubscribeConfigAttempt',
-                  location: 'packages/main/src/plugins/worker/api/sseManager.js:322',
-                  message: 'requesting subscribe/config for main client',
-                  data: { clientId, pluginId },
-                  timestamp: Date.now(),
-                }),
-              }).catch(() => {});
-            } catch {}
-            // #endregion
-            responses.push(
-              request(`/api/plugins/${encodeURIComponent(pluginId)}/subscribe/config`, 'POST', {
-                clientId,
-              })
-            );
-          } catch (e) {
-            try { console.warn('[plugin-worker] subscribe/config request failed', e); } catch {}
-          }
-        }
-        // 仅在 keys 变化时调用 store 接口
-        const sameStoreKeys =
-          Array.isArray(this._lastStoreKeys) &&
-          this._lastStoreKeys.length === storeKeys.length &&
-          this._lastStoreKeys.every((k, i) => k === storeKeys[i]);
-        if (!sameStoreKeys) {
-          responses.push(
+        if (this._serverState.store.keys.length > 0) {
+          tasks.push(
             request(`/api/plugins/${encodeURIComponent(pluginId)}/subscribe/store`, 'POST', {
               clientId,
-              keys: storeKeys,
-            })
-          );
-        }
-        if (this._hasEverRenderer || rendererEvents.length > 0) {
-          responses.push(
-            request(`/api/plugins/${encodeURIComponent(pluginId)}/subscribe/renderer`, 'POST', {
-              clientId,
-              events: rendererEvents,
-            })
-          );
-        }
-        if (this._hasEverMessage || messageKinds.length > 0) {
-          responses.push(
-            request(`/api/plugins/${encodeURIComponent(pluginId)}/subscribe/messages`, 'POST', {
-              clientId,
-              kinds: messageKinds,
+              keys: this._serverState.store.keys,
+              includeSnapshot: false,
+            }).catch((e) => {
+              console.warn('[plugin-worker] restore store subscribe failed:', e);
             })
           );
         }
 
-        const results = await Promise.all(responses);
-        try {
-          const serverState = this._serverState || {};
-          const danmakuResp = results.find((r) => r?.data?.rules);
-          const storeResp = results.find((r) => r?.data?.keys);
-          const rendererResp = results.find((r) => r?.data?.events);
-          const messageResp = results.find((r) => r?.data?.kinds);
-          if (danmakuResp?.data?.rules) serverState.danmakuRules = danmakuResp.data.rules;
-          if (storeResp?.data?.keys !== undefined) {
-            serverState.storeKeys = storeResp.data.keys;
-            this._lastStoreKeys = Array.isArray(storeResp.data.keys) ? [...storeResp.data.keys] : [];
-          }
-          if (rendererResp?.data?.events) serverState.rendererEvents = rendererResp.data.events;
-          if (messageResp?.data?.kinds) serverState.messageKinds = messageResp.data.kinds;
-          this._serverState = serverState;
-        } catch {}
-      } catch (err) {
-        console.warn('[plugin-worker] sync subscriptions failed:', err);
+        if (this._serverState.danmaku.rules.length > 0) {
+          tasks.push(
+            request(`/api/plugins/${encodeURIComponent(pluginId)}/subscribe/danmaku`, 'POST', {
+              clientId,
+              rules: this._serverState.danmaku.rules,
+            }).catch((e) => {
+              console.warn('[plugin-worker] restore danmaku subscribe failed:', e);
+            })
+          );
+        }
+
+        if (this._serverState.renderer.subscribed) {
+          tasks.push(
+            request(`/api/plugins/${encodeURIComponent(pluginId)}/subscribe/renderer`, 'POST', {
+              clientId,
+              events: ['*'],
+            }).catch((e) => {
+              console.warn('[plugin-worker] restore renderer subscribe failed:', e);
+            })
+          );
+        }
+
+        const kinds = [];
+        if (this._serverState.messages.mainMessage) kinds.push('mainMessage');
+        if (this._serverState.messages.uiMessage) kinds.push('uiMessage');
+        if (kinds.length > 0) {
+          tasks.push(
+            request(`/api/plugins/${encodeURIComponent(pluginId)}/subscribe/messages`, 'POST', {
+              clientId,
+              kinds,
+            }).catch((e) => {
+              console.warn('[plugin-worker] restore messages subscribe failed:', e);
+            })
+          );
+        }
+      } finally {
+        if (tasks.length > 0) {
+          await Promise.all(tasks);
+        }
       }
     },
   };

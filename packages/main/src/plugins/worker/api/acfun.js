@@ -4,9 +4,13 @@
 function createAcfunApi(request) {
   return {
     user: {
-      getUserInfo: (userId) => request(`/api/acfun/user/info?userId=${encodeURIComponent(userId)}`),
+      getUserInfo: (userId) => {
+        const url = userId ? `/api/acfun/user/info?userId=${encodeURIComponent(userId)}` : '/api/acfun/user/info';
+        return request(url);
+      },
     },
     danmu: {
+      getLiveRoomInfo: (liverUID) => request(`/api/acfun/danmu/room-info?liverUID=${encodeURIComponent(liverUID)}`),
       sendComment: (liveId, content) => request('/api/acfun/danmu/send', 'POST', { liveId, content }),
     },
     live: {
@@ -28,6 +32,7 @@ function createAcfunApi(request) {
       authorKick: (liveId, kickedUID) => request('/api/acfun/manager/kick', 'POST', { liveID: liveId, kickedUID, kickType: 'author' }),
       managerKick: (liveId, kickedUID) => request('/api/acfun/manager/kick', 'POST', { liveID: liveId, kickedUID, kickType: 'manager' }),
     },
+    badge: {},
     room: {
       getAllConnectedRooms: () => request('/api/acfun/room/list'),
       getConnectedRoomStatus: (roomId) => request(`/api/acfun/room/status?roomId=${encodeURIComponent(roomId)}`),

@@ -16,7 +16,7 @@ const { createLifecycleApi } = require('./lifecycle');
 /**
  * 创建 main 进程插件 API
  */
-function createMainPluginApi(pluginId, version, apiBaseUrl) {
+function createMainPluginApi(pluginId, version=undefined, apiBaseUrl) {
   // 创建请求函数
   try { console.info('[Worker-API] createMainPluginApi called', { pluginId, version, apiBaseUrl }); } catch {}
   const request = createRequest(pluginId, apiBaseUrl);
@@ -24,46 +24,7 @@ function createMainPluginApi(pluginId, version, apiBaseUrl) {
   // 创建 SSE 管理器
   const sseManager = createSseManager(pluginId, apiBaseUrl, request);
   const subscribeSse = (kinds, filter, callback, opts) => {
-    // #region agent log (node-compatible)
-    try {
-      const _ingest = (body) => {
-        try {
-          const ingestUrl = 'http://127.0.0.1:7242/ingest/52fa37f8-b908-44d5-87d2-c8f2861a8c45';
-          const u = new URL(ingestUrl);
-          const data = JSON.stringify(body || {});
-          const opts = {
-            hostname: u.hostname,
-            port: u.port || (u.protocol === 'https:' ? 443 : 80),
-            path: u.pathname,
-            method: 'POST',
-            headers: {
-              'Content-Type': 'application/json',
-              'Content-Length': Buffer.byteLength(data),
-            },
-          };
-          const mod = u.protocol === 'https:' ? https : http;
-          const req = mod.request(opts, (res) => {
-            // consume response silently
-            res.on('data', () => {});
-            res.on('end', () => {});
-          });
-          req.on('error', () => {});
-          req.write(data);
-          req.end();
-        } catch (e) {}
-      };
-      _ingest({
-        sessionId: 'debug-session',
-        runId: 'settings-subscribe',
-        hypothesisId: 'A',
-        location: 'packages/main/src/plugins/worker/api/createMainPluginApi.js:20',
-        message: 'subscribeSse called',
-        data: { kinds, opts },
-        timestamp: Date.now(),
-      });
-    } catch {}
-    // #endregion
-    return sseManager.subscribe(kinds, filter, callback, opts);
+   return sseManager.subscribe(kinds, filter, callback, opts);
   };
 
   // 创建各个 API 模块
@@ -119,10 +80,27 @@ function createMainPluginApi(pluginId, version, apiBaseUrl) {
 
   // SendOverlay
   const sendOverlay = async (payload) => {
-    
+
     const clientId = await sseManager.ensureConnection();
     return overlay.send(undefined, payload, clientId, 'main');
   };
+
+  // 交互操作
+  const interaction = {
+    notify: (options) => {
+      const msg = options.title ? `${options.title}: ${options.body}` : options.body;
+      try { console.info('[Worker-API] interaction.notify called', { pluginId, options }); } catch {}
+      request("/api/popup", "POST", {
+        action: "toast",
+        message: msg,
+        options: { type: options.type, icon: options.icon, durationMs: options.durationMs },
+      });
+    },
+    closeMessage: (id) => {
+      request("/api/popup", "POST", { action: "close", options: { id } });
+    },
+  };
+
   try { console.info('[Worker-API] createMainPluginApi created apis', { pluginId }); } catch {}
 
   return {
@@ -134,6 +112,7 @@ function createMainPluginApi(pluginId, version, apiBaseUrl) {
     http,
     system,
     overlay,
+    interaction,
     sendUI,
     sendOverlay,
     subscribeRendererEvents,

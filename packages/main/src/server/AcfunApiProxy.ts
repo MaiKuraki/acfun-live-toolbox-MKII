@@ -639,21 +639,28 @@ export class AcfunApiProxy {
       switch (pathSegments[0]) {
         case 'info':
           if (method === 'GET') {
-            const userId = req.query.userId as string;
+            let userId = req.query.userId as string;
             console.log('[AcfunApiProxy] getUserInfo called with userId:', userId);
+
+            // 如果没有提供userId，使用当前登录用户的userId
             if (!userId) {
-              console.log('[AcfunApiProxy] userId is missing');
-              return {
-                success: false,
-                error: 'userId is required',
-                code: 400
-              };
+              const tokenInfo = this.acfunApi.getHttpClient().getValidatedTokenInfo();
+              if (!tokenInfo.tokenInfo?.userID) {
+                console.log('[AcfunApiProxy] userId is missing and no authenticated user');
+                return {
+                  success: false,
+                  error: '未登录或token无效',
+                  code: 401
+                };
+              }
+              userId = String(tokenInfo.tokenInfo.userID);
+              console.log('[AcfunApiProxy] using authenticated userId:', userId);
             }
 
             // 确保认证token是最新的
             await this.updateAuthentication();
             console.log('[AcfunApiProxy] Authentication updated, isAuthenticated:', this.acfunApi.isAuthenticated?.());
-            
+
             console.log('[AcfunApiProxy] Calling acfunApi.user.getUserInfo with userId:', userId);
             const result = await this.acfunApi.user.getUserInfo(userId);
             console.log('[AcfunApiProxy] getUserInfo result:', result);
@@ -1200,13 +1207,19 @@ export class AcfunApiProxy {
 
         case 'user-info':
           if (method === 'GET') {
-            const userID = parseInt(req.query.userID as string);
+            let userID = parseInt(req.query.userID as string);
+
+            // 如果没有提供userID，使用当前登录用户的userID
             if (!userID) {
-              return {
-                success: false,
-                error: 'userID is required',
-                code: 400
-              };
+              const tokenInfo = this.acfunApi.getHttpClient().getValidatedTokenInfo();
+              if (!tokenInfo.tokenInfo?.userID) {
+                return {
+                  success: false,
+                  error: '未登录或token无效',
+                  code: 401
+                };
+              }
+              userID = tokenInfo.tokenInfo.userID;
             }
 
             const result = await this.acfunApi.live.getUserLiveInfo(userID);

@@ -89,6 +89,7 @@ export interface PluginManifest {
 export interface PluginInfo {
   id: string;
   name: string;
+  dev?:boolean;
   version: string;
   description?: string;
   author?: string;
@@ -539,7 +540,7 @@ export class PluginManager extends TypedEventEmitter<PluginManagerEvents> {
             try {
               const mPath = String((cfg as any)?.manifestPath || '').trim();
               const nPath = String((cfg as any)?.nodePath || '').trim();
-              if (!mPath || !nPath) continue;
+              if (!mPath && !nPath) continue;
               const text = fs.readFileSync(mPath, 'utf-8');
               const manifest = JSON.parse(text) as PluginManifest;
 
@@ -560,6 +561,7 @@ export class PluginManager extends TypedEventEmitter<PluginManagerEvents> {
               // 组装虚拟插件信息
               const pluginInfo: PluginInfo = {
                 id: manifest.id,
+                dev:true,
                 name: manifest.name,
                 version: manifest.version,
                 description: manifest.description,
@@ -602,7 +604,8 @@ export class PluginManager extends TypedEventEmitter<PluginManagerEvents> {
   public getInstalledPlugins(): PluginInfo[] {
     // 轻量同步：若安装目录缺失，将插件标记为禁用并错误状态，避免 UI 显示“启用中”假象
     for (const plugin of this.plugins.values()) {
-      if (!plugin.installPath || !fs.existsSync(plugin.installPath)) {
+    
+      if (!plugin.dev&&(!plugin.installPath || !fs.existsSync(plugin.installPath))) {
         if (plugin.enabled) {
           plugin.enabled = false;
         }
@@ -916,7 +919,7 @@ export class PluginManager extends TypedEventEmitter<PluginManagerEvents> {
       throw new Error(`插件 ${pluginId} 不存在`);
     }
 
-    // 不按“目标启用态”早退；仅以进程存在作为幂等条件
+    // 不按"目标启用态"早退；仅以进程存在作为幂等条件
 
     // 幂等保护：如果进程已存在（启动中/运行中），直接视为启用完成
     const existingProcess = this.processManager.getProcessInfo(pluginId);
@@ -972,11 +975,9 @@ export class PluginManager extends TypedEventEmitter<PluginManagerEvents> {
         plugin.status = 'enabled';
         plugin.lastError = undefined;
 
-        {
-          const configKey = `plugins.${pluginId}`;
-          const current = (this.configManager.get(configKey, {}) || {}) as Record<string, any>;
-          this.configManager.set(configKey, { ...current, enabled: true, installedAt: plugin.installedAt });
-        }
+        const configKey = `plugins.${pluginId}`;
+        const current = (this.configManager.get(configKey, {}) || {}) as Record<string, any>;
+        this.configManager.set(configKey, { ...current, enabled: true, installedAt: plugin.installedAt });
 
         // 自动启用热重载（开发模式下 或 测试插件）- 针对静态插件
         const isTestPlugin = (await this.getDevConfig(pluginId)) !== null;
@@ -1504,26 +1505,6 @@ export class PluginManager extends TypedEventEmitter<PluginManagerEvents> {
     };
   }
 
-  public async handlePluginMessage(pluginId: string, event: string, payload: any): Promise<void> {
-    try {
-      // 检查插件是否已通过 SSE 订阅了 mainMessage
-
-      const hasMainMessageSubscription = overlaySubscriptionRegistry.hasSubscription(pluginId, 'mainMessage');
-
-      if (hasMainMessageSubscription) {
-        // 如果已订阅，只通过 SSE 发送
-        try {
-          // eslint-disable-next-line
-          const channel = `plugin:${pluginId}:overlay`;
-          SseQueueService.getInstance().queueOrPublish(channel, { event: String(event), payload }, { ttlMs: 2 * 60 * 1000, persist: false, meta: { kind: 'mainMessage' } });
-        } catch { }
-      } else {
-        // 如果未订阅，消息将被丢弃（插件应该通过 onUiMessage 或 onMainMessage 订阅）
-        // onMessage 已废除，不再通过 executeInPlugin 调用
-      }
-    } catch { }
-  }
-
   /**
    * 获取插件日志
    */
@@ -1857,50 +1838,6 @@ export class PluginManager extends TypedEventEmitter<PluginManagerEvents> {
     } catch (error: any) {
       pluginLogger.error(`Failed to disable hot reload for plugin ${pluginId}:`, error.message);
       return false;
-    }
-  }
-
-  /**
-   * 手动触发插件热重载
-   */
-  public async manualHotReload(pluginId: string): Promise<any> {
-    const plugin = this.plugins.get(pluginId);
-    if (!plugin) {
-      throw new Error(`插件 ${pluginId} 不存在`);
-    }
-
-    try {
-      // 启用热重载
-      plugin.hotReloadEnabled = true;
-
-      // 监听插件文件变化
-      const pluginPath = path.join(this.pluginsDir, pluginId);
-      const watcher = watch(pluginPath, {
-        ignored: /(^|[\/\\])\../, // 忽略隐藏文件
-        persistent: true,
-        ignoreInitial: true
-      });
-
-      watcher.on('change', async (filePath: string) => {
-        if (plugin.hotReloadEnabled) {
-          pluginLogger.info(`Plugin ${pluginId} file changed: ${filePath}`);
-          try {
-            // Trigger hot reload through the hot reload manager instead of recursively calling manualHotReload
-            // 触发插件热重载（通过公开接口）
-            await pluginHotReloadManager.manualReload(pluginId);
-          } catch (error: any) {
-            pluginLogger.error(`Hot reload failed for plugin ${pluginId}:`, error.message);
-          }
-        }
-      });
-
-      // 存储观察者引用
-      this.hotReloadWatchers.set(pluginId, watcher);
-
-      pluginLogger.info(`Hot reload enabled for plugin ${pluginId}`);
-    } catch (error: any) {
-      pluginLogger.error(`Failed to enable hot reload for plugin ${pluginId}:`, error.message);
-      throw error;
     }
   }
 
@@ -2331,24 +2268,10 @@ export class PluginManager extends TypedEventEmitter<PluginManagerEvents> {
   }
 
   /**
-   * 获取插件性能指标
-   */
-  public getPluginPerformanceMetrics(pluginId: string): any {
-    return pluginPerformanceMonitor.getMetrics(pluginId);
-  }
-
-  /**
    * 获取插件缓存统计
    */
   public getPluginCacheStats(pluginId?: string): any {
     return pluginCacheManager.getStats();
-  }
-
-  /**
-   * 获取插件懒加载状态
-   */
-  public getPluginLazyLoadStatus(pluginId: string): any {
-    return pluginLazyLoader.getPluginState(pluginId);
   }
 
   /**
@@ -2363,13 +2286,6 @@ export class PluginManager extends TypedEventEmitter<PluginManagerEvents> {
    */
   public getConnectionPoolStats(): any {
     return this.connectionPoolManager.getStats();
-  }
-
-  /**
-   * 生成性能报告
-   */
-  public async generatePerformanceReport(pluginId?: string): Promise<any> {
-    return pluginPerformanceMonitor.generateReport(pluginId || '');
   }
 
   /**
@@ -2390,17 +2306,4 @@ export class PluginManager extends TypedEventEmitter<PluginManagerEvents> {
     await pluginLazyLoader.loadPlugin(pluginId);
   }
 
-  /**
-   * 暂停插件懒加载
-   */
-  public suspendPluginLazyLoad(pluginId: string): void {
-    pluginLazyLoader.suspendPlugin(pluginId, 'Manual suspension');
-  }
-
-  /**
-   * 恢复插件懒加载
-   */
-  public resumePluginLazyLoad(pluginId: string): void {
-    pluginLazyLoader.resumePlugin(pluginId);
-  }
 }

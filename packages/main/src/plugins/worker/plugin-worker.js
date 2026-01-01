@@ -114,106 +114,74 @@ async function loadPlugin(pluginPath) {
     global.window = windowRef;
     global.document = documentRef;
     global.navigator = windowRef.navigator;
-    try { windowRef.console = console; } catch {}
-    try { windowRef.path = require('path'); } catch {}
-    try { windowRef.http = require('http'); } catch {}
-    try { windowRef.https = require('https'); } catch {}
-    try { windowRef.child_process = require('child_process'); } catch {}
-    try { windowRef.childProcess = windowRef.child_process; } catch {}
-    try { windowRef.exec = windowRef.child_process && windowRef.child_process.exec ? windowRef.child_process.exec : undefined; } catch {}
-    try { windowRef.spawn = windowRef.child_process && windowRef.child_process.spawn ? windowRef.child_process.spawn : undefined; } catch {}
-    try { windowRef.setTimeout = typeof setTimeout !== 'undefined' ? setTimeout.bind(global) : windowRef.setTimeout; } catch {}
-    try { windowRef.setInterval = typeof setInterval !== 'undefined' ? setInterval.bind(global) : windowRef.setInterval; } catch {}
-    try { windowRef.clearTimeout = typeof clearTimeout !== 'undefined' ? clearTimeout.bind(global) : windowRef.clearTimeout; } catch {}
-    try { windowRef.clearInterval = typeof clearInterval !== 'undefined' ? clearInterval.bind(global) : windowRef.clearInterval; } catch {}
+    try { windowRef.console = console; } catch (e) { console.log('[Worker] Failed to set console:', e); }
+    try { windowRef.path = require('path'); } catch (e) { console.log('[Worker] Failed to set path:', e); }
+    try { windowRef.http = require('http'); } catch (e) { console.log('[Worker] Failed to set http:', e); }
+    try { windowRef.https = require('https'); } catch (e) { console.log('[Worker] Failed to set https:', e); }
+    try { windowRef.child_process = require('child_process'); } catch (e) { console.log('[Worker] Failed to set child_process:', e); }
+    try { windowRef.childProcess = windowRef.child_process; } catch (e) { console.log('[Worker] Failed to set childProcess:', e); }
+    try { windowRef.exec = windowRef.child_process && windowRef.child_process.exec ? windowRef.child_process.exec : undefined; } catch (e) { console.log('[Worker] Failed to set exec:', e); }
+    try { windowRef.spawn = windowRef.child_process && windowRef.child_process.spawn ? windowRef.child_process.spawn : undefined; } catch (e) { console.log('[Worker] Failed to set spawn:', e); }
+    try { windowRef.setTimeout = typeof setTimeout !== 'undefined' ? setTimeout.bind(global) : windowRef.setTimeout; } catch (e) { console.log('[Worker] Failed to set setTimeout:', e); }
+    try { windowRef.setInterval = typeof setInterval !== 'undefined' ? setInterval.bind(global) : windowRef.setInterval; } catch (e) { console.log('[Worker] Failed to set setInterval:', e); }
+    try { windowRef.clearTimeout = typeof clearTimeout !== 'undefined' ? clearTimeout.bind(global) : windowRef.clearTimeout; } catch (e) { console.log('[Worker] Failed to set clearTimeout:', e); }
+    try { windowRef.clearInterval = typeof clearInterval !== 'undefined' ? clearInterval.bind(global) : windowRef.clearInterval; } catch (e) { console.log('[Worker] Failed to set clearInterval:', e); }
     try { const WS = require('ws'); if (WS) { windowRef.WebSocket = WS; } } catch (_) { try { if (typeof global.WebSocket !== 'undefined') { windowRef.WebSocket = global.WebSocket; } } catch (_) {} }
     windowRef.pluginApi = { emit(eventType, payload) { try { parentPort.postMessage({ type: 'plugin_event', eventType, payload, pluginId: workerData && workerData.pluginId }); } catch (_) {} } };
     try {
       const apiPortOpt = (workerData && workerData.sandboxConfig && workerData.sandboxConfig.sandbox && workerData.sandboxConfig.sandbox.apiPort) || undefined;
       const p = (() => {
-        try { const n = Number(apiPortOpt); if (Number.isFinite(n) && n > 0 && n <= 65535) return n; } catch {}
-        try { const envP = Number(process.env && process.env.ACFRAME_API_PORT || ''); if (Number.isFinite(envP) && envP > 0 && envP <= 65535) return envP; } catch {}
+        try { const n = Number(apiPortOpt); if (Number.isFinite(n) && n > 0 && n <= 65535) return n; } catch (e) { console.log('[Worker] Failed to parse apiPortOpt:', e); }
+        try { const envP = Number(process.env && process.env.ACFRAME_API_PORT || ''); if (Number.isFinite(envP) && envP > 0 && envP <= 65535) return envP; } catch (e) { console.log('[Worker] Failed to parse ACFRAME_API_PORT:', e); }
         return undefined;
       })();
     if (p) {
         apiBase = `http://127.0.0.1:${p}`;
         windowRef.getApiPort = async () => p;
-        try { windowRef.location.href = apiBase; } catch {}
+        try { windowRef.location.href = apiBase; } catch (e) { console.log('[Worker] Failed to set location.href:', e); }
       } else {
         apiBase = null;
         windowRef.getApiPort = async () => { throw new Error('API_PORT_NOT_CONFIGURED'); };
       }
     try { console.info('[Worker] apiBase resolved', { pluginId, apiBase }); } catch {}
-    } catch {}
+    } catch (e) { console.log('[Worker] Failed to resolve apiBase:', e); }
     
     // 注入 toolboxApi
     if (apiBase && pluginId) {
       try {
         try { console.info('[Worker] attempting to inject toolboxApi', { pluginId, apiBase, pluginDir }); } catch {}
-        const manifestPath = path.join(pluginDir, 'manifest.json');
-        let version = undefined;
-        try {
-          const manifestRaw = fs.readFileSync(manifestPath, 'utf-8');
-          const manifestJson = JSON.parse(manifestRaw);
-          version = manifestJson.version;
-        } catch {}
-        
-        const toolboxApi = createMainPluginApi(pluginId, version, apiBase);
+        const toolboxApi = createMainPluginApi(pluginId, undefined, apiBase);
         windowRef.toolboxApi = toolboxApi;
         windowRef.api = toolboxApi; // 兼容别名
         try { console.info('[Worker] Injected toolboxApi for main process plugin', { pluginId, version }); } catch {}
       } catch (e) {
         try { console.warn('[Worker] Failed to inject toolboxApi:', e && e.message ? e.message : String(e)); } catch {}
-        try { console.debug('[Worker] Failed to inject toolboxApi - full error', e); } catch {}
-      }
+          }
     }
     
-    try { 
+    try {
       try { console.info('[Worker] invoking beforeloaded', { pluginId, hasBeforeloaded: typeof windowRef.beforeloaded === 'function' }); } catch {}
-      windowRef.beforeloaded && windowRef.beforeloaded(); 
-    } catch {}
+      windowRef.beforeloaded && windowRef.beforeloaded();
+    } catch (e) { console.log('[Worker] Failed to invoke beforeloaded:', e); }
 
     const manifestPath = path.join(pluginDir, 'manifest.json');
-    let testMode = false;
-    let mainConfig = null;
     let libs = [];
-    try {
-      const manifestRaw = fs.readFileSync(manifestPath, 'utf-8');
-      const manifestJson = JSON.parse(manifestRaw);
-      testMode = !!manifestJson.test;
-      if (manifestJson.main && typeof manifestJson.main === 'object' && 
-          typeof manifestJson.main.dir === 'string' && typeof manifestJson.main.file === 'string') {
-        mainConfig = manifestJson.main;
-        libs = Array.isArray(manifestJson.main.libs) ? manifestJson.main.libs : [];
-      }
-    } catch (_e) {}
 
-    if (!mainConfig) {
-      throw new Error('manifest.json 中缺少有效的 main 配置');
+    // 从 sandboxConfig 中获取 libs
+    if (workerData && workerData.sandboxConfig && Array.isArray(workerData.sandboxConfig.libs)) {
+      libs = workerData.sandboxConfig.libs;
     }
 
     try {
+      const dir = workerData.sandboxConfig.main?.dir || ''; 
+      const mainFile = workerData.pluginPath;
       // 解析主文件路径，避免重复拼接
-      const resolveMainFile = (pluginDir, mainConfig) => {
-        const filePath = mainConfig.file;
-        
-        if (path.isAbsolute(filePath)) {
-          return filePath;
+      const resolveMainFile = (pluginDir, filePath) => {
+        if(path.isAbsolute(mainFile)) {
+          return mainFile;
+        } else {
+          return path.join(dir||pluginDir, mainFile);
         }
-        
-        // 如果 dir 为空字符串，直接使用 pluginDir
-        if (!mainConfig.dir || mainConfig.dir.trim() === '') {
-          return path.join(pluginDir, filePath);
-        }
-        
-        const mainDir = path.join(pluginDir, mainConfig.dir);
-        const normalizedDir = path.normalize(mainConfig.dir);
-        const normalizedFile = path.normalize(filePath);
-        if (normalizedFile.startsWith(normalizedDir + path.sep) || normalizedFile === normalizedDir) {
-          return path.join(pluginDir, filePath);
-        }
-        
-        return path.join(mainDir, filePath);
       };
 
       // 解析库文件路径，避免重复拼接
@@ -237,10 +205,10 @@ async function loadPlugin(pluginPath) {
       };
 
       // 计算 mainDir，如果 dir 为空则使用 pluginDir
-      const mainDir = (!mainConfig.dir || mainConfig.dir.trim() === '') 
+      const mainDir = (!dir || dir.trim() === '') 
         ? pluginDir 
-        : path.join(pluginDir, mainConfig.dir);
-      const allLibs = Array.isArray(libs) ? libs : [];
+        : path.join(pluginDir, dir);
+      const allLibs = libs;
       const libRegistry = Object.create(null);
       for (const libRel of allLibs) {
         try {
@@ -273,21 +241,21 @@ async function loadPlugin(pluginPath) {
       };
       windowRef.require = pluginRequire;
 
-      const mainPath = resolveMainFile(pluginDir, mainConfig);
+      const mainPath = resolveMainFile(pluginDir, workerData.sandboxConfig.main?.file || 'index.js');
       const indexContent = fs.readFileSync(mainPath, 'utf-8');
-      const exportsObj = runModuleInWindow({ code: indexContent, filename: mainConfig.file || path.basename(mainPath), windowRef, requireFn: pluginRequire });
+      const exportsObj = runModuleInWindow({ code: indexContent, filename: workerData.sandboxConfig.main?.file || path.basename(mainPath), windowRef, requireFn: pluginRequire });
       try {
         windowRef.module = { exports: exportsObj };
         windowRef.exports = exportsObj.exports;
         // 尝试将导出对象的方法注入到 windowRef
         const exportsSource = exportsObj && exportsObj.exports ? exportsObj.exports : exportsObj;
         try {
-          console.info('[Worker] Inspecting exports', { 
-            keys: exportsSource ? Object.keys(exportsSource) : [], 
+          console.info('[Worker] Inspecting exports', {
+            keys: exportsSource ? Object.keys(exportsSource) : [],
             hasDefault: !!(exportsSource && exportsSource.default),
             defaultKeys: (exportsSource && exportsSource.default) ? Object.keys(exportsSource.default) : []
           });
-        } catch {}
+        } catch (e) { console.log('[Worker] Failed to inspect exports:', e); }
 
         if (exportsSource && typeof exportsSource === 'object') {
            // 优先注入命名导出
@@ -295,7 +263,7 @@ async function loadPlugin(pluginPath) {
              const val = exportsSource[key];
              if (typeof val === 'function' && typeof windowRef[key] !== 'function') {
                windowRef[key] = val;
-               try { console.info(`[Worker] Injected named export: ${key}`); } catch {}
+               try { console.info(`[Worker] Injected named export: ${key}`); } catch (e) { console.log('[Worker] Failed to log named export injection:', e); }
              }
            }
            // 如果是默认对象导出，也注入其属性
@@ -304,17 +272,18 @@ async function loadPlugin(pluginPath) {
                const val = exportsSource.default[key];
                if (typeof val === 'function' && typeof windowRef[key] !== 'function') {
                  windowRef[key] = val;
-                 try { console.info(`[Worker] Injected default export: ${key}`); } catch {}
+                 try { console.info(`[Worker] Injected default export: ${key}`); } catch (e) { console.log('[Worker] Failed to log default export injection:', e); }
                }
              }
            }
         }
-      } catch {}
+      } catch (e) { console.log('[Worker] Failed to inject exports:', e); }
 
       if (typeof windowRef.afterLoaded === 'function') {
-        try { 
+        
+        try {
           const api = windowRef.toolboxApi || windowRef.api;
-          try { console.info('[Worker] calling afterLoaded', { pluginId, hasApi: !!api }); } catch {}
+          try { console.info('[Worker] calling afterLoaded', { pluginId, hasApi: !!api }); } catch (e) { console.log('[Worker] Failed to log afterLoaded call:', e); }
           if (api) {
             await windowRef.afterLoaded(api);
           } else {
@@ -324,9 +293,9 @@ async function loadPlugin(pluginPath) {
           console.error('[Worker] afterLoaded hook failed:', e);
         }
       } else if (typeof windowRef.afterloaded === 'function') {
-        try { 
+        try {
           const api = windowRef.toolboxApi || windowRef.api;
-          try { console.info('[Worker] calling afterloaded', { pluginId, hasApi: !!api }); } catch {}
+          try { console.info('[Worker] calling afterloaded', { pluginId, hasApi: !!api }); } catch (e) { console.log('[Worker] Failed to log afterloaded call:', e); }
           if (api) {
             await windowRef.afterloaded(api);
           } else {
@@ -336,10 +305,10 @@ async function loadPlugin(pluginPath) {
           console.error('[Worker] afterloaded hook failed:', e);
         }
       }
-    } catch (e) {}
+    } catch (e) { console.log('[Worker] Failed to load plugin modules:', e); }
 
     pluginLoaded = true;
-    try { console.info('[Worker] plugin loaded', { pluginPath, mode: 'happydom-modules' }); } catch {}
+    try { console.info('[Worker] plugin loaded', { pluginPath, mode: 'happydom-modules' }); } catch (e) { console.log('[Worker] Failed to log plugin loaded:', e); }
   } catch (error) {
     const msg = error && error.message ? error.message : String(error);
     parentPort.postMessage({ type: 'result', error: msg });

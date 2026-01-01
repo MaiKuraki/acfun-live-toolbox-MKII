@@ -25,6 +25,9 @@ import path from 'path';
 import { DataManager } from './persistence/DataManager';
 import * as fs from 'fs';
 
+// Make windowManager available at module scope so app-level handlers can access it
+let windowManager: WindowManager | null = null;
+
 try {
   app.commandLine.appendSwitch('disable-logging');
   app.commandLine.appendSwitch('log-level', 'disable');
@@ -200,7 +203,10 @@ async function main() {
     roomManager,
     databaseManager,
     configManager,
-    tokenManager
+    tokenManager,
+    processManagerConfig: {
+      processRecoveryEnabled: false
+    }
   });
 
   // 初始化控制台管理器
@@ -221,7 +227,7 @@ async function main() {
   apiServer.setPluginManager(pluginManager);
 
   // 预先实例化窗口管理器以供 IPC 处理程序使用（窗口创建仍在 app ready 后）
-  const windowManager = new WindowManager(); // This will need refactoring
+  windowManager = new WindowManager(); // Module-scoped so handlers outside main() can reference it
   const pluginWindowManager = new PluginWindowManager(configManager);
 
   // 注入 PluginManager 到 PluginWindowManager 以支持窗口配置

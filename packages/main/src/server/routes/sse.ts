@@ -199,23 +199,6 @@ export function registerSse({ app, diagnosticsService, dataManager, overlayManag
       }
       try {
         if ((env as any)?.id) res.write(`id: ${(env as any).id}\n`);
-        // #region agent log
-        try {
-          fetch('http://127.0.0.1:7242/ingest/52fa37f8-b908-44d5-87d2-c8f2861a8c286', {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({
-              sessionId: 'debug-session',
-              runId: 'settings-subscribe',
-              hypothesisId: 'D',
-              location: 'packages/main/src/server/routes/sse.ts:201',
-              message: 'safeWrite sending event',
-              data: { pluginId, type, clientId, eventKind: kind, payloadSummary: env && env.payload ? Object.keys(env.payload || {}).slice(0,5) : null },
-              timestamp: Date.now(),
-            }),
-          }).catch(() => {});
-        } catch {}
-        // #endregion
         res.write(`event: ${kind}\n`);
         res.write(`data: ${JSON.stringify(env)}\n\n`);
         connectionManager.resetDrop(pluginId, type, clientId);

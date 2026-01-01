@@ -5,8 +5,6 @@
 import { TypedEventEmitter } from '../utils/TypedEventEmitter';
 import { pluginLogger } from './PluginLogger';
 import { pluginPerformanceMonitor } from './PluginPerformanceMonitor';
-import * as path from 'path';
-import * as fs from 'fs';
 
 export interface LazyLoadConfig {
   /** 预加载优先级插件 */

@@ -388,6 +388,7 @@ import { useRoomStore, type Room } from '../stores/room';
 import { getApiBase } from '../utils/hosting';
 import { useAccountStore } from '../stores/account';
 import { debounce } from 'lodash';
+import { MessagePlugin } from 'tdesign-vue-next';
 
 const router = useRouter();
 const roomStore = useRoomStore();

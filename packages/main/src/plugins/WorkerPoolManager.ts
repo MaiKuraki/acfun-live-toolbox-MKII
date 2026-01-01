@@ -91,17 +91,17 @@ export class WorkerPoolManager extends TypedEventEmitter<WorkerPoolEvents> {
     }
 
     const workerId = crypto.randomUUID();
-    const candidatePaths = [
-      // Bundled dist: index.cjs __dirname → dist
-      path.join(__dirname, 'worker', 'plugin-worker.js'),
-      // Fallback in case bundler preserves plugin folder
-      path.join(__dirname, 'plugins', 'worker', 'plugin-worker.js'),
-      // Source path for development runs
-      path.resolve(process.cwd(), 'packages', 'main', 'src', 'plugins', 'worker', 'plugin-worker.js'),
-    ];
-    const workerScriptPath = candidatePaths.find(p => {
-      try { return fs.existsSync(p); } catch { return false; }
-    }) || candidatePaths[0];
+
+    // 根据环境确定Worker脚本路径
+    let workerScriptPath: string;
+    if (process.env.NODE_ENV === 'development' ) {
+      // 开发环境：使用源码路径
+      workerScriptPath = path.resolve(process.cwd(), 'packages', 'main', 'src', 'plugins', 'worker', 'plugin-worker.js');
+    } else {
+      // 生产环境：拼装resources路径
+      workerScriptPath = path.join(process.resourcesPath, 'app', 'node_modules', '@app', 'main', 'src', 'plugins', 'worker', 'plugin-worker.js');
+      
+    }
 
     try {
       const worker = new Worker(workerScriptPath, {

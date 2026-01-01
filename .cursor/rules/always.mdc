@@ -6,3 +6,4 @@ alwaysApply: true
 3、代码简洁干练，不要有类型转换/验证/兜底逻辑。
 4、使用pnpm而不是npm
 5、try catch只在必要的地方用，不要滥用
+6、禁止空catch块

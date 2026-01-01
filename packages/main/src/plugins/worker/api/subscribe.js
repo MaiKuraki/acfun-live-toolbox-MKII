@@ -4,23 +4,6 @@
  *   createSubscribeApi(pluginId, mode, request, sseManager)
  */
 function createSubscribeApi(pluginId, mode, request, sseManager) {
-  // 兼容不同 sseManager 实现：确保 callbacksRegistry 与 _serverState.messages 可用
-  try {
-    if (!sseManager.callbacksRegistry) {
-      sseManager.callbacksRegistry = {
-        renderer: null,
-        danmaku: new Map(),
-        uiMessage: null,
-      };
-    } else {
-      // ensure danmaku is a Map
-      if (!sseManager.callbacksRegistry.danmaku) sseManager.callbacksRegistry.danmaku = new Map();
-    }
-    if (!sseManager._serverState) sseManager._serverState = {};
-    if (!sseManager._serverState.messages) sseManager._serverState.messages = {};
-  } catch (e) {
-    try { console.warn('[plugin-worker] subscribeApi sseManager compatibility init failed', e && e.message ? e.message : String(e)); } catch {}
-  }
   // subscribeRendererEvents
   const subscribeRendererEvents = async (callback) => {
     sseManager.callbacksRegistry.renderer = (event) => {
@@ -46,9 +29,7 @@ function createSubscribeApi(pluginId, mode, request, sseManager) {
 
   const unsubscribeRendererEvents = async () => {
     sseManager.callbacksRegistry.renderer = null;
-    if (sseManager._serverState && sseManager._serverState.renderer) {
-      sseManager._serverState.renderer.subscribed = false;
-    }
+    sseManager._serverState.renderer.subscribed = false;
 
     try {
       const clientId = await sseManager.ensureConnection();
@@ -65,7 +46,7 @@ function createSubscribeApi(pluginId, mode, request, sseManager) {
   };
 
   const subscribeDanmaku = async (rules, callback) => {
-    if (!Array.isArray(rules) || rules.length === 0) {
+    if (rules.length === 0) {
       return { success: false, error: "rules 不能为空" };
     }
 
@@ -89,9 +70,7 @@ function createSubscribeApi(pluginId, mode, request, sseManager) {
 
       const dataRules =
         resp && resp.data && Array.isArray(resp.data.rules) ? resp.data.rules : normalizedRules;
-      if (sseManager._serverState && sseManager._serverState.danmaku) {
-        sseManager._serverState.danmaku.rules = dataRules;
-      }
+      sseManager._serverState.danmaku.rules = dataRules;
 
       return resp;
     } catch (e) {
@@ -107,12 +86,8 @@ function createSubscribeApi(pluginId, mode, request, sseManager) {
     const rid = String(roomId || "").trim();
     if (!rid) return { success: false, error: "roomId 不能为空" };
 
-    try {
-      sseManager.callbacksRegistry.danmaku.delete(rid);
-    } catch (e) {}
-    if (sseManager._serverState && sseManager._serverState.danmaku) {
-      sseManager._serverState.danmaku.rules = (sseManager._serverState.danmaku.rules || []).filter((r) => r.roomId !== rid);
-    }
+    sseManager.callbacksRegistry.danmaku.delete(rid);
+    sseManager._serverState.danmaku.rules = sseManager._serverState.danmaku.rules.filter((r) => r.roomId !== rid);
 
     try {
       const clientId = await sseManager.ensureConnection();
@@ -132,7 +107,6 @@ function createSubscribeApi(pluginId, mode, request, sseManager) {
   };
 
   const onUiMessage = async (callback) => {
-  // onUiMessage called
     if (typeof callback !== "function") {
       console.warn("[plugin-worker] onUiMessage: callback must be a function");
       return { success: false, error: "callback must be a function" };
@@ -140,7 +114,7 @@ function createSubscribeApi(pluginId, mode, request, sseManager) {
 
 
     sseManager.callbacksRegistry.uiMessage = (payload) => {
-      try { callback(payload); } catch (e) { try { console.error('[plugin-worker] uiMessage callback threw', e && e.message ? e.message : e); } catch {} }
+      callback(payload);
     };
 
     try {
@@ -149,10 +123,7 @@ function createSubscribeApi(pluginId, mode, request, sseManager) {
         clientId,
         kinds: ["uiMessage"],
       });
-      if (sseManager._serverState && sseManager._serverState.messages) {
-        sseManager._serverState.messages.uiMessage = true;
-      }
-      // onUiMessage subscribe request result
+      sseManager._serverState.messages.uiMessage = true;
       return resp;
     } catch (e) {
       console.warn("[plugin-worker] onUiMessage subscribe error:", e);
@@ -164,11 +135,8 @@ function createSubscribeApi(pluginId, mode, request, sseManager) {
   };
 
   const offUiMessage = async () => {
-  // offUiMessage called
     sseManager.callbacksRegistry.uiMessage = null;
-    if (sseManager._serverState && sseManager._serverState.messages) {
-      sseManager._serverState.messages.uiMessage = false;
-    }
+    sseManager._serverState.messages.uiMessage = false;
 
     try {
       const clientId = await sseManager.ensureConnection();
@@ -180,7 +148,6 @@ function createSubscribeApi(pluginId, mode, request, sseManager) {
         console.warn("[plugin-worker] offUiMessage unsubscribe failed:", resp.error);
         return { success: false, error: resp.error ?? "unsubscribe uiMessage failed" };
       }
-      // offUiMessage unsubscribe request result
       return { success: true };
     } catch (e) {
       console.warn("[plugin-worker] offUiMessage unsubscribe error:", e);

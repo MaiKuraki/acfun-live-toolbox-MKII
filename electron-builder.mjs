@@ -28,6 +28,9 @@ export default /** @type import('electron-builder').Configuration */
   },
   // 禁用 asar 打包，确保渲染进程页面可以由外部服务器托管并直接访问静态资源
   asar: false,
+  // 禁用自动重建原生依赖，避免 pnpm 路径问题
+  nodeGypRebuild: false,
+  npmRebuild: false,
   // 强制 electron-builder 下载 Electron 二进制时使用国内镜像与代理
   // 说明：electron-builder 在下载 Electron 时会遵循环境变量 `HTTP_PROXY`/`HTTPS_PROXY`，
   // 同时也支持 `electronDownload` 配置以覆盖下载源（mirror）。
@@ -50,9 +53,10 @@ export default /** @type import('electron-builder').Configuration */
   files: [
     'LICENSE*',
     pkg.main,
-    // Ensure workspace build outputs are explicitly included (renderer and main dist)
+    // Ensure workspace build outputs are explicitly included (renderer, main, and preload dist)
     'packages/renderer/dist/**',
     'packages/main/dist/**',
+    'packages/preload/dist/**',
     ...await getListOfFilesFromEachWorkspace(),
   ],
 });
