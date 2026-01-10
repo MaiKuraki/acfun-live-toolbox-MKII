@@ -5,6 +5,7 @@ const ALLOWED_TYPES: NormalizedEventType[] = [
   'shareLive','richText','recentComment',
   'bananaCount','displayInfo','topUsers','redpackList',
   'chatCall','chatAccept','chatReady','chatEnd',
+  'joinClub',
   'kickedOut','violationAlert','managerState','end'
 ];
 
@@ -96,6 +97,7 @@ function clampType(t: any): NormalizedEventType {
     s === 'chataccept' ? 'chatAccept' :
     s === 'chatready' ? 'chatReady' :
     s === 'chatend' ? 'chatEnd' :
+    s === 'joinclub' ? 'joinClub' :
     s === 'kickedout' ? 'kickedOut' :
     s === 'violationalert' ? 'violationAlert' :
     s === 'managerstate' ? 'managerState' :

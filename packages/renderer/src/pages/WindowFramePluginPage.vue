@@ -9,8 +9,8 @@
       </div>
     </div>
     <div class="content">
-      <WujieVue v-if="isWujie" :key="uiKey" :name="wujieName" :url="wujieUrl" :props="wujieProps"
-        :plugins="wujiePlugins" :sync="true" :alive="false" :width="'100%'" :height="'100%'" @loadError="onLoadError" />
+      <WujieVue v-if="isWujie" :key="uiKey" :name="wujieName" :url="wujieUrl" :props="wujieProps" @reload="eventHandler"
+        :plugins="wujiePlugins" :sync="false" :alive="false" :width="'100%'" :height="'100%'" :sanndbox="false" @loadError="onLoadError" />
       <div v-else class="empty">
         未配置窗口页面（manifest.window 缺失）。
       </div>
@@ -39,6 +39,10 @@ const initializeTopbarFromManifest = (info: any) => {
     windowTopbarVisible.value = true;
   }
 };
+
+const  eventHandler =(e:any)=>{
+ window.location.reload()
+}
 
 // 使用统一的插件框架 composable
 const {

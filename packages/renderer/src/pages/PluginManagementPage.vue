@@ -398,7 +398,20 @@ async function importPluginConfig(plugin: PluginInfo) {
     const content = await window.electronApi?.fs.readFile(file);
     const parsed = JSON.parse(String(content || '{}'));
     validateSingleConfig(plugin, parsed);
-    const res = await window.electronApi?.plugin.updateConfig(plugin.id, parsed);
+
+    // 规范化配置：提取value部分用于更新
+    const normalizedConfig: Record<string, any> = {};
+    for (const [key, value] of Object.entries(parsed)) {
+      if (value && typeof value === 'object' && 'value' in value) {
+        // 完整定义格式，取value字段
+        normalizedConfig[key] = value.value;
+      } else {
+        // 纯value格式，直接使用
+        normalizedConfig[key] = value;
+      }
+    }
+
+    const res = await window.electronApi?.plugin.updateConfig(plugin.id, normalizedConfig);
     if (res && (res as any).success) {
       await pluginStore.refreshPlugins();
       try { (await import('../services/globalPopup')).GlobalPopup.toast('配置已导入'); } catch { }
@@ -414,8 +427,15 @@ function validateSingleConfig(plugin: PluginInfo, cfg: any) {
   const schema = (plugin.config || {}) as any;
   for (const key of Object.keys(cfg)) {
     const def = schema[key];
-    const val = cfg[key];
+    const importedValue = cfg[key];
     if (!def) continue; // 允许额外字段但忽略
+
+    // 提取要验证的值：如果是完整定义格式，取value字段；否则直接使用
+    let val = importedValue;
+    if (importedValue && typeof importedValue === 'object' && 'value' in importedValue) {
+      val = importedValue.value;
+    }
+
     const t = (def && def.type) || typeof (def.default ?? def.value);
     if (t === 'boolean' && typeof val !== 'boolean') throw new Error(`字段 ${key} 需要布尔值`);
     if (t === 'number' && typeof val !== 'number') throw new Error(`字段 ${key} 需要数字`);
@@ -604,7 +624,19 @@ const reloadPlugin = async (plugin: PluginInfo) => {
 };
 
 const exportPluginConfig = (plugin: PluginInfo) => {
-  const config = JSON.stringify(plugin.config, null, 2);
+  // 只导出配置的值部分，而不是完整的定义
+  const configValues: Record<string, any> = {};
+  if (plugin.config) {
+    for (const [key, def] of Object.entries(plugin.config)) {
+      if (def && typeof def === 'object') {
+        // 优先使用 value 字段，如果没有则使用 default 字段
+        configValues[key] = 'value' in def ? def.value : def.default;
+      } else {
+        configValues[key] = def;
+      }
+    }
+  }
+  const config = JSON.stringify(configValues, null, 2);
   const blob = new Blob([config], { type: 'application/json' });
   const url = URL.createObjectURL(blob);
   const a = document.createElement('a');

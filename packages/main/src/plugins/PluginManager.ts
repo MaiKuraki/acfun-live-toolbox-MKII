@@ -6,21 +6,12 @@ import { ConfigManager } from '../config/ConfigManager';
 import { ApiBridge, PluginAPI } from './ApiBridge';
 import { ProcessManager, ProcessManagerConfig } from './ProcessManager';
 import { pluginLifecycleManager } from './PluginLifecycle';
-import { PluginUpdater } from './PluginUpdater';
 import { pluginLogger } from './PluginLogger';
 import { pluginErrorHandler, ErrorType, RecoveryAction } from './PluginErrorHandler';
 import { DataManager } from '../persistence/DataManager';
 import { pluginHotReloadManager, HotReloadConfig } from './PluginHotReload';
-import { pluginVersionManager } from './PluginVersionManager';
-import { memoryPoolManager, MemoryPoolManager } from './MemoryPoolManager';
-import { PluginConnectionPoolManager } from './ConnectionPoolManager';
-import { PluginCoordinator } from './PluginCoordinator';
-import { pluginCacheManager } from './PluginCacheManager';
-import { pluginPerformanceMonitor } from './PluginPerformanceMonitor';
-import { pluginLazyLoader } from './PluginLazyLoader';
 import { TokenManager } from '../server/TokenManager'; // eslint-disable-next-line
 import { SseQueueService } from '../server/SseQueueService';
-import { overlaySubscriptionRegistry } from '../server/services/OverlaySubscriptionRegistry'
 import * as fs from 'fs';
 import * as path from 'path';
 import * as crypto from 'crypto';
@@ -128,10 +119,6 @@ export class PluginManager extends TypedEventEmitter<PluginManagerEvents> {
   private databaseManager: DatabaseManager;
   private configManager: ConfigManager;
   private processManager: ProcessManager;
-  private pluginUpdater: PluginUpdater;
-  private memoryPoolManager: MemoryPoolManager;
-  private connectionPoolManager: PluginConnectionPoolManager;
-  private coordinator: PluginCoordinator;
   private tokenManager: TokenManager;
   private plugins: Map<string, PluginInfo> = new Map();
   public pluginsDir: string;
@@ -163,30 +150,14 @@ export class PluginManager extends TypedEventEmitter<PluginManagerEvents> {
     const pmCfg: any = { ...(opts.processManagerConfig || {}), runtimeMode, autoRestartOnDemand: runtimeMode === 'adaptive' };
     this.processManager = new ProcessManager(pmCfg);
     this.pluginsDir = path.join(app.getPath('userData'), 'plugins');
-    this.pluginUpdater = new PluginUpdater(this.pluginsDir, {
-      autoCheck: false,
-      autoDownload: false,
-      autoInstall: false,
-      checkInterval: 24 * 60 * 60 * 1000, // 24小时
-      backupBeforeUpdate: true,
-      rollbackOnFailure: true
-    });
 
-    // 初始化性能优化组件
-    this.memoryPoolManager = memoryPoolManager;
-    this.connectionPoolManager = new PluginConnectionPoolManager();
-    this.coordinator = new PluginCoordinator({
-      memoryPool: this.memoryPoolManager,
-      connectionPool: this.connectionPoolManager,
-      updater: this.pluginUpdater,
-    });
 
     this.ensurePluginsDirectory();
     this.setupErrorHandling();
     this.setupProcessManagerEvents();
     this.setupLifecycleEvents();
     this.setupHotReloadEvents();
-    this.setupPerformanceOptimizations();
+
     // defer plugin loading until API server is ready
   }
 
@@ -198,8 +169,7 @@ export class PluginManager extends TypedEventEmitter<PluginManagerEvents> {
         plugin.status = 'enabled';
         pluginLogger.info('Plugin process started successfully', pluginId);
       }
-      // Ensure monitoring is active even for adaptive on-demand restarts.
-      try { pluginPerformanceMonitor.startMonitoringPlugin(pluginId); } catch { }
+      // Performance monitoring removed
       try { this.processManager.executeInPlugin(pluginId, 'afterloaded', [], undefined, { optional: true }); } catch { }
       try {
 
@@ -216,7 +186,7 @@ export class PluginManager extends TypedEventEmitter<PluginManagerEvents> {
         } else if (reason === 'idle_timeout') {
           // adaptive runtime idle stop: keep plugin enabled flag and allow on-demand restart
           plugin.status = plugin.enabled ? 'enabled' : 'disabled';
-          try { pluginPerformanceMonitor.stopMonitoringPlugin(pluginId); } catch { }
+          // Performance monitoring removed
         } else {
           plugin.status = 'error';
         }
@@ -276,25 +246,7 @@ export class PluginManager extends TypedEventEmitter<PluginManagerEvents> {
       } catch { }
     });
 
-    // 监听更新器事件
-    this.pluginUpdater.on('update.available', ({ pluginId }) => {
-      pluginLogger.info('Plugin update available', pluginId);
-    });
-
-    this.pluginUpdater.on('update.progress', ({ pluginId, progress, message }) => {
-      this.emit('plugin.install.progress', { id: pluginId, progress, message });
-    });
-
-    this.pluginUpdater.on('update.completed', ({ pluginId }) => {
-      pluginLogger.info('Plugin update completed', pluginId);
-      // 重新加载插件信息
-      this.loadInstalledPlugins();
-    });
-
-    this.pluginUpdater.on('update.failed', async ({ pluginId, error }) => {
-      pluginLogger.error('Plugin update failed', pluginId, error);
-      await pluginErrorHandler.handleError(pluginId, ErrorType.RUNTIME_ERROR, error.message, error);
-    });
+    // 插件自动更新相关功能已移除：保留占位以避免行为差异
   }
 
   private setupErrorHandling(): void {
@@ -369,74 +321,6 @@ export class PluginManager extends TypedEventEmitter<PluginManagerEvents> {
     });
   }
 
-  private setupPerformanceOptimizations(): void {
-    // 设置性能监控事件
-    const _criticalCounts: Map<string, number> = new Map();
-    pluginPerformanceMonitor.on('performance-alert', (alert) => {
-      pluginLogger.warn(`Performance alert for plugin ${alert.pluginId}`, alert.pluginId, {
-        alertType: alert.type,
-        severity: alert.severity,
-        message: alert.message,
-        value: alert.value,
-        threshold: alert.threshold
-      });
-      if (alert.severity === 'critical') {
-        const c = (_criticalCounts.get(alert.pluginId) || 0) + 1;
-        _criticalCounts.set(alert.pluginId, c);
-        if (c >= 2) {
-          this.suspendPlugin(alert.pluginId, `Performance issue: ${alert.message}`);
-          _criticalCounts.set(alert.pluginId, 0);
-        }
-      } else {
-        _criticalCounts.set(alert.pluginId, 0);
-      }
-    });
-
-    // 设置缓存管理事件
-    pluginCacheManager.on('cache-evicted', ({ key, reason, pluginId }) => {
-      pluginLogger.debug('Cache item evicted', pluginId, { key, reason });
-    });
-
-    // 设置懒加载事件
-    pluginLazyLoader.on('plugin-load-failed', ({ pluginId, error }) => {
-      pluginLogger.error('Lazy load failed', pluginId, error);
-      const plugin = this.plugins.get(pluginId);
-      if (plugin) {
-        plugin.status = 'error';
-        plugin.lastError = error.message;
-      }
-    });
-
-    pluginLazyLoader.on('memory-pressure', ({ currentUsage, threshold }) => {
-      pluginLogger.warn('Memory pressure detected', undefined, {
-        currentUsage: Math.round(currentUsage / 1024 / 1024) + 'MB',
-        threshold: Math.round(threshold / 1024 / 1024) + 'MB'
-      });
-    });
-
-    // 周期输出主进程与池/缓存占用，用于诊断
-    try {
-      setInterval(() => {
-        try {
-          const mem = process.memoryUsage();
-          const pool = this.memoryPoolManager.getStats();
-          const cache = pluginCacheManager.getStats();
-          pluginLogger.info('Memory stats', undefined, {
-            process: {
-              rss: mem.rss,
-              heapUsed: mem.heapUsed,
-              heapTotal: mem.heapTotal,
-              external: mem.external,
-            },
-            pool,
-            cache,
-          });
-        } catch { }
-      }, 30000);
-    } catch { }
-
-    pluginLogger.info('Performance optimizations initialized');
-  }
 
   private ensurePluginsDirectory(): void {
     if (!fs.existsSync(this.pluginsDir)) {
@@ -723,8 +607,7 @@ export class PluginManager extends TypedEventEmitter<PluginManagerEvents> {
 
       this.plugins.set(manifest.id, pluginInfo);
 
-      // 注册插件版本
-      pluginVersionManager.registerPluginVersion(manifest.id, manifest);
+      // 插件版本历史管理已移除，保留安装流程不依赖版本管理
 
       // 重置该插件的错误计数
       pluginErrorHandler.resetRetryCount(manifest.id);
@@ -924,15 +807,7 @@ export class PluginManager extends TypedEventEmitter<PluginManagerEvents> {
     // 幂等保护：如果进程已存在（启动中/运行中），直接视为启用完成
     const existingProcess = this.processManager.getProcessInfo(pluginId);
     if (existingProcess) {
-      // 启动性能监控（幂等）
-      pluginPerformanceMonitor.startMonitoringPlugin(pluginId);
-      // 注册懒加载（幂等）
-      pluginLazyLoader.registerPlugin(
-        pluginId,
-        plugin.manifest.permissions || [],
-        0
-      );
-
+      // Performance monitoring removed
       // 更新状态
       plugin.enabled = true;
       plugin.status = 'enabled';
@@ -949,16 +824,7 @@ export class PluginManager extends TypedEventEmitter<PluginManagerEvents> {
     try {
       plugin.status = 'loading';
 
-      // 开始性能监控
-      pluginPerformanceMonitor.startMonitoringPlugin(pluginId);
-
-      // 注册懒加载
-      pluginLazyLoader.registerPlugin(
-        pluginId,
-        plugin.manifest.permissions || [],
-        0 // normal priority
-      );
-
+      // Performance monitoring removed
 
       // 检查依赖
       // await this.checkDependencies(plugin.manifest);
@@ -1050,8 +916,7 @@ export class PluginManager extends TypedEventEmitter<PluginManagerEvents> {
       plugin.status = 'error';
       plugin.lastError = error instanceof Error ? error.message : '未知错误';
 
-      // 停止性能监控
-      pluginPerformanceMonitor.stopMonitoringPlugin(pluginId);
+      // Performance monitoring removed
 
       // 执行 onError 生命周期钩子
       await pluginLifecycleManager.executeHook('onError', {
@@ -1096,10 +961,6 @@ export class PluginManager extends TypedEventEmitter<PluginManagerEvents> {
           await pluginErrorHandler.handleError(pluginId, ErrorType.RUNTIME_ERROR, processErrorMessage, new Error(processErrorMessage));
         }
 
-        // 幂等清理：停止监控、卸载懒加载、清理缓存
-        pluginPerformanceMonitor.stopMonitoringPlugin(pluginId);
-        await pluginLazyLoader.unloadPlugin(pluginId);
-        this.clearPluginCache(pluginId);
       }
 
       // 同步状态与配置
@@ -1130,14 +991,7 @@ export class PluginManager extends TypedEventEmitter<PluginManagerEvents> {
         pluginLogger.info(`插件进程不存在，跳过停止步骤: ${pluginId}`);
       }
 
-      // 停止性能监控
-      pluginPerformanceMonitor.stopMonitoringPlugin(pluginId);
-
-      // 卸载懒加载
-      await pluginLazyLoader.unloadPlugin(pluginId);
-
-      // 清理缓存
-      this.clearPluginCache(pluginId);
+      // Performance monitoring removed
 
       // 更新状态
       plugin.enabled = false;
@@ -1560,21 +1414,6 @@ export class PluginManager extends TypedEventEmitter<PluginManagerEvents> {
     // 清理热重载管理器
     pluginHotReloadManager.cleanup();
 
-    // 清理性能优化组件
-    try {
-      if (typeof pluginPerformanceMonitor.destroy === 'function') {
-        pluginPerformanceMonitor.destroy();
-      }
-      // pluginCacheManager 和 pluginLazyLoader 没有 cleanup 方法，跳过
-      if (typeof this.memoryPoolManager.cleanup === 'function') {
-        this.memoryPoolManager.cleanup();
-      }
-      if (typeof this.connectionPoolManager.destroy === 'function') {
-        this.connectionPoolManager.destroy();
-      }
-    } catch (error: any) {
-      pluginLogger.error('Failed to cleanup performance optimization components:', undefined, error);
-    }
 
     const tempDir = path.join(this.pluginsDir, '.temp');
     if (fs.existsSync(tempDir)) {
@@ -1587,109 +1426,22 @@ export class PluginManager extends TypedEventEmitter<PluginManagerEvents> {
   }
 
   /**
-   * 检查插件更新
+   * 检查插件更新（已移除自动更新模块，返回默认结果）
    */
   public async checkPluginUpdate(pluginId: string): Promise<any> {
     const plugin = this.plugins.get(pluginId);
     if (!plugin) {
       throw new Error(`插件 ${pluginId} 不存在`);
     }
-
-    return await this.pluginUpdater.checkUpdate(plugin);
+    return {
+      pluginId: plugin.id,
+      currentVersion: plugin.version,
+      latestVersion: plugin.version,
+      hasUpdate: false
+    };
   }
 
-  /**
-   * 更新插件
-   */
-  public async updatePlugin(pluginId: string, updateUrl?: string): Promise<void> {
-    const plugin = this.plugins.get(pluginId);
-    if (!plugin) {
-      throw new Error(`插件 ${pluginId} 不存在`);
-    }
 
-    // 如果插件已启用，先禁用
-    const wasEnabled = plugin.enabled;
-    if (wasEnabled) {
-      await this.disablePlugin(pluginId);
-    }
-
-    try {
-      await this.pluginUpdater.updatePlugin(pluginId, updateUrl);
-
-      // 重新加载插件信息
-      await this.loadInstalledPlugins();
-
-      // 如果之前是启用状态，重新启用
-      if (wasEnabled) {
-        await this.enablePlugin(pluginId);
-      }
-    } catch (error: any) {
-      // 如果更新失败，尝试回滚
-      try {
-        await this.rollbackPluginUpdate(pluginId);
-        if (wasEnabled) {
-          await this.enablePlugin(pluginId);
-        }
-      } catch (rollbackError: any) {
-        pluginLogger.error('插件更新回滚失败', pluginId, rollbackError instanceof Error ? rollbackError : new Error(String(rollbackError)), { pluginId, error: rollbackError });
-      }
-      throw error;
-    }
-  }
-
-  /**
-   * 回滚插件更新
-   */
-  public async rollbackPluginUpdate(pluginId: string): Promise<boolean> {
-    const plugin = this.plugins.get(pluginId);
-    if (!plugin) {
-      throw new Error(`Plugin ${pluginId} not found`);
-    }
-
-    // 记录插件是否之前是启用状态
-    const wasEnabled = plugin.enabled;
-
-    try {
-
-      // 检查是否有备份可回滚
-      const backupPath = path.join(this.pluginsDir, `${pluginId}_backup`);
-      if (!fs.existsSync(backupPath)) {
-        throw new Error(`No backup found for plugin ${pluginId}`);
-      }
-
-      // 停用插件
-      await this.disablePlugin(pluginId);
-
-      // 删除当前版本
-      const pluginPath = path.join(this.pluginsDir, pluginId);
-      fs.rmSync(pluginPath, { recursive: true, force: true });
-
-      // 恢复备份
-      fs.cpSync(backupPath, pluginPath, { recursive: true });
-
-      // 重新加载插件信息并按之前状态恢复
-      try { this.loadInstalledPlugins(); } catch { }
-      if (wasEnabled) {
-        await this.enablePlugin(pluginId);
-      }
-
-      pluginLogger.info(`Plugin ${pluginId} rolled back successfully`);
-      return true;
-    } catch (error: any) {
-      pluginLogger.error(`Failed to rollback plugin version: ${error.message}`);
-
-      // 如果回滚失败且插件之前是启用的，尝试重新启用
-      if (wasEnabled) {
-        try {
-          await this.enablePlugin(pluginId);
-        } catch (enableError: any) {
-          pluginLogger.error(`Failed to re-enable plugin after rollback failure: ${enableError.message}`);
-        }
-      }
-
-      return false;
-    }
-  }
 
 
 
@@ -1862,87 +1614,12 @@ export class PluginManager extends TypedEventEmitter<PluginManagerEvents> {
     pluginHotReloadManager.updateConfig(config);
   }
 
-  /**
-   * 获取插件版本历史
-   */
-  public getPluginVersionHistory(pluginId: string): any {
-    return pluginVersionManager.getVersionHistory(pluginId);
-  }
 
-  /**
-   * 检查插件更新
-   */
-  public async checkPluginUpdates(pluginId: string, registryUrl?: string): Promise<any> {
-    return await pluginVersionManager.checkForUpdates(pluginId, registryUrl);
-  }
 
-  /**
-   * 获取版本变更日志
-   */
-  public getPluginChangelog(pluginId: string, fromVersion?: string, toVersion?: string): string[] {
-    return pluginVersionManager.getChangelog(pluginId, fromVersion, toVersion);
-  }
 
-  /**
-   * 回滚插件到指定版本
-   */
-  public async rollbackPluginVersion(pluginId: string, targetVersion: string): Promise<boolean> {
-    const plugin = this.plugins.get(pluginId);
-    if (!plugin) {
-      throw new Error(`插件 ${pluginId} 不存在`);
-    }
 
-    const wasEnabled = plugin.enabled;
 
-    try {
-      // 如果插件正在运行，先禁用
-      if (wasEnabled) {
-        await this.disablePlugin(pluginId);
-      }
 
-      // 执行版本回滚
-      const success = await pluginVersionManager.rollbackToVersion(pluginId, targetVersion);
-
-      if (success) {
-        // 更新插件信息中的版本
-        plugin.version = targetVersion;
-
-        // 如果之前是启用状态，重新启用
-        if (wasEnabled) {
-          await this.enablePlugin(pluginId);
-        }
-
-        pluginLogger.info(`Plugin ${pluginId} rolled back to version ${targetVersion}`);
-      }
-
-      return success;
-    } catch (error: any) {
-      pluginLogger.error(`Failed to rollback plugin version: ${error.message}`);
-
-      return false;
-    }
-  }
-
-  /**
-   * 比较版本号
-   */
-  public compareVersions(version1: string, version2: string): number {
-    return pluginVersionManager.compareVersions(version1, version2);
-  }
-
-  /**
-   * 检查版本约束
-   */
-  public satisfiesVersionConstraint(version: string, constraint: string): boolean {
-    return pluginVersionManager.satisfiesConstraint(version, constraint);
-  }
-
-  /**
-   * 清理旧版本数据
-   */
-  public cleanupOldVersions(pluginId: string, keepCount: number = 10): void {
-    pluginVersionManager.cleanupOldVersions(pluginId, keepCount);
-  }
 
   /**
    * 重新加载插件信息（不重启插件）
@@ -2267,43 +1944,35 @@ export class PluginManager extends TypedEventEmitter<PluginManagerEvents> {
     }
   }
 
-  /**
-   * 获取插件缓存统计
-   */
-  public getPluginCacheStats(pluginId?: string): any {
-    return pluginCacheManager.getStats();
-  }
 
-  /**
-   * 获取内存池统计
-   */
-  public getMemoryPoolStats(): any {
-    return this.memoryPoolManager.getStats();
-  }
 
   /**
    * 获取连接池统计
    */
   public getConnectionPoolStats(): any {
-    return this.connectionPoolManager.getStats();
+    // ConnectionPool 已移除：返回降级的空统计以保证兼容调用方
+    return {
+      totalConnections: 0,
+      activeConnections: 0,
+      idleConnections: 0,
+      pendingRequests: 0
+    };
   }
 
-  /**
-   * 清理插件缓存
-   */
-  public clearPluginCache(pluginId?: string): void {
-    if (pluginId) {
-      pluginCacheManager.clear(pluginId);
-    } else {
-      pluginCacheManager.clear();
-    }
-  }
 
   /**
    * 预加载插件
    */
   public async preloadPlugin(pluginId: string): Promise<void> {
-    await pluginLazyLoader.loadPlugin(pluginId);
+    const plugin = this.plugins.get(pluginId);
+    if (!plugin) {
+      throw new Error(`插件 ${pluginId} 不存在`);
+    }
+
+    // 如果插件未启用，先启用它
+    if (!plugin.enabled) {
+      await this.enablePlugin(pluginId);
+    }
   }
 
 }

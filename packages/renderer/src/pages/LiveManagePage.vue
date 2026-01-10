@@ -864,7 +864,7 @@ onUnmounted(() => {
 
 function onAvatarError(e: Event) {
   const t = e.target as HTMLImageElement
-  if (t) t.src = '/default-avatar.png'
+  if (t) t.src = '/default-avatar.svg'
 }
 
 const summaryOverlayVisible = ref(false);

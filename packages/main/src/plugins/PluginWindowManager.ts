@@ -1,4 +1,4 @@
-import { BrowserWindow, session } from 'electron';
+import { BrowserWindow, session, Session } from 'electron';
 import path from 'path';
 import { getLogManager } from '../logging/LogManager';
 import { ConfigManager } from '../config/ConfigManager';
@@ -17,7 +17,7 @@ export class PluginWindowManager {
   private windowActivity: Map<string, number> = new Map(); // Track last activity time (for statistics only)
   private configManager?: ConfigManager;
   private pluginManager?: PluginManager;
-  private sharedSession: session.Session;
+  private sharedSession: Session;
 
   constructor(configManager?: ConfigManager) {
     this.configManager = configManager;
@@ -70,7 +70,7 @@ export class PluginWindowManager {
       let minHeight = 360;
       let resizable = true;
       let frame = false;
-      let transparent = false;
+      let transparent = true;
       let alwaysOnTop = false;
 
       if (this.pluginManager) {

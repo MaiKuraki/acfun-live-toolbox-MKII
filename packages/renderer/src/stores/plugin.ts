@@ -23,8 +23,9 @@ export interface PluginInfo {
   // 统一托管入口（UI页面）——按需填充，不自动使用
   entryUrl?: string;
 
-  // 插件配置
+  // 插件配置 - 按需加载，减少内存占用
   config?: Record<string, any>;
+  configLoaded?: boolean;
 
   // 侧边栏显示配置
   sidebarDisplay?: {
@@ -186,7 +187,8 @@ export const usePluginStore = defineStore('plugin', () => {
           installTime: new Date(p.installedAt || Date.now()),
           lastUpdate: new Date(),
           entryUrl: undefined,
-          config: p.manifest?.config || undefined,
+          config: undefined, // 按需加载，减少初始内存占用
+          configLoaded: false,
           hasOverlay: !!p.manifest?.overlay,
           // 合并持久化的侧边栏显示状态
           sidebarDisplay: savedSidebarMap.get(p.id) || undefined,
@@ -432,6 +434,25 @@ export const usePluginStore = defineStore('plugin', () => {
     }
   }
 
+  async function loadPluginConfig(pluginId: string) {
+    const plugin = getPluginById(pluginId);
+    if (!plugin) return undefined;
+    if (plugin.configLoaded) return plugin.config;
+
+    try {
+      // 从主进程获取配置
+      const result = await window.electronApi?.plugin.getConfig(pluginId);
+      if (result?.success && (result as any).config) {
+        plugin.config = (result as any).config;
+        plugin.configLoaded = true;
+      }
+    } catch (err) {
+      console.warn('Failed to load plugin config:', err);
+    }
+
+    return plugin.config;
+  }
+
   async function updatePluginConfig(pluginId: string, config: Record<string, any>) {
     const plugin = getPluginById(pluginId);
     if (!plugin) return;
@@ -460,6 +481,7 @@ export const usePluginStore = defineStore('plugin', () => {
       }
     }
     plugin.config = next;
+    plugin.configLoaded = true;
     plugin.lastUpdate = new Date();
   }
 
@@ -584,6 +606,7 @@ export const usePluginStore = defineStore('plugin', () => {
     uninstallPlugin,
     reloadPlugin,
     togglePlugin,
+    loadPluginConfig,
     updatePluginConfig,
     updatePluginSidebarDisplay,
     updatePluginLiveRoomDisplay,

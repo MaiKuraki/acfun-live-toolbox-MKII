@@ -20,12 +20,19 @@
 </template>
 
 <script setup lang="ts">
+import { onMounted } from 'vue'
 import WujieVue from 'wujie-vue3'
 import { buildPluginPageUrlWithDev } from '../utils/plugin-injection'
 import { setReadonlyIsMain } from '../utils/readonlyReporter'
 import { usePluginFrame } from '../composables/usePluginFrame'
+import { useNetworkStore } from '../stores/network'
 
 setReadonlyIsMain(false)
+
+// Initialize network store to pick up apiPort from URL when hosted
+onMounted(async () => {
+  await useNetworkStore().init()
+})
 
 // 使用统一的插件框架 composable
 const {

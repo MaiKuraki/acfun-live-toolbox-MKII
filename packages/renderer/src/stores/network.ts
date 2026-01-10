@@ -21,9 +21,12 @@ export const useNetworkStore = defineStore('network', {
   },
   actions: {
     async init() {
-      if ((window as any).electronApi) {
+      try {
         await this.refreshStatus()
-      } else {
+      } catch (error) {
+        
+      }
+      if(!this.apiPort){
         this.apiPort = Number(router.currentRoute.value.query.apiPort)
       }
     },

@@ -1,6 +1,5 @@
 import { TypedEventEmitter } from '../utils/TypedEventEmitter';
 import { WorkerPoolManager, WorkerPoolConfig } from './WorkerPoolManager';
-import { SecureCommunicationChannel } from './SecureCommunicationChannel';
 import { pluginLogger } from './PluginLogger';
 import { pluginErrorHandler, ErrorType } from './PluginErrorHandler';
 import { SseQueueService } from '../server/SseQueueService';
@@ -41,7 +40,6 @@ export interface ProcessManagerEvents {
 export class ProcessManager extends TypedEventEmitter<ProcessManagerEvents> {
   private config: ProcessManagerConfig;
   private workerPool: WorkerPoolManager;
-  private communicationChannel: SecureCommunicationChannel;
   private processes: Map<string, PluginProcessInfo> = new Map();
   private recoveryAttempts: Map<string, number> = new Map();
   private maxRecoveryAttempts = 3;
@@ -62,10 +60,6 @@ export class ProcessManager extends TypedEventEmitter<ProcessManagerEvents> {
     };
 
     this.workerPool = new WorkerPoolManager(this.config.workerPool);
-    this.communicationChannel = new SecureCommunicationChannel({
-      enableEncryption: false, // 禁用加密，使用明文传输以便调试
-      enableSigning: true,
-    });
 
     this.setupEventHandlers();
     pluginLogger.info('ProcessManager initialized', undefined, { config: this.config });
@@ -82,13 +76,6 @@ export class ProcessManager extends TypedEventEmitter<ProcessManagerEvents> {
 
     this.workerPool.on('worker.error', ({ workerId, pluginId, error }) => {
       this.handleWorkerError(pluginId, error);
-    });
-
-    this.communicationChannel.on('channel.error', ({ channelId, error }) => {
-      const process = this.findProcessByChannelId(channelId);
-      if (process) {
-        this.handleProcessError(process.pluginId, error);
-      }
     });
   }
 
@@ -140,12 +127,11 @@ export class ProcessManager extends TypedEventEmitter<ProcessManagerEvents> {
       try { this.templates.set(pluginId, { pluginPath, apiPort: options?.apiPort, manifest }); } catch {}
       const sandboxConfig = this.buildSandboxConfig(pluginId, manifest, options?.apiPort);
       const workerId = await this.workerPool.createWorker(pluginId, pluginPath, sandboxConfig);
-      const channelId = `${pluginId}-${workerId}`;
 
       const processInfo: PluginProcessInfo = {
         pluginId,
         workerId,
-        channelId,
+        channelId: workerId, // Use workerId as channelId for simplicity
         pluginPath,
         status: 'starting',
         startedAt: Date.now(),
@@ -156,18 +142,12 @@ export class ProcessManager extends TypedEventEmitter<ProcessManagerEvents> {
 
       this.processes.set(pluginId, processInfo);
 
-      // Create communication channel
-      const workerInfo = this.workerPool['workers'].get(workerId);
-      if (workerInfo) {
-        this.communicationChannel.createChannel(channelId, pluginId, workerInfo.worker);
-      }
-
       try { console.log('[ProcessManager] starting plugin', { pluginId, pluginPath }); } catch {}
       
       processInfo.status = 'running';
       this.emit('process.started', { pluginId, processInfo });
       
-      pluginLogger.info('Plugin process started', pluginId, { workerId, channelId });
+      pluginLogger.info('Plugin process started', pluginId, { workerId });
       return processInfo;
 
     } catch (error: any) {
@@ -223,9 +203,6 @@ export class ProcessManager extends TypedEventEmitter<ProcessManagerEvents> {
       } catch (error: any) {
         pluginLogger.warn('Plugin cleanup failed', pluginId, error instanceof Error ? error : new Error(String(error)));
       }
-
-      // Remove communication channel
-      this.communicationChannel.removeChannel(processInfo.channelId);
 
       // Terminate worker
       this.workerPool.terminateWorker(processInfo.workerId, reason);
@@ -411,15 +388,6 @@ export class ProcessManager extends TypedEventEmitter<ProcessManagerEvents> {
     }
   }
 
-  private findProcessByChannelId(channelId: string): PluginProcessInfo | undefined {
-    const processes = Array.from(this.processes.values());
-    for (const processInfo of processes) {
-      if (processInfo.channelId === channelId) {
-        return processInfo;
-      }
-    }
-    return undefined;
-  }
 
   public getProcessInfo(pluginId: string): PluginProcessInfo | undefined {
     return this.processes.get(pluginId);
@@ -435,7 +403,6 @@ export class ProcessManager extends TypedEventEmitter<ProcessManagerEvents> {
     stopped: number;
     error: number;
     workerStats: any;
-    channelStats: any[];
   } {
     const stats = {
       total: this.processes.size,
@@ -443,7 +410,6 @@ export class ProcessManager extends TypedEventEmitter<ProcessManagerEvents> {
       stopped: 0,
       error: 0,
       workerStats: this.workerPool.getWorkerStats(),
-      channelStats: this.communicationChannel.getAllChannelStats(),
     };
 
     const processes = Array.from(this.processes.values());
@@ -487,7 +453,6 @@ export class ProcessManager extends TypedEventEmitter<ProcessManagerEvents> {
 
     // Cleanup components
     this.workerPool.cleanup();
-    this.communicationChannel.cleanup();
 
     pluginLogger.info('ProcessManager cleanup completed');
   }

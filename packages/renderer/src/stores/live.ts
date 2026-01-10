@@ -244,10 +244,17 @@ export const useLiveStore = defineStore('live', () => {
   }
 
   function attachDanmuStatsListener() {
+    console.log('[DANMU-RENDERER] attachDanmuStatsListener - 开始附加弹幕监听器');
     try {
-      if (subscribed) return
+      if (subscribed) {
+        console.log('[DANMU-RENDERER] attachDanmuStatsListener - 已经订阅，跳过');
+        return;
+      }
       subscribed = true
+      console.log('[DANMU-RENDERER] attachDanmuStatsListener - 设置订阅状态为true');
+
       const handler = async (msg: any) => {
+        console.log(`[DANMU-RENDERER] handler - 收到弹幕事件，类型: ${msg?.event_type}, 房间: ${msg?.room_id}`);
         try {
           const rid = String(msg?.room_id || '')
           const raw = (msg && msg.raw) || {}
@@ -287,12 +294,18 @@ export const useLiveStore = defineStore('live', () => {
             if (Number.isFinite(bc)) prev.bananaCount = bc
             statsByRoom[keyId] = prev
           } else if (type === 'danmaku' || type === 'comment') {
-            if (isHistory) { return }
+            console.log(`[DANMU-RENDERER] handler - 处理弹幕消息，房间: ${keyId}, 内容长度: ${String((data as any)?.content ?? '').length}`);
+            if (isHistory) {
+              console.log(`[DANMU-RENDERER] handler - 跳过历史弹幕消息`);
+              return;
+            }
             const content = String((data as any)?.content ?? '')
             const ts = getTs(msg)
             const item = buildItem(keyId, 'comment', data, ts, content)
+            console.log(`[DANMU-RENDERER] handler - 追加弹幕消息到房间: ${keyId}`);
             appendRoomMessage(keyId, item)
           } else if (type === 'gift') {
+            console.log(`[DANMU-RENDERER] handler - 处理礼物消息，房间: ${keyId}`);
             const uid = Number((data as any)?.userId ?? (data as any)?.userInfo?.userID ?? 0)
             const name = String((data as any)?.username ?? (data as any)?.userInfo?.nickname ?? (data as any)?.danmuInfo?.userInfo?.nickname ?? '')
             const avatar = normalizeAvatarUrl(String((data as any)?.danmuInfo?.userInfo?.avatar ?? (data as any)?.user?.avatar ?? (data as any)?.userInfo?.avatar ?? (data as any)?.avatar ?? '') || `https://cdn.ui-avatars.com/api/?name=${encodeURIComponent(name || '用户')}`)
@@ -335,6 +348,7 @@ export const useLiveStore = defineStore('live', () => {
               level: Number(((data as any)?.danmuInfo?.userInfo?.medal ?? (data as any)?.userInfo?.medal).level || 0)
             } : undefined
           }
+          console.log(`[DANMU-RENDERER] handler - 追加礼物消息到房间: ${keyId}`);
           appendRoomMessage(keyId, item)
         } else if (type === 'like') {
           const delta = Number((data as any)?.likeDelta ?? (data as any)?.likeCount ?? NaN)

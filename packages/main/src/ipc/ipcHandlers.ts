@@ -15,8 +15,6 @@ import path from 'path';
 import { pluginLifecycleManager } from '../plugins/PluginLifecycle';
 import { DataManager } from '../persistence/DataManager';
 import PluginPageStatusManager from '../persistence/PluginPageStatusManager';
-import { memoryPoolManager } from '../plugins/MemoryPoolManager';
-import { pluginCacheManager } from '../plugins/PluginCacheManager';
 
 /**
  * Initializes all IPC handlers for the main process.
@@ -123,21 +121,12 @@ export function initializeIpcHandlers(
   ipcMain.handle('system.getMemoryStats', async () => {
     try {
       const processMem = process.memoryUsage();
-      const pool = memoryPoolManager.getStats();
-      return { success: true, process: processMem, pool };
+      return { success: true, process: processMem };
     } catch (err: any) {
       return { success: false, error: err?.message || String(err) };
     }
   });
 
-  ipcMain.handle('system.getCacheStats', async () => {
-    try {
-      const cache = pluginCacheManager.getStats();
-      return { success: true, cache };
-    } catch (err: any) {
-      return { success: false, error: err?.message || String(err) };
-    }
-  });
 
   // System: 打开文件所在文件夹
   ipcMain.handle('system.showItemInFolder', async (_event, targetPath: string) => {
@@ -870,16 +859,16 @@ export function initializeIpcHandlers(
         console.warn('[IPC] plugin.updateConfig overlay sync failed:', syncErr);
       }
 
-      // 发布生命周期事件：配置已更新（供 overlay-wrapper 通过 SSE 订阅）
+      // 发布配置更新事件：配置已更新（供 overlay-wrapper 通过 SSE 订阅）
       try {
         const channel = `plugin:${id}:overlay`;
         dataManager.publish(
           channel,
           { event: 'config-updated', payload: { config: merged } },
-          { ttlMs: 5 * 60 * 1000, persist: true, meta: { kind: 'lifecycle' } },
+          { ttlMs: 5 * 60 * 1000, persist: true, meta: { kind: 'config' } },
         );
       } catch (pubErr) {
-        console.warn('[IPC] plugin.updateConfig lifecycle publish failed:', pubErr);
+        console.warn('[IPC] plugin.updateConfig config publish failed:', pubErr);
       }
 
       // 通知插件窗口：配置已更新（供 window frame 转发到子页）
@@ -1582,7 +1571,7 @@ export function initializeIpcHandlers(
     try {
       const apiServer = (pluginManager as any).apiServer as any;
       const running = !!apiServer && !!apiServer.isRunning?.();
-      const port = Number(configManager.get<number>('server.port'));
+      const port = Number(configManager.get<number>('server.port', 18299));
       const error = String(apiServer?.getLastError?.() || '');
       let health: any = undefined;
       if (running && Number.isFinite(port) && port > 0 && port <= 65535) {

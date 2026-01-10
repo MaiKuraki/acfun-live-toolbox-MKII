@@ -130,7 +130,7 @@ const dynamicPluginRoutes = new Map<string, RouteRecordRaw>()
 
 export function registerPluginRoute(pluginId: string, route: RouteRecordRaw) {
   dynamicPluginRoutes.set(pluginId, route)
-  router.addRoute('Plugins', route)
+  router.addRoute(route)
 }
 
 export function unregisterPluginRoute(pluginId: string) {

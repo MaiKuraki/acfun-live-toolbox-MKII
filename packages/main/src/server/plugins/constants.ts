@@ -3,6 +3,7 @@ export const allowedDanmakuTypes = [
   "shareLive", "richText", "recentComment",
   "bananaCount", "displayInfo", "topUsers", "redpackList",
   "chatCall", "chatAccept", "chatReady", "chatEnd",
+  "joinClub",
   "kickedOut", "violationAlert", "managerState", "end",
 ];
 
@@ -24,6 +25,7 @@ export const rendererAllowedEvents = [
 ];
 
 export const messageAllowedKinds = ["mainMessage", "uiMessage", "message"];
+
 
 
 

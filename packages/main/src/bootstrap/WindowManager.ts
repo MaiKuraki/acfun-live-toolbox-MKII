@@ -78,6 +78,17 @@ export class WindowManager {
     }
 
     this.mainWindow.on('closed', () => {
+      // 关闭所有其他窗口
+      const allWindows = BrowserWindow.getAllWindows();
+      for (const win of allWindows) {
+        if (win !== this.mainWindow && !win.isDestroyed()) {
+          try {
+            win.close();
+          } catch (error) {
+            console.error('[WindowManager] Error closing window:', error);
+          }
+        }
+      }
       this.mainWindow = null;
     });
 

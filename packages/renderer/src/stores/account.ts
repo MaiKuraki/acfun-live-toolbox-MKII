@@ -1,7 +1,7 @@
 import { defineStore } from 'pinia';
 import { ref, computed, watch } from 'vue';
 import { MessagePlugin } from 'tdesign-vue-next';
-import { reportReadonlyUpdate, reportReadonlyInit } from '../utils/readonlyReporter';
+import { reportReadonlyUpdate, reportReadonlyInit, isReadonlyMain } from '../utils/readonlyReporter';
 import type { UserInfo } from 'acfunlive-http-api';
 
 // 渲染层最小账户信息结构，去除无用字段（medal、managerType等）
@@ -355,13 +355,16 @@ export const useAccountStore = defineStore('account', () => {
   // 初始化时加载用户信息（内部已包含一次 /api/acfun/auth/status 校验）
   // 避免重复调用相同接口，这里不再额外调用 syncAuthStatus
   loadUserInfo().then(() => {
-    // 初始化时调用一次 token 检查
-    checkTokenAvailability();
-    
-    // 设置定时器，每 10 分钟检查一次
-    tokenCheckTimer.value = setInterval(() => {
+    // 只有在主窗口时才执行 token 检查
+    if (isReadonlyMain()) {
+      // 初始化时调用一次 token 检查
       checkTokenAvailability();
-    }, 10 * 60 * 1000);
+
+      // 设置定时器，每 10 分钟检查一次
+      tokenCheckTimer.value = setInterval(() => {
+        checkTokenAvailability();
+      }, 10 * 60 * 1000);
+    }
   });
 
   try {

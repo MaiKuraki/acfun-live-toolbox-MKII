@@ -42,6 +42,18 @@ export default /** @type import('electron-builder').Configuration */
     // requestOptions 可在新版本中传递，但 26.x 下主要依赖环境代理
   },
   generateUpdatesFilesForAllChannels: true,
+  win: {
+    target: 'nsis',
+  },
+  nsis: {
+    oneClick: false,
+    allowToChangeInstallationDirectory: true,
+    createDesktopShortcut: true,
+    createStartMenuShortcut: true,
+    shortcutName: 'ACLiveFrame',
+    // 允许提升权限
+    allowElevation: true,
+  },
   linux: {
     target: ['deb'],
   },

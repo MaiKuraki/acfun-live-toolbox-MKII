@@ -175,7 +175,7 @@ const _listenerMap = new WeakMap<(...args: any[]) => void, (event: Electron.IpcR
   http: {
     get: async (path: string, params?: Record<string, any>) => {
       const cfg = await ipcRenderer.invoke('system.getConfig');
-      const p = Number(cfg && cfg['server.port']);
+      const p = Number(cfg && cfg['server.port']) || 18299;
       if (!Number.isFinite(p) || p <= 0 || p > 65535) {
         throw new Error('API_PORT_NOT_CONFIGURED');
       }

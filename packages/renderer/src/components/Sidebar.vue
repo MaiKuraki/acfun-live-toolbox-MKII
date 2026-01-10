@@ -245,9 +245,17 @@ function updateActiveMenu(path: string) {
     activePlugin.value = null;
   } else if (path.startsWith('/plugins/') && !path.startsWith('/plugins/management')) {
     // 动态插件路由（router.ts 使用 /plugins/:plugname）
-    const pluginId = path.split('/plugins/')[1];
-    activeMenu.value = `plugin-${pluginId}`;
-    activePlugin.value = pluginId;
+    // 从路径中提取插件ID（第一个路径段）
+    const pathParts = path.split('/').filter(p => p);
+    const pluginsIndex = pathParts.indexOf('plugins');
+    if (pluginsIndex !== -1 && pluginsIndex + 1 < pathParts.length) {
+      const pluginId = pathParts[pluginsIndex + 1];
+      activeMenu.value = `plugin-${pluginId}`;
+      activePlugin.value = pluginId;
+    } else {
+      activeMenu.value = '';
+      activePlugin.value = null;
+    }
   } else {
     activeMenu.value = '';
     activePlugin.value = null;
@@ -318,8 +326,12 @@ async function navigateToMyLiveRoom() {
 
 async function openPlugin(plugin: DynamicPlugin) {
   if (plugin.status !== 'active' || !plugin.enabled) return;
+
+  console.log('[Sidebar] openPlugin called for:', plugin.id, plugin.name);
+
   // 若存在自定义路由，优先使用
   if (plugin.route) {
+    console.log('[Sidebar] Using custom route:', plugin.route);
     try { await router.push(plugin.route); } catch {}
     try {
       const rt = router.currentRoute.value as any;
@@ -332,8 +344,12 @@ async function openPlugin(plugin: DynamicPlugin) {
   }
 
   try {
+    console.log('[Sidebar] Resolving primary hosting type for:', plugin.id);
     const primary = await resolvePrimaryHostingType(plugin.id);
+    console.log('[Sidebar] Primary hosting type resolved:', primary);
+
     if (primary.type === 'ui') {
+      console.log('[Sidebar] Navigating to UI plugin route:', `/plugins/${plugin.id}`);
       // 直接进入 UI 页框架路由（router.ts: /plugins/:plugname）
       try { await router.push(`/plugins/${plugin.id}`); } catch {}
       try {
@@ -346,6 +362,7 @@ async function openPlugin(plugin: DynamicPlugin) {
       return;
     }
     if (primary.type === 'window') {
+      console.log('[Sidebar] Opening plugin window for:', plugin.id);
       // 打开插件独立窗口（单实例），无需切换主窗口路由
       await window.electronApi?.plugin.window.open(plugin.id);
       return;
@@ -355,6 +372,7 @@ async function openPlugin(plugin: DynamicPlugin) {
   }
 
   // 默认回退：进入框架路由（router.ts: /plugins/:plugname）
+  console.log('[Sidebar] Falling back to default route for:', plugin.id);
   try { await router.push(`/plugins/${plugin.id}`); } catch {}
   try {
     const rt = router.currentRoute.value as any;

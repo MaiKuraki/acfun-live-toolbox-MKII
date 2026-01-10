@@ -725,7 +725,9 @@ export class AcfunAdapter extends EventEmitter {
    * @private
    */
   private handleDanmuEvent(event: any): void {
+    console.log(`[DANMU-RECV] AcfunAdapter.handleDanmuEvent - 收到弹幕事件，类型: ${event?.type || 'unknown'}, 房间: ${this.config.roomId}`);
     if (!event || typeof event !== 'object') {
+      console.log(`[DANMU-RECV] AcfunAdapter.handleDanmuEvent - 事件无效，跳过处理`);
       return;
     }
 
@@ -736,25 +738,32 @@ export class AcfunAdapter extends EventEmitter {
       // } catch {}
 
       if (event && event.danmuInfo) {
+        console.log(`[DANMU-RECV] AcfunAdapter.handleDanmuEvent - 检测到danmuInfo，开始处理`);
         this.processDanmuInfo(event.danmuInfo, event);
         return;
       }
       // 根据事件类型分发处理
+      console.log(`[DANMU-RECV] AcfunAdapter.handleDanmuEvent - 开始分发事件类型: ${event.type}`);
       switch (event.type) {
         case 'comment':
         case 'danmu':
+          console.log(`[DANMU-RECV] AcfunAdapter.handleDanmuEvent - 处理弹幕消息`);
           this.handleDanmuMessage(event);
           break;
         case 'gift':
+          console.log(`[DANMU-RECV] AcfunAdapter.handleDanmuEvent - 处理礼物消息`);
           this.handleGiftMessage(event);
           break;
         case 'like':
+          console.log(`[DANMU-RECV] AcfunAdapter.handleDanmuEvent - 处理点赞消息`);
           this.handleLikeMessage(event);
           break;
         case 'enter':
+          console.log(`[DANMU-RECV] AcfunAdapter.handleDanmuEvent - 处理进入消息`);
           this.handleEnterMessage(event);
           break;
         case 'follow':
+          console.log(`[DANMU-RECV] AcfunAdapter.handleDanmuEvent - 处理关注消息`);
           this.handleFollowMessage(event);
           break;
         case 'bananaCount': {
@@ -859,6 +868,7 @@ export class AcfunAdapter extends EventEmitter {
   }
 
   private processDanmuInfo(di: any, parent?: any): void {
+    console.log(`[DANMU-RECV] AcfunAdapter.processDanmuInfo - 开始处理弹幕信息，房间: ${this.config.roomId}`);
     try {
       const tHint = String(parent?.type || parent?.action || parent?.messageType || parent?.signalType || '');
       const st = String(di?.type || di?.signalType || tHint || '');
@@ -881,7 +891,9 @@ export class AcfunAdapter extends EventEmitter {
       const baseText = merged?.content ?? merged?.comment?.content ?? merged?.message ?? merged?.text ?? null;
       const content = giftName ? String(giftName) + (giftCount ? ' x' + String(giftCount) : '') + (merged?.value ? ' (value ' + String(merged.value) + ')' : '')
         : (likeVal != null ? 'like ' + String(likeVal) : baseText);
+      console.log(`[DANMU-RECV] AcfunAdapter.processDanmuInfo - 调用handleActionSignal`);
       this.handleActionSignal({ ...merged, signalType: st || tHint, parentType: tHint, timestamp: ts, userId, userInfo: { userID: Number(userId) || 0, nickname: String(userName || '') }, content, raw: parent || di });
+      console.log(`[DANMU-RECV] AcfunAdapter.processDanmuInfo - 弹幕信息处理完成`);
     } catch (e) {
       console.error('[AcfunAdapter] Error processing danmuInfo:', e);
     }
@@ -915,24 +927,27 @@ export class AcfunAdapter extends EventEmitter {
           }
         } catch {}
       }
+      // 获取完整的用户信息，优先使用 danmuInfo 中的完整信息
+      const completeUserInfo = event?.danmuInfo?.userInfo || event?.userInfo || { userID: Number(userId) || 0, nickname: String(userName || '') };
+      event.userInfo = completeUserInfo;
       if (String(st).toLowerCase().includes('comment')) {
-        this.handleDanmuMessage({ timestamp: ts, userId, userInfo: { userID: Number(userId) || 0, nickname: String(userName || '') }, content, raw: event });
+        this.handleDanmuMessage({ timestamp: ts, userId, userInfo: completeUserInfo, content, raw: event });
         return;
       }
       if (String(st).toLowerCase().includes('gift')) {
-        this.handleGiftMessage({ timestamp: ts, userId, userInfo: { userID: Number(userId) || 0, nickname: String(userName || '') }, content, raw: event });
+        this.handleGiftMessage({ timestamp: ts, userId, userInfo: completeUserInfo, content, raw: event });
         return;
       }
       if (String(st).toLowerCase().includes('like')) {
-        this.handleLikeMessage({ timestamp: ts, userId, userInfo: { userID: Number(userId) || 0, nickname: String(userName || '') }, content, raw: event });
+        this.handleLikeMessage({ timestamp: ts, userId, userInfo: completeUserInfo, content, raw: event });
         return;
       }
       if (String(st).toLowerCase().includes('enter')) {
-        this.handleEnterMessage({ timestamp: ts, userId, userInfo: { userID: Number(userId) || 0, nickname: String(userName || '') }, content, raw: event });
+        this.handleEnterMessage({ timestamp: ts, userId, userInfo: completeUserInfo, content, raw: event });
         return;
       }
       if (String(st).toLowerCase().includes('follow')) {
-        this.handleFollowMessage({ timestamp: ts, userId, userInfo: { userID: Number(userId) || 0, nickname: String(userName || '') }, content, raw: event });
+        this.handleFollowMessage({ timestamp: ts, userId, userInfo: completeUserInfo, content, raw: event });
         return;
       }
       if (this.config.debug) {
@@ -992,6 +1007,7 @@ export class AcfunAdapter extends EventEmitter {
    * @private
    */
   private handleDanmuMessage(data: any): void {
+    console.log(`[DANMU-RECV] AcfunAdapter.handleDanmuMessage - 开始处理弹幕消息，房间: ${this.config.roomId}`);
     try {
       // 直接使用标准的 DanmuMessage 结构
       const message: DanmuMessage = {
@@ -999,10 +1015,13 @@ export class AcfunAdapter extends EventEmitter {
         type: 'comment',
         roomId: this.config.roomId
       };
-      
+
+      console.log(`[DANMU-RECV] AcfunAdapter.handleDanmuMessage - 发射danmu事件`);
       this.safeEmit('danmu', message);
       // 发射统一事件
+      console.log(`[DANMU-RECV] AcfunAdapter.handleDanmuMessage - 发射统一事件danmaku`);
       this.emitUnifiedEvent('danmaku', message);
+      console.log(`[DANMU-RECV] AcfunAdapter.handleDanmuMessage - 弹幕消息处理完成`);
     } catch (error) {
       console.error('[AcfunAdapter] Error handling danmu message:', error);
       this.safeEmit('error', error instanceof Error ? error : new Error(String(error)));
@@ -1101,6 +1120,7 @@ export class AcfunAdapter extends EventEmitter {
    * 统一事件发射：将上游消息标准化为 NormalizedEvent 并通过 'event' 推送
    */
   private emitUnifiedEvent(type: NormalizedEventType, message: any): void {
+    console.log(`[DANMU-RECV] AcfunAdapter.emitUnifiedEvent - 开始发射统一事件，类型: ${type}, 房间: ${this.config.roomId}`);
     try {
       const raw = message?.raw ?? message;
       const ts = Number(message?.timestamp ?? message?.sendTime ?? Date.now());
@@ -1121,6 +1141,7 @@ export class AcfunAdapter extends EventEmitter {
         raw
       });
 
+      console.log(`[DANMU-RECV] AcfunAdapter.emitUnifiedEvent - 发射统一事件完成，事件ID: ${normalized.room_id}-${type}-${ts}`);
       this.safeEmit('event', normalized);
       if (process.env.ACFRAME_DEBUG_LOGS === '1') {
         // try {

@@ -29,7 +29,7 @@ function createMainPluginApi(pluginId, version=undefined, apiBaseUrl) {
 
   // 创建各个 API 模块
   const acfun = createAcfunApi(request);
-  const store = createStoreApi(pluginId, request, subscribeSse);
+  const store = createStoreApi(pluginId, request, sseManager);
   const settings = createSettingsApi(pluginId, request, subscribeSse);
   const logger = createLoggerApi(pluginId, request);
   const http = createHttpApi(request);

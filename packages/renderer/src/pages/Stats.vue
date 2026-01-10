@@ -81,7 +81,10 @@
 
 <script setup lang="ts">
 import { ref, computed, onMounted, onUnmounted, watch } from 'vue';
-import * as echarts from 'echarts';
+import type * as echarts from 'echarts';
+
+// 动态导入echarts
+let echartsModule: typeof echarts | null = null;
 
 type DayStat = {
   date: Date;
@@ -213,7 +216,7 @@ function aggregateData(g: 'day' | 'week' | 'month'): AggregatedPoint[] {
 
 // 初始化图表
 const chartRef = ref<HTMLDivElement | null>(null);
-let chart: echarts.ECharts | null = null;
+let chart: any = null;
 
 function getBrandColors() {
   const css = getComputedStyle(document.documentElement);
@@ -226,14 +229,20 @@ function getBrandColors() {
   };
 }
 
-function renderChart() {
+async function renderChart() {
   if (!chartRef.value) return;
+
+  // 动态导入echarts
+  if (!echartsModule) {
+    echartsModule = await import('echarts');
+  }
+
   if (!chart) {
-    chart = echarts.init(chartRef.value);
+    chart = echartsModule.init(chartRef.value);
   }
   const data = aggregateData(granularity.value);
   const colors = getBrandColors();
-  const option: echarts.EChartsOption = {
+  const option: any = {
     backgroundColor: 'transparent',
     color: [colors.brand, colors.success, colors.warning, colors.danger],
     tooltip: { 
@@ -394,9 +403,9 @@ function renderChart() {
   chart.resize();
 }
 
-onMounted(() => {
-  renderChart();
-  window.addEventListener('resize', renderChart);
+onMounted(async () => {
+  await renderChart();
+  window.addEventListener('resize', () => renderChart());
 });
 
 onUnmounted(() => {
@@ -404,7 +413,7 @@ onUnmounted(() => {
   if (chart) { chart.dispose(); chart = null; }
 });
 
-watch(granularity, () => { renderChart(); });
+watch(granularity, async () => { await renderChart(); });
 </script>
 
 <style scoped>

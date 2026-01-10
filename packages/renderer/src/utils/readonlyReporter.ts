@@ -12,6 +12,7 @@ type Reporter = {
   update: (slice: ReadonlySlice) => void;
   init: (snapshot: ReadonlySlice) => void;
   setIsMain: (flag: boolean) => void;
+  getIsMain: () => boolean;
 };
 
 const sanitize = (obj: any): any => {
@@ -113,6 +114,9 @@ const createReporter = (): Reporter => {
     },
     setIsMain(flag: boolean) {
       isMain = flag;
+    },
+    getIsMain() {
+      return isMain;
     }
   };
 };
@@ -136,4 +140,12 @@ export const reportReadonlyInit = (snapshot: ReadonlySlice): void => {
 
 export const setReadonlyIsMain = (flag: boolean): void => {
   ensureSingleton().setIsMain(flag);
+};
+
+export const isReadonlyMain = (): boolean => {
+  try {
+    return ensureSingleton().getIsMain();
+  } catch {
+    return true;
+  }
 };

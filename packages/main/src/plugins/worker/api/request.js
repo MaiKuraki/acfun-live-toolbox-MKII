@@ -39,7 +39,7 @@ function createRequest(pluginId, apiBaseUrl) {
               const json = JSON.parse(data);
               if (!json.success && res.statusCode !== 200) {
                 try { console.warn(`[plugin-worker] request failed: ${method} ${url.href} status=${res.statusCode} error=${String(json.error || res.statusMessage)} body=${data}`); } catch (_) {}
-                reject(new Error(json.error || res.statusMessage));
+                resolve({ success: false, error: json.error || res.statusMessage, statusCode: res.statusCode });
               } else {
                 resolve(json.data || json);
               }
@@ -51,7 +51,10 @@ function createRequest(pluginId, apiBaseUrl) {
           });
         });
 
-        req.on('error', reject);
+        req.on('error', (error) => {
+          try { console.warn(`[plugin-worker] request error: ${method} ${url.href} error=${error.message}`); } catch (_) {}
+          resolve({ success: false, error: error.message });
+        });
 
         if (body !== undefined && body !== null) {
           const contentType = headers['Content-Type'] || '';
@@ -64,7 +67,8 @@ function createRequest(pluginId, apiBaseUrl) {
 
         req.end();
       } catch (err) {
-        reject(err);
+        try { console.warn(`[plugin-worker] request setup error: ${err.message}`); } catch (_) {}
+        resolve({ success: false, error: err.message });
       }
     });
   };

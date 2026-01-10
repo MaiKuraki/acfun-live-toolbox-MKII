@@ -10,7 +10,9 @@
       
       <!-- RouterView 内容区域 (816x728px 可用空间) -->
       <div class="layout-content" :class="{ 'full': isWindowLayout }">
-    <RouterView :key="$route.fullPath" />
+        <KeepAlive :max="10" :exclude="noCacheRoutes">
+          <RouterView :key="$route.fullPath" />
+        </KeepAlive>
       </div>
     </div>
   </div>
@@ -24,6 +26,17 @@ import Sidebar from '../components/Sidebar.vue';
 
 const route = useRoute();
 const isWindowLayout = computed(() => (route.meta as any)?.layout === 'window');
+
+// 不缓存的路由（通常是动态内容或实时页面）
+const noCacheRoutes = computed(() => {
+  const routeName = route.name as string;
+  // 直播相关页面不缓存，因为状态经常变化
+  const liveRoutes = ['LiveRoom', 'LiveManage', 'LiveDanmu', 'LiveCreate'];
+  // 插件页面不缓存，避免状态冲突
+  const pluginRoutes = ['PluginFramePage', 'WindowFramePluginPage', 'OverlayFramePluginPage'];
+
+  return [...liveRoutes, ...pluginRoutes].includes(routeName) ? [routeName] : [];
+});
 </script>
 
 <style scoped>
@@ -32,7 +45,7 @@ const isWindowLayout = computed(() => (route.meta as any)?.layout === 'window');
   height: 100vh;
   display: flex;
   flex-direction: column;
-  background-color: var(--td-bg-color-page);
+  background-color: rgba(0,0,0,0);
   
   /* 针对1024x768分辨率优化 */
   min-width: 1024px;
@@ -77,7 +90,7 @@ const isWindowLayout = computed(() => (route.meta as any)?.layout === 'window');
   width: calc(100% - 208px); /* 减去sidebar宽度 */
   height: 100%;
   overflow: auto;
-  background-color: var(--td-bg-color-page);
+  background-color: rgba(0,0,0,0);
   
   /* 在1024x768下，内容区域为816x728px */
   max-width: 816px;

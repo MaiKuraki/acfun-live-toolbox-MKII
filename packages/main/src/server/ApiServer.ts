@@ -5,7 +5,6 @@ import compression from "compression";
 import morgan from "morgan";
 import { getLogManager } from "../logging/LogManager";
 import { createServer, Server } from "http";
-import { WsHub } from "./WsHub";
 import { QueryService } from "../persistence/QueryService";
 import { CsvExporter } from "../persistence/CsvExporter";
 import { DatabaseManager } from "../persistence/DatabaseManager";
@@ -32,13 +31,12 @@ export interface ApiServerConfig {
 }
 
 /**
- * Manages the local HTTP and WebSocket server.
+ * Manages the local HTTP server.
  */
 export class ApiServer {
   private app: express.Application;
   private server: Server | null = null;
   private lastStartError: string | undefined;
-  private wsHub: WsHub;
   private config: ApiServerConfig;
   private queryService: QueryService;
   private csvExporter: CsvExporter;
@@ -74,7 +72,6 @@ export class ApiServer {
     };
 
     this.app = express();
-    this.wsHub = new WsHub();
     this.queryService = new QueryService(databaseManager);
     this.csvExporter = new CsvExporter(this.queryService);
     this.diagnosticsService = diagnosticsService;
@@ -209,7 +206,6 @@ export class ApiServer {
     const context = {
       app: this.app,
       config: this.config,
-      wsHub: this.wsHub,
       queryService: this.queryService,
       csvExporter: this.csvExporter,
       diagnosticsService: this.diagnosticsService,
@@ -260,13 +256,6 @@ export class ApiServer {
         });
       }
     );
-  }
-
-  /**
-   * 获取 WebSocket Hub 实例
-   */
-  public getWsHub(): WsHub {
-    return this.wsHub;
   }
 
   /**
@@ -334,13 +323,6 @@ export class ApiServer {
           console.log(
             `[ApiServer] HTTP server running at http://${this.config.host}:${this.config.port}`
           );
-          try {
-            // 初始化 WebSocket 服务器在 HTTP 监听成功后，避免底层 zlib/网络栈异常
-            this.wsHub.initialize(this.server!);
-            console.log(`[ApiServer] WebSocket server started`);
-          } catch (err) {
-            console.error("[ApiServer] WebSocket initialization failed:", err);
-          }
           this.lastStartError = undefined;
           resolve();
         });
@@ -368,9 +350,6 @@ export class ApiServer {
   public stop(): Promise<void> {
     return new Promise((resolve) => {
       console.log("[ApiServer] Shutting down server...");
-
-      // 关闭 WebSocket Hub
-      this.wsHub.close();
 
       if (this.server) {
         try {

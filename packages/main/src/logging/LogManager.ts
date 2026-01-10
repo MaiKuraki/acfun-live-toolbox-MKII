@@ -41,7 +41,8 @@ class EnhancedLogManager implements LogManager {
   ];
 
   constructor() {
-    this.logDir = path.join(app.getPath('userData'), 'logs');
+    // 在根目录生成日志，每次启动生成新文件
+    this.logDir = path.join(process.cwd(), 'logs');
     this.ensureLogDirectory();
     this.currentLogFile = this.getCurrentLogFile();
     this.initializeCurrentFileSize();
@@ -54,8 +55,8 @@ class EnhancedLogManager implements LogManager {
   }
 
   private getCurrentLogFile(): string {
-    const timestamp = new Date().toISOString().split('T')[0]; // YYYY-MM-DD
-    return path.join(this.logDir, `app-${timestamp}.log`);
+    const timestamp = new Date().toISOString().replace(/[:.]/g, '-'); // YYYY-MM-DDTHH-mm-ss-sssZ
+    return path.join(this.logDir, `runtime-${timestamp}.log`);
   }
 
   private initializeCurrentFileSize(): void {

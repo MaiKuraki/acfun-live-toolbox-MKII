@@ -178,6 +178,7 @@ export class DanmuSQLiteWriter {
   private db: sqlite3.Database;
   constructor(db: sqlite3.Database) { this.db = db; }
   async handleNormalized(liveId: string, event: any, liverId?: string): Promise<void> {
+    console.log(`[DANMU-DB] DanmuSQLiteWriter.handleNormalized - 开始处理标准化事件，类型: ${event?.event_type}, 直播ID: ${liveId}`);
     const t = String(event?.event_type || '').toLowerCase();
     const rawObj: any = event?.raw || {};
     const isHistory = !!(event?.isHistory || rawObj?.raw?.isHistory);
@@ -205,7 +206,9 @@ export class DanmuSQLiteWriter {
     );
 
     if (t === 'danmaku' || t === 'gift' || t === 'like' || t === 'enter' || t === 'follow') {
+      console.log(`[DANMU-DB] DanmuSQLiteWriter.handleNormalized - 处理用户行为事件: ${t}, 直播ID: ${liveId}`);
       if (t === 'danmaku' && isHistory) {
+        console.log(`[DANMU-DB] DanmuSQLiteWriter.handleNormalized - 跳过历史弹幕消息`);
         return;
       }
       const actionType = (
@@ -223,12 +226,18 @@ export class DanmuSQLiteWriter {
         obj.value = toInt(rawObj?.value);
         obj.giftDetail = rawObj?.giftDetail || null;
       }
-      if (rawUser) { await this.upsertUser(userInfo, rawUser); }
+      if (rawUser) {
+        console.log(`[DANMU-DB] DanmuSQLiteWriter.handleNormalized - 更新用户信息`);
+        await this.upsertUser(userInfo, rawUser);
+      }
+      console.log(`[DANMU-DB] DanmuSQLiteWriter.handleNormalized - 插入动作记录`);
       await this.insertAction(liveId, String(liverId || ''), obj);
+      console.log(`[DANMU-DB] DanmuSQLiteWriter.handleNormalized - 用户行为事件处理完成`);
       return;
     }
 
     if (t === 'bananacount' || t === 'displayinfo' || t === 'topusers' || t === 'recentcomment' || t === 'redpacklist' || t === 'chatcall' || t === 'chataccept' || t === 'chatready' || t === 'chatend' || t === 'kickedout' || t === 'violationalert' || t === 'managerstate' || t === 'end') {
+      console.log(`[DANMU-DB] DanmuSQLiteWriter.handleNormalized - 处理状态事件: ${t}, 直播ID: ${liveId}`);
       const canon = (
         t === 'bananacount' ? 'bananaCount' :
         t === 'displayinfo' ? 'displayInfo' :
@@ -244,7 +253,9 @@ export class DanmuSQLiteWriter {
         t === 'managerstate' ? 'managerState' : 'end'
       );
       const data = event?.raw?.data ?? event?.raw ?? event?.content ?? null;
+      console.log(`[DANMU-DB] DanmuSQLiteWriter.handleNormalized - 插入状态记录`);
       await this.insertState(liveId, String(liverId || ''), canon, data);
+      console.log(`[DANMU-DB] DanmuSQLiteWriter.handleNormalized - 状态事件处理完成`);
       return;
     }
   }
@@ -327,6 +338,7 @@ export class DanmuSQLiteWriter {
     await run(this.db, sql, params);
   }
   async insertAction(liveId: string, liverId: string, evt: any): Promise<void> {
+    console.log(`[DANMU-DB] DanmuSQLiteWriter.insertAction - 开始插入动作，类型: ${evt.actionType}, 直播ID: ${liveId}`);
     const actionType = String(evt.actionType || '');
     const sendTime = toInt(evt.danmuInfo?.sendTime);
     const userId = toInt(evt.danmuInfo?.userInfo?.userID);
@@ -359,7 +371,9 @@ export class DanmuSQLiteWriter {
       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
     `;
     const params = [toStr(liveId), toStr(liverId), userId, actionType, sendTime, content, quantity, value, extra];
+    console.log(`[DANMU-DB] DanmuSQLiteWriter.insertAction - 执行SQL插入动作记录`);
     await new Promise<void>((resolve, reject) => { this.db.run(sql, params, (err) => err ? reject(err) : resolve()); });
+    console.log(`[DANMU-DB] DanmuSQLiteWriter.insertAction - 动作记录插入完成`);
 
     if (actionType === 'gift') {
       const row: any = await new Promise((resolve, reject) => {

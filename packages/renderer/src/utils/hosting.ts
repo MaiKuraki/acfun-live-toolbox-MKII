@@ -87,6 +87,6 @@ export function buildOverlayFrameUrl(pluginId: string): string {
   if (import.meta.env.DEV) {
     return `${window.location.host}/#/plugins/${pluginId}/overlay?apiPort=${getApiPort()}`;
   }
-  return `${getApiBase()}/#/plugins/${pluginId}/overlay?apiPort=${getApiPort()}`;
+  return `${getApiBase()}/app/#/plugins/${pluginId}/overlay?apiPort=${getApiPort()}&pluginId=${pluginId}`;
 }
 

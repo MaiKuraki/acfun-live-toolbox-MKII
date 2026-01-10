@@ -4,16 +4,13 @@ import { ApiServer } from './server/ApiServer';
 import { initializeIpcHandlers } from './ipc/ipcHandlers';
 import { TokenManager } from './server/TokenManager';
 import { app, BrowserWindow } from 'electron';
-import { runDependencyGuards } from './bootstrap/dependencyGuards';
 import { WindowManager } from './bootstrap/WindowManager';
 import { ensureSingleInstance } from './bootstrap/SingleInstanceApp';
 import { setupHardwareAcceleration } from './bootstrap/HardwareAccelerationModule';
-import { ensureWorkspacePackagesPresent } from './dependencyCheck';
 import { ConfigManager } from './config/ConfigManager';
 import { PluginManager } from './plugins/PluginManager';
 import { OverlayManager } from './plugins/OverlayManager';
 import { PluginWindowManager } from './plugins/PluginWindowManager';
-import { pluginConnectionPoolManager } from './plugins/ConnectionPoolManager';
 import { PluginSseConnectionManager } from './server/services/PluginSseConnectionManager';
 import { overlaySubscriptionRegistry } from './server/services/OverlaySubscriptionRegistry';
 import { DiagnosticsService } from './logging/DiagnosticsService';
@@ -24,6 +21,38 @@ import { installVueDevtools } from './bootstrap/ChromeDevToolsExtension';
 import path from 'path';
 import { DataManager } from './persistence/DataManager';
 import * as fs from 'fs';
+
+// 检查是否具有管理员权限的函数
+const isAdmin = () => {
+  if (process.platform !== 'win32') return true; // 非Windows平台默认认为有权限
+  try {
+    const { execSync } = require('child_process');
+    execSync('net session', { stdio: 'ignore' });
+    return true;
+  } catch {
+    return false;
+  }
+};
+
+// 请求管理员权限的函数
+const requestAdminPrivileges = () => {
+  if (process.platform !== 'win32' || isAdmin()) return;
+
+  const { exec } = require('child_process');
+  const appPath = app.getPath('exe');
+  const args = process.argv.slice(1);
+  const argsString = args.map(arg => `"${arg}"`).join(',');
+  const ArgumentList = argsString ? ` -ArgumentList ${argsString}` : '';
+  const command = `Start-Process -FilePath "${appPath}" ${ArgumentList} -Verb RunAs`;
+
+  exec(`powershell -Command "${command}"`, (err: any) => {
+    if (err) {
+      console.error('[Main] 重启失败:', err);
+    } else {
+      app.quit();
+    }
+  });
+};
 
 // Make windowManager available at module scope so app-level handlers can access it
 let windowManager: WindowManager | null = null;
@@ -57,6 +86,10 @@ async function main() {
       try { console.log('[Main] AppUserModelId set to', appId); } catch { }
     }
   } catch { }
+
+  // 检查并请求管理员权限
+  requestAdminPrivileges();
+
   applyUserDataRedirect();
   try {
     const lm = getLogManager();
@@ -151,30 +184,11 @@ async function main() {
       };
     }, 1000); // Delay interception to avoid early initialization loops
   } catch { }
-  // --- 0. Assert local workspace package integrity ---
-  try {
-    // 仅在开发模式校验本地工作区包；打包环境中跳过该检查
-    if (!app.isPackaged) {
-      // From compiled dist at packages/main/dist, go up to project root
-      ensureWorkspacePackagesPresent(path.resolve(__dirname, '../../..'));
-    }
-  } catch (error: any) {
-    console.error('[Main] Workspace package check failed:', error);
-    app.quit();
-    return;
-  }
 
   // --- 1. Pre-flight Checks & Setup ---
   ensureSingleInstance();
-  setupHardwareAcceleration();
+  // setupHardwareAcceleration();
 
-  try {
-    await runDependencyGuards();
-  } catch (error: any) {
-    // The guard will log the specific error. We just need to exit.
-    app.quit();
-    return; // Stop execution
-  }
 
   // --- 2. Initialize Managers & Services (Stubs for now) ---
   console.log('[Main] Initializing services...');
@@ -193,7 +207,13 @@ async function main() {
   // 初始化Overlay管理器
   const overlayManager = new OverlayManager();
 
-  const apiPort = configManager.get<number>('server.port', parseInt(process.env.ACFRAME_API_PORT || '18299'));
+  // 初始化默认配置
+  const defaultApiPort = parseInt(process.env.ACFRAME_API_PORT || '18299');
+  let apiPort = configManager.get<number>('server.port');
+  if (!Number.isFinite(apiPort) || apiPort <= 0 || apiPort > 65535) {
+    apiPort = defaultApiPort;
+    configManager.set('server.port', apiPort);
+  }
 
   const tokenManager = TokenManager.getInstance();
   await tokenManager.initialize();
@@ -293,34 +313,29 @@ async function main() {
   );
 
   // --- 4. Start API Server ---
-  // Wire RoomManager -> WsHub broadcasting
-  const wsHub = apiServer.getWsHub();
   roomManager.on('event', (event) => {
-    try {
-      wsHub.broadcastEvent(event);
-    } catch (err) {
-      console.error('[Main] Failed to broadcast event via WsHub:', err);
-    }
+    console.log(`[DANMU-FORWARD] MainProcess - 收到房间事件，类型: ${event.event_type}, 房间: ${event.room_id}, 时间戳: ${event.ts}`);
     try {
       const win = windowManager.getMainWindow();
+      console.log(`[DANMU-FORWARD] MainProcess - 转发事件到渲染进程`);
       win?.webContents.send('room.event', { event_type: event.event_type, room_id: event.room_id, ts: event.ts, raw: event.raw });
-    } catch { }
+    } catch (error) {
+      console.error(`[DANMU-FORWARD] MainProcess - 转发到渲染进程失败:`, error);
+    }
     try {
       const dm = DataManager.getInstance();
       const plugins = pluginManager.getInstalledPlugins().filter(p => p.enabled);
+      console.log(`[DANMU-FORWARD] MainProcess - 转发事件到 ${plugins.length} 个启用插件`);
       for (const p of plugins) {
         const channel = `plugin:${p.id}:overlay`;
         dm.publish(channel, { event: 'normalized-event', payload: event }, { ttlMs: 2 * 60 * 1000, persist: true, meta: { kind: 'danmaku' } });
       }
-    } catch { }
+    } catch (error) {
+      console.error(`[DANMU-FORWARD] MainProcess - 转发到插件失败:`, error);
+    }
   });
 
   roomManager.on('roomStatusChange', (roomId: string, status: string) => {
-    try {
-      wsHub.broadcastRoomStatus(roomId, status);
-    } catch (err) {
-      console.error('[Main] Failed to broadcast room status via WsHub:', err);
-    }
     try {
       const win = windowManager.getMainWindow();
       const info = roomManager.getRoomInfo(String(roomId));
@@ -347,11 +362,6 @@ async function main() {
 
   roomManager.on('roomAdded', (roomId: string) => {
     try {
-      wsHub.broadcastRoomStatus(roomId, 'connecting');
-    } catch (err) {
-      console.error('[Main] Failed to broadcast room added via WsHub:', err);
-    }
-    try {
       const dm = DataManager.getInstance();
       const plugins = pluginManager.getInstalledPlugins().filter(p => p.enabled);
       const payload = { roomId, ts: Date.now() };
@@ -363,11 +373,6 @@ async function main() {
   });
 
   roomManager.on('roomRemoved', (roomId: string) => {
-    try {
-      wsHub.broadcastRoomStatus(roomId, 'closed');
-    } catch (err) {
-      console.error('[Main] Failed to broadcast room removed via WsHub:', err);
-    }
     try {
       const dm = DataManager.getInstance();
       const plugins = pluginManager.getInstalledPlugins().filter(p => p.enabled);
@@ -578,10 +583,6 @@ async function main() {
     try {
       // 1) 关闭插件独立窗口（若存在）
       try { pluginWindowManager.close(id).catch(() => { }); } catch { }
-    } catch { }
-    try {
-      // 2) 关闭插件在连接池中的所有连接
-      try { pluginConnectionPoolManager.closePluginConnections(id); } catch { }
     } catch { }
     try {
       // 3) 关闭插件的 SSE 连接（立即结束 response 并注销）

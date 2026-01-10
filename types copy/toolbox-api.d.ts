@@ -1,4 +1,6 @@
 
+import type { NormalizedEvent } from './danmu';
+
 /**
  * API 响应基础结构
  */
@@ -1047,8 +1049,28 @@ export interface ToolboxBaseApi {
   sendOverlay?(payload?: Record<string, any>): Promise<Record<string, any>>;
   /**
    * 订阅弹幕（通用签名，具体实现可能不同）
+   *
+   * @param rules 订阅规则数组，每个规则包含房间ID和可选的事件类型过滤
+   * @param callback 事件回调函数，接收标准化的事件对象
+   * @returns 订阅控制器对象（包含close方法）或Promise
+   *
+   * 回调函数接收的 event 参数结构：
+   * {
+   *   ts: number,           // 事件发生时间戳（毫秒）
+   *   received_at: number,  // 事件接收时间戳（毫秒）
+   *   room_id: string,      // 房间ID
+   *   live_id?: string,     // 直播ID（可选）
+   *   source: string,       // 数据源标识（如 'acfun'）
+   *   event_type: string,   // 事件类型：'danmaku'|'gift'|'follow'|'like'|'enter'|'shareLive'|'joinClub'|'richText'|...
+   *   user_id?: string,     // 用户ID（可选）
+   *   user_name?: string,   // 用户名（可选）
+   *   content?: string,     // 事件内容（可选）
+   *   raw: DanmuMessageRaw  // 弹幕消息原始数据，所有事件类型都使用相同结构
+   * }
+   *
+   * raw 字段的具体结构请参考 types/danmu.d.ts 中的 DanmuMessageRaw 接口定义
    */
-  subscribeDanmaku?: (rules: { roomId: string; eventTypes?: string[] }[], callback?: (event: Record<string, any>) => void) => { close: () => void } | Promise<Record<string, any>>;
+  subscribeDanmaku?: (rules: { roomId: string; eventTypes?: string[] }[], callback?: (event: NormalizedEvent) => void) => { close: () => void } | Promise<Record<string, any>>;
   /**
    * 取消按房间号的订阅（可选）
    */

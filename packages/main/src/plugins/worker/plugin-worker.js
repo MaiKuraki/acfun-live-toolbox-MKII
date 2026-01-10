@@ -21,7 +21,7 @@ let pluginVersion = null;
       try {
         const msg = args.map(a => { try { return typeof a === 'string' ? a : JSON.stringify(a); } catch { return String(a); } }).join(' ');
         parentPort.postMessage({ type: 'plugin_log', level: String(level || 'info'), message: msg, pluginId: workerData && workerData.pluginId });
-      } catch {}
+      } catch { }
     };
     // 只发送到主进程，不调用原始 console（避免重复打印）
     console.log = (...args) => { send('info', args); };
@@ -29,7 +29,7 @@ let pluginVersion = null;
     console.warn = (...args) => { send('warn', args); };
     console.error = (...args) => { send('error', args); };
     console.debug = (...args) => { send('debug', args); };
-  } catch (_) {}
+  } catch (_) { }
 })();
 
 function runModuleInWindow({ code, filename, windowRef, requireFn }) {
@@ -80,7 +80,7 @@ function extractLibExports({ code, filename, windowRef }) {
     exports: undefined
   };
   const beforeS = Object.keys(sandbox);
-  try { vm.runInNewContext(code + "\n//# sourceURL=" + filename, sandbox, { filename, displayErrors: true }); } catch (_) {}
+  try { vm.runInNewContext(code + "\n//# sourceURL=" + filename, sandbox, { filename, displayErrors: true }); } catch (_) { }
   const after = Object.keys(windowRef);
   const added = after.filter(k => !before.includes(k));
   const prefer = added.includes('_') ? ['_'] : [];
@@ -114,20 +114,8 @@ async function loadPlugin(pluginPath) {
     global.window = windowRef;
     global.document = documentRef;
     global.navigator = windowRef.navigator;
-    try { windowRef.console = console; } catch (e) { console.log('[Worker] Failed to set console:', e); }
-    try { windowRef.path = require('path'); } catch (e) { console.log('[Worker] Failed to set path:', e); }
-    try { windowRef.http = require('http'); } catch (e) { console.log('[Worker] Failed to set http:', e); }
-    try { windowRef.https = require('https'); } catch (e) { console.log('[Worker] Failed to set https:', e); }
-    try { windowRef.child_process = require('child_process'); } catch (e) { console.log('[Worker] Failed to set child_process:', e); }
-    try { windowRef.childProcess = windowRef.child_process; } catch (e) { console.log('[Worker] Failed to set childProcess:', e); }
-    try { windowRef.exec = windowRef.child_process && windowRef.child_process.exec ? windowRef.child_process.exec : undefined; } catch (e) { console.log('[Worker] Failed to set exec:', e); }
-    try { windowRef.spawn = windowRef.child_process && windowRef.child_process.spawn ? windowRef.child_process.spawn : undefined; } catch (e) { console.log('[Worker] Failed to set spawn:', e); }
-    try { windowRef.setTimeout = typeof setTimeout !== 'undefined' ? setTimeout.bind(global) : windowRef.setTimeout; } catch (e) { console.log('[Worker] Failed to set setTimeout:', e); }
-    try { windowRef.setInterval = typeof setInterval !== 'undefined' ? setInterval.bind(global) : windowRef.setInterval; } catch (e) { console.log('[Worker] Failed to set setInterval:', e); }
-    try { windowRef.clearTimeout = typeof clearTimeout !== 'undefined' ? clearTimeout.bind(global) : windowRef.clearTimeout; } catch (e) { console.log('[Worker] Failed to set clearTimeout:', e); }
-    try { windowRef.clearInterval = typeof clearInterval !== 'undefined' ? clearInterval.bind(global) : windowRef.clearInterval; } catch (e) { console.log('[Worker] Failed to set clearInterval:', e); }
-    try { const WS = require('ws'); if (WS) { windowRef.WebSocket = WS; } } catch (_) { try { if (typeof global.WebSocket !== 'undefined') { windowRef.WebSocket = global.WebSocket; } } catch (_) {} }
-    windowRef.pluginApi = { emit(eventType, payload) { try { parentPort.postMessage({ type: 'plugin_event', eventType, payload, pluginId: workerData && workerData.pluginId }); } catch (_) {} } };
+    try { const WS = require('ws'); if (WS) { windowRef.WebSocket = WS; } } catch (_) { try { if (typeof global.WebSocket !== 'undefined') { windowRef.WebSocket = global.WebSocket; } } catch (_) { } }
+    windowRef.pluginApi = { emit(eventType, payload) { try { parentPort.postMessage({ type: 'plugin_event', eventType, payload, pluginId: workerData && workerData.pluginId }); } catch (_) { } } };
     try {
       const apiPortOpt = (workerData && workerData.sandboxConfig && workerData.sandboxConfig.sandbox && workerData.sandboxConfig.sandbox.apiPort) || undefined;
       const p = (() => {
@@ -135,7 +123,7 @@ async function loadPlugin(pluginPath) {
         try { const envP = Number(process.env && process.env.ACFRAME_API_PORT || ''); if (Number.isFinite(envP) && envP > 0 && envP <= 65535) return envP; } catch (e) { console.log('[Worker] Failed to parse ACFRAME_API_PORT:', e); }
         return undefined;
       })();
-    if (p) {
+      if (p) {
         apiBase = `http://127.0.0.1:${p}`;
         windowRef.getApiPort = async () => p;
         try { windowRef.location.href = apiBase; } catch (e) { console.log('[Worker] Failed to set location.href:', e); }
@@ -143,24 +131,24 @@ async function loadPlugin(pluginPath) {
         apiBase = null;
         windowRef.getApiPort = async () => { throw new Error('API_PORT_NOT_CONFIGURED'); };
       }
-    try { console.info('[Worker] apiBase resolved', { pluginId, apiBase }); } catch {}
+      try { console.info('[Worker] apiBase resolved', { pluginId, apiBase }); } catch { }
     } catch (e) { console.log('[Worker] Failed to resolve apiBase:', e); }
-    
+
     // 注入 toolboxApi
     if (apiBase && pluginId) {
       try {
-        try { console.info('[Worker] attempting to inject toolboxApi', { pluginId, apiBase, pluginDir }); } catch {}
+        try { console.info('[Worker] attempting to inject toolboxApi', { pluginId, apiBase, pluginDir }); } catch { }
         const toolboxApi = createMainPluginApi(pluginId, undefined, apiBase);
         windowRef.toolboxApi = toolboxApi;
         windowRef.api = toolboxApi; // 兼容别名
-        try { console.info('[Worker] Injected toolboxApi for main process plugin', { pluginId, version }); } catch {}
+        try { console.info('[Worker] Injected toolboxApi for main process plugin', { pluginId, version }); } catch { }
       } catch (e) {
-        try { console.warn('[Worker] Failed to inject toolboxApi:', e && e.message ? e.message : String(e)); } catch {}
-          }
+        try { console.warn('[Worker] Failed to inject toolboxApi:', e && e.message ? e.message : String(e)); } catch { }
+      }
     }
-    
+
     try {
-      try { console.info('[Worker] invoking beforeloaded', { pluginId, hasBeforeloaded: typeof windowRef.beforeloaded === 'function' }); } catch {}
+      try { console.info('[Worker] invoking beforeloaded', { pluginId, hasBeforeloaded: typeof windowRef.beforeloaded === 'function' }); } catch { }
       windowRef.beforeloaded && windowRef.beforeloaded();
     } catch (e) { console.log('[Worker] Failed to invoke beforeloaded:', e); }
 
@@ -173,14 +161,14 @@ async function loadPlugin(pluginPath) {
     }
 
     try {
-      const dir = workerData.sandboxConfig.main?.dir || ''; 
+      const dir = workerData.sandboxConfig.main?.dir || '';
       const mainFile = workerData.pluginPath;
       // 解析主文件路径，避免重复拼接
       const resolveMainFile = (pluginDir, filePath) => {
-        if(path.isAbsolute(mainFile)) {
+        if (path.isAbsolute(mainFile)) {
           return mainFile;
         } else {
-          return path.join(dir||pluginDir, mainFile);
+          return path.join(dir || pluginDir, mainFile);
         }
       };
 
@@ -189,24 +177,24 @@ async function loadPlugin(pluginPath) {
         if (path.isAbsolute(libPath)) {
           return libPath;
         }
-        
+
         // 如果 mainDir 就是 pluginDir（dir 为空），直接使用 pluginDir
         if (mainDir === pluginDir) {
           return path.join(pluginDir, libPath);
         }
-        
+
         const normalizedMainDir = path.normalize(mainDir);
         const normalizedLibPath = path.normalize(libPath);
         if (normalizedLibPath.startsWith(normalizedMainDir + path.sep) || normalizedLibPath === normalizedMainDir) {
           return path.join(pluginDir, libPath);
         }
-        
+
         return path.join(mainDir, libPath);
       };
 
       // 计算 mainDir，如果 dir 为空则使用 pluginDir
-      const mainDir = (!dir || dir.trim() === '') 
-        ? pluginDir 
+      const mainDir = (!dir || dir.trim() === '')
+        ? pluginDir
         : path.join(pluginDir, dir);
       const allLibs = libs;
       const libRegistry = Object.create(null);
@@ -227,13 +215,22 @@ async function loadPlugin(pluginPath) {
           }
         } catch (e) {
           const msg = e && e.message ? e.message : String(e);
-          try { console.error(msg); } catch {}
+          try { console.error(msg); } catch { }
           throw e;
         }
       }
 
+      const innerLibs = {
+        console: console,
+        path: require('path'),
+        http: require('http'),
+        https: require("https"),
+        WebSocket: require('ws')
+      }
       const pluginRequire = (id) => {
+
         if (libRegistry[id]) return libRegistry[id];
+        if (innerLibs[id]) return innerLibs[id];
         if (id.startsWith('./')) { const k = id.replace(/^\.\//, ''); if (libRegistry[k]) return libRegistry[k]; }
         const base = path.basename(id, path.extname(id));
         if (libRegistry[base]) return libRegistry[base];
@@ -258,29 +255,29 @@ async function loadPlugin(pluginPath) {
         } catch (e) { console.log('[Worker] Failed to inspect exports:', e); }
 
         if (exportsSource && typeof exportsSource === 'object') {
-           // 优先注入命名导出
-           for (const key of Object.keys(exportsSource)) {
-             const val = exportsSource[key];
-             if (typeof val === 'function' && typeof windowRef[key] !== 'function') {
-               windowRef[key] = val;
-               try { console.info(`[Worker] Injected named export: ${key}`); } catch (e) { console.log('[Worker] Failed to log named export injection:', e); }
-             }
-           }
-           // 如果是默认对象导出，也注入其属性
-           if (exportsSource.default && typeof exportsSource.default === 'object') {
-             for (const key of Object.keys(exportsSource.default)) {
-               const val = exportsSource.default[key];
-               if (typeof val === 'function' && typeof windowRef[key] !== 'function') {
-                 windowRef[key] = val;
-                 try { console.info(`[Worker] Injected default export: ${key}`); } catch (e) { console.log('[Worker] Failed to log default export injection:', e); }
-               }
-             }
-           }
+          // 优先注入命名导出
+          for (const key of Object.keys(exportsSource)) {
+            const val = exportsSource[key];
+            if (typeof val === 'function' && typeof windowRef[key] !== 'function') {
+              windowRef[key] = val;
+              try { console.info(`[Worker] Injected named export: ${key}`); } catch (e) { console.log('[Worker] Failed to log named export injection:', e); }
+            }
+          }
+          // 如果是默认对象导出，也注入其属性
+          if (exportsSource.default && typeof exportsSource.default === 'object') {
+            for (const key of Object.keys(exportsSource.default)) {
+              const val = exportsSource.default[key];
+              if (typeof val === 'function' && typeof windowRef[key] !== 'function') {
+                windowRef[key] = val;
+                try { console.info(`[Worker] Injected default export: ${key}`); } catch (e) { console.log('[Worker] Failed to log default export injection:', e); }
+              }
+            }
+          }
         }
       } catch (e) { console.log('[Worker] Failed to inject exports:', e); }
 
       if (typeof windowRef.afterLoaded === 'function') {
-        
+
         try {
           const api = windowRef.toolboxApi || windowRef.api;
           try { console.info('[Worker] calling afterLoaded', { pluginId, hasApi: !!api }); } catch (e) { console.log('[Worker] Failed to log afterLoaded call:', e); }
@@ -340,7 +337,7 @@ parentPort.on('message', async (message) => {
       const method = message.method;
       const args = Array.isArray(message.args) ? message.args : [];
       const optional = !!message.optional;
-      try { console.info('[Worker] execute', { method, argsLen: Array.isArray(args) ? args.length : 0 }); } catch {}
+      try { console.info('[Worker] execute', { method, argsLen: Array.isArray(args) ? args.length : 0 }); } catch { }
       if (!pluginLoaded) { await loadPlugin(workerData.pluginPath); startMemoryMonitor(); }
 
       let targetFn = null;
@@ -348,7 +345,7 @@ parentPort.on('message', async (message) => {
       else if (windowRef && windowRef.module && windowRef.module.exports && typeof windowRef.module.exports[method] === 'function') { targetFn = windowRef.module.exports[method]; }
       else if (windowRef && windowRef.module && windowRef.module.exports && windowRef.module.exports && windowRef.module.exports.default && typeof windowRef.module.exports.default[method] === 'function') { targetFn = windowRef.module.exports.default[method]; }
       if (!targetFn) {
-        if (!optional) { try { console.warn('[Worker] method not found', { method }); } catch {} parentPort.postMessage({ type: 'result', error: `Method ${method} not found on window` }); }
+        if (!optional) { try { console.warn('[Worker] method not found', { method }); } catch { } parentPort.postMessage({ type: 'result', error: `Method ${method} not found on window` }); }
         else { parentPort.postMessage({ type: 'result', result: undefined }); }
         parentPort.postMessage({ type: 'execution_complete' });
         return;
@@ -363,7 +360,7 @@ parentPort.on('message', async (message) => {
         parentPort.postMessage({ type: 'result', error: err && err.message ? err.message : String(err) });
       } finally {
         parentPort.postMessage({ type: 'execution_complete' });
-        try { console.info('[Worker] complete', { method }); } catch {}
+        try { console.info('[Worker] complete', { method }); } catch { }
       }
       return;
     }

@@ -1,5 +1,4 @@
 import type express from "express";
-import type { WsHub } from "../WsHub";
 import type { ApiServerConfig } from "../ApiServer";
 import type { QueryService } from "../../persistence/QueryService";
 import type { CsvExporter } from "../../persistence/CsvExporter";
@@ -15,7 +14,6 @@ import type { RequestHandler } from "express";
 export interface ApiContext {
   app: express.Application;
   config: ApiServerConfig;
-  wsHub: WsHub;
   queryService: QueryService;
   csvExporter: CsvExporter;
   diagnosticsService: DiagnosticsService;

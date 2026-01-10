@@ -27,6 +27,7 @@ export type NormalizedEventType =
   | 'shareLive' | 'richText' | 'recentComment'
   | 'bananaCount' | 'displayInfo' | 'topUsers' | 'redpackList'
   | 'chatCall' | 'chatAccept' | 'chatReady' | 'chatEnd'
+  | 'joinClub'
   | 'kickedOut' | 'violationAlert' | 'managerState' | 'end';
 
 /**
